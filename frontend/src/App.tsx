@@ -27,7 +27,7 @@ import rehypeKatex from 'rehype-katex'
 import rehypeRaw from 'rehype-raw'
 import remarkMath from 'remark-math'
 
-const API_BASE = 'http://localhost:8000'
+const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const RENDER_DEBOUNCE_MS = 800
 const THEME_STORAGE_KEY = 'autolabreport-theme'
 
@@ -132,7 +132,7 @@ function App() {
       setSyncStatus('rendering')
       setRenderError(null)
       try {
-        const res = await fetch(`${API_BASE}/api/render`, {
+        const res = await fetch(`${API_BASE_URL}/api/render`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ markdown }),
@@ -319,7 +319,7 @@ function App() {
     setExporting(true)
     setSyncStatus(status)
     try {
-      const res = await fetch(`${API_BASE}${endpoint}`, {
+      const res = await fetch(`${API_BASE_URL}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ markdown }),
@@ -418,7 +418,7 @@ function App() {
     setHealthLoading(true)
     setHealthMessage(null)
     try {
-      const res = await fetch(`${API_BASE}/api/health`)
+      const res = await fetch(`${API_BASE_URL}/api/health`)
       if (!res.ok) {
         throw new Error(`HTTP ${res.status}`)
       }
