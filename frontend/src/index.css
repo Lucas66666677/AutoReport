@@ -1,0 +1,161 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+.preview-pane {
+  color: inherit;
+  line-height: 1.65;
+}
+
+.preview-pane h1 {
+  font-size: 1.75rem;
+  font-weight: 600;
+  margin: 0 0 0.75rem;
+  color: inherit;
+}
+
+.preview-pane h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  margin: 1.25rem 0 0.5rem;
+  color: inherit;
+}
+
+.preview-pane h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin: 1rem 0 0.5rem;
+  color: inherit;
+}
+
+.preview-pane p {
+  margin: 0 0 0.75rem;
+}
+
+.preview-pane img {
+  max-width: 100%;
+  height: auto;
+}
+
+/* PDF 匯出模式：僅 HEX/rgb，避免 html2canvas 解析 oklch 崩潰 */
+#pdf-preview-content.pdf-print-mode,
+.pdf-export-surface.pdf-print-mode {
+  color: #1a1a1a !important;
+  background-color: #ffffff !important;
+}
+
+#pdf-preview-content.pdf-print-mode h1 {
+  color: #111827 !important;
+}
+
+#pdf-preview-content.pdf-print-mode h2 {
+  color: #1f2937 !important;
+}
+
+#pdf-preview-content.pdf-print-mode h3 {
+  color: #374151 !important;
+}
+
+#pdf-preview-content .pdf-plot-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1.5rem auto;
+  border: 1px solid #d1d5db;
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+  break-inside: avoid;
+  page-break-inside: avoid;
+}
+
+#pdf-preview-content a,
+#pdf-preview-content.pdf-print-mode a {
+  color: #2563eb;
+}
+
+#pdf-preview-content.pdf-print-mode strong {
+  color: #111827;
+}
+
+#pdf-preview-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0.75rem 0;
+}
+
+#pdf-preview-content th,
+#pdf-preview-content td {
+  border: 1px solid #d1d5db;
+  padding: 0.5rem 0.75rem;
+}
+
+.dark #pdf-preview-content th,
+.dark #pdf-preview-content td {
+  border-color: #374151;
+}
+
+#pdf-preview-content.pdf-print-mode th,
+#pdf-preview-content.pdf-print-mode td {
+  border-color: #d1d5db !important;
+  color: #1a1a1a !important;
+}
+
+/* KaTeX 數學公式（預覽區深色背景上的可讀性） */
+.preview-pane .markdown-preview .katex {
+  font-size: 1.05em;
+}
+
+.preview-pane .markdown-preview .katex-display {
+  margin: 1rem 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.preview-pane code {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.875em;
+  background: #f3f4f6;
+  padding: 0.125rem 0.375rem;
+  border-radius: 0.25rem;
+}
+
+.preview-pane pre {
+  background: #f9fafb;
+  border: 1px solid #e5e7eb;
+  padding: 0.75rem 1rem;
+  border-radius: 0.375rem;
+  overflow-x: auto;
+  margin: 0 0 1rem;
+}
+
+.dark .preview-pane code {
+  background: #1e293b;
+}
+
+.dark .preview-pane pre {
+  background: #0f172a;
+  border-color: #1f2937;
+}
+
+#pdf-preview-content.pdf-print-mode code {
+  color: #111827 !important;
+  background: #f3f4f6 !important;
+}
+
+#pdf-preview-content.pdf-print-mode pre {
+  color: #111827 !important;
+  background: #f9fafb !important;
+  border: 1px solid #e5e7eb !important;
+}
+
+.preview-pane pre code {
+  background: transparent;
+  padding: 0;
+}
