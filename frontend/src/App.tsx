@@ -42,12 +42,6 @@ const THEME_STORAGE_KEY = 'autolabreport-theme'
 const REMARK_PLUGINS = [remarkMath]
 const REHYPE_PLUGINS = [rehypeKatex, rehypeRaw]
 
-const TABLE_TEMPLATE = `| 欄位 1 | 欄位 2 | 欄位 3 |
-| --- | --- | --- |
-| 資料 1 | 資料 2 | 資料 3 |
-| 資料 4 | 資料 5 | 資料 6 |
-`
-
 type SyncStatus =
   | 'pending'
   | 'rendering'
@@ -93,12 +87,20 @@ function ToolbarIconButton({
   )
 }
 
-function cleanLlmPreamble(text: string): string {
-  const match = text.match(/^#\s+.+$/m)
-  if (!match || match.index === undefined) {
-    return text
-  }
-  return text.slice(match.index).trimStart()
+function cleanLlmFluff(text: string): string {
+  return text
+    .replace(/^[^\r\n]*(好的|當然|這是一份|以下是)[^\r\n]*(?:\r?\n|$)/, '')
+    .replace(/(?:\r?\n)?[^\r\n]*(希望這|如果有任何問題|以上就是)[^\r\n]*\s*$/, '')
+    .trim()
+}
+
+function smartFormat(text: string): string {
+  return text
+    .replace(/\s*([。，！？；：])\s*/g, '$1')
+    .replace(/\s+([.,!?;:])/g, '$1')
+    .replace(/\*\*\s+(.*?)\s+\*\*/g, '**$1**')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/^([*+-]|\d+\.)([^\s])/gm, '$1 $2')
 }
 
 function getInitialTheme() {
@@ -119,6 +121,9 @@ function App() {
   const [healthMessage, setHealthMessage] = useState<string | null>(null)
   const [healthLoading, setHealthLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
+  const [isTablePickerOpen, setIsTablePickerOpen] = useState(false)
+  const [tableRows, setTableRows] = useState(2)
+  const [tableCols, setTableCols] = useState(3)
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
   const imageInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -270,6 +275,22 @@ function App() {
     applyEditorEdit(`<div align="${align}">\n${selected}\n</div>`)
   }
 
+  function buildMarkdownTable(rows: number, cols: number) {
+    const safeRows = Number.isFinite(rows) ? Math.max(1, Math.min(rows, 20)) : 1
+    const safeCols = Number.isFinite(cols) ? Math.max(1, Math.min(cols, 10)) : 1
+    const headers = Array.from({ length: safeCols }, (_, index) => `Col ${index + 1}`)
+    const separator = Array.from({ length: safeCols }, () => '---')
+    const bodyRows = Array.from({ length: safeRows }, () =>
+      Array.from({ length: safeCols }, () => ' ').join(' | '),
+    )
+
+    return [
+      `| ${headers.join(' | ')} |`,
+      `|${separator.join('|')}|`,
+      ...bodyRows.map((row) => `| ${row} |`),
+    ].join('\n')
+  }
+
   function insertTable() {
     const ed = editorRef.current
     if (!ed) return
@@ -278,17 +299,8 @@ function App() {
     if (!selection) return
 
     const prefix = selection.isEmpty() ? '' : '\n'
-    applyEditorEdit(`${prefix}${TABLE_TEMPLATE}`)
-
-    const model = ed.getModel()
-    if (!model) return
-
-    const content = model.getValue()
-    const anchor = '欄位 1'
-    const index = content.lastIndexOf(anchor)
-    if (index >= 0) {
-      ed.setPosition(model.getPositionAt(index))
-    }
+    applyEditorEdit(`${prefix}${buildMarkdownTable(tableRows, tableCols)}`)
+    setIsTablePickerOpen(false)
     ed.focus()
   }
 
@@ -315,26 +327,12 @@ function App() {
   }
 
   function handleSmartFormat() {
-    const normalized = markdown
-      .replace(/\s+([，。！？；：、,.?!;:])/g, '$1')
-      .trim()
-
-    const paragraphs = normalized
-      .split(/\n{2,}|\n/)
-      .map((paragraph) => paragraph.trim())
-      .filter(Boolean)
-
-    const deduped = paragraphs.filter((paragraph, index, list) => {
-      return index === 0 || paragraph !== list[index - 1]
-    })
-
-    syncEditorValue(deduped.join('\n\n'))
+    syncEditorValue(smartFormat(markdown))
     editorRef.current?.focus()
   }
 
   function cleanLlmIntro() {
-    const cleaned = cleanLlmPreamble(markdown)
-    syncEditorValue(cleaned)
+    syncEditorValue(cleanLlmFluff(markdown))
     editorRef.current?.focus()
   }
 
@@ -575,9 +573,51 @@ function App() {
                 <ToolbarIconButton title="插入 Python 程式碼區塊" onClick={insertPythonCodeBlock}>
                   <Code className="h-[18px] w-[18px]" strokeWidth={2} />
                 </ToolbarIconButton>
-                <ToolbarIconButton title="插入表格 (3×2)" onClick={insertTable}>
-                  <Table className="h-[18px] w-[18px]" strokeWidth={2} />
-                </ToolbarIconButton>
+                <div className="relative">
+                  <ToolbarIconButton
+                    title="插入表格"
+                    onClick={() => setIsTablePickerOpen((current) => !current)}
+                  >
+                    <Table className="h-[18px] w-[18px]" strokeWidth={2} />
+                  </ToolbarIconButton>
+
+                  {isTablePickerOpen && (
+                    <div className="absolute left-0 top-full z-10 mt-2 w-56 rounded-lg border border-gray-200 bg-white p-3 shadow-lg dark:border-gray-700 dark:bg-gray-900">
+                      <div className="grid grid-cols-2 gap-3">
+                        <label className="text-xs font-medium text-gray-600 dark:text-gray-300">
+                          行數
+                          <input
+                            type="number"
+                            min={1}
+                            max={20}
+                            value={tableRows}
+                            onChange={(event) => setTableRows(Number(event.target.value))}
+                            className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 outline-none transition focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                          />
+                        </label>
+                        <label className="text-xs font-medium text-gray-600 dark:text-gray-300">
+                          列數
+                          <input
+                            type="number"
+                            min={1}
+                            max={10}
+                            value={tableCols}
+                            onChange={(event) => setTableCols(Number(event.target.value))}
+                            className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 outline-none transition focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                          />
+                        </label>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={insertTable}
+                        className="mt-3 w-full rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 active:scale-[0.98]"
+                      >
+                        插入
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
