@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState, type ImgHTMLAttributes, type ReactNode } from 'react'
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type ImgHTMLAttributes,
+  type ReactNode,
+} from 'react'
 import Editor from '@monaco-editor/react'
 import html2pdf from 'html2pdf.js'
 import 'katex/dist/katex.min.css'
@@ -7,6 +14,7 @@ import {
   AlignLeft,
   AlignRight,
   Bold,
+  Code,
   FileDown,
   FileText,
   Heading1,
@@ -112,6 +120,7 @@ function App() {
   const [healthLoading, setHealthLoading] = useState(false)
   const [exporting, setExporting] = useState(false)
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
+  const imageInputRef = useRef<HTMLInputElement | null>(null)
 
   const isEditorEmpty = !markdown.trim()
   const isDarkMode = theme === 'dark'
@@ -284,7 +293,25 @@ function App() {
   }
 
   function insertImage() {
-    insertAtCursor('![圖片說明](請替換為圖片網址)')
+    imageInputRef.current?.click()
+  }
+
+  function insertPythonCodeBlock() {
+    insertAtCursor('```python\n# 請在此輸入 Python 程式碼，系統將自動繪圖\n```')
+  }
+
+  function handleImageUpload(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+
+    if (!file) return
+
+    const reader = new FileReader()
+    reader.onload = () => {
+      if (typeof reader.result !== 'string') return
+      insertAtCursor(`![上傳圖片](${reader.result})`)
+    }
+    reader.readAsDataURL(file)
   }
 
   function handleSmartFormat() {
@@ -481,6 +508,14 @@ function App() {
 
       <main className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-2">
         <section className="flex min-h-0 flex-col border-b border-gray-200 transition-colors duration-300 dark:border-gray-800 lg:border-b-0 lg:border-r">
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={handleImageUpload}
+          />
+
           <div className="border-b border-gray-200 px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-gray-500 transition-colors duration-300 dark:border-gray-800 dark:text-gray-400">
             編輯區 — 貼上 LLM 報告
           </div>
@@ -536,6 +571,9 @@ function App() {
               <div className="flex items-center gap-1">
                 <ToolbarIconButton title="插入圖片" onClick={insertImage}>
                   <Image className="h-[18px] w-[18px]" strokeWidth={2} />
+                </ToolbarIconButton>
+                <ToolbarIconButton title="插入 Python 程式碼區塊" onClick={insertPythonCodeBlock}>
+                  <Code className="h-[18px] w-[18px]" strokeWidth={2} />
                 </ToolbarIconButton>
                 <ToolbarIconButton title="插入表格 (3×2)" onClick={insertTable}>
                   <Table className="h-[18px] w-[18px]" strokeWidth={2} />
