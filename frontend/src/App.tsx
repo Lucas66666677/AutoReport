@@ -22,10 +22,16 @@ import {
   Image,
   Italic,
   Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Pencil,
+  Plus,
   Redo2,
   Sparkles,
+  Star,
   Sun,
   Table,
+  Trash2,
   Undo2,
   Wand2,
 } from 'lucide-react'
@@ -36,8 +42,11 @@ import rehypeRaw from 'rehype-raw'
 import remarkMath from 'remark-math'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-const RENDER_DEBOUNCE_MS = 800
+const RENDER_DEBOUNCE_MS = 300
 const THEME_STORAGE_KEY = 'autolabreport-theme'
+const CONTENT_STORAGE_KEY = 'autoLabReport_content'
+const DOCUMENTS_STORAGE_KEY = 'autoLabReport_documents'
+const ACTIVE_DOCUMENT_ID_STORAGE_KEY = 'autoLabReport_activeDocumentId'
 
 const REMARK_PLUGINS = [remarkMath]
 const REHYPE_PLUGINS = [rehypeKatex, rehypeRaw]
@@ -49,6 +58,14 @@ type SyncStatus =
   | 'error'
   | 'exporting'
   | 'exportingPdf'
+
+type Document = {
+  id: string
+  title: string
+  content: string
+  createdAt: string
+  isFavorite: boolean
+}
 
 const TOOLBAR_ICON_BTN =
   'rounded-md p-2 text-gray-500 transition-all hover:bg-gray-100 hover:text-gray-900 active:scale-95 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-100'
@@ -95,12 +112,67 @@ function cleanLlmFluff(text: string): string {
 }
 
 function smartFormat(text: string): string {
-  return text
+  return removeConsecutiveDuplicateContent(text)
+    .replace(/\([A-Za-z\s]+\)/g, '')
+    .replace(/[（]\s*[A-Za-z\s]+[）]/g, '')
     .replace(/\s*([。，！？；：])\s*/g, '$1')
     .replace(/\s+([.,!?;:])/g, '$1')
     .replace(/\*\*\s+(.*?)\s+\*\*/g, '**$1**')
     .replace(/\n{3,}/g, '\n\n')
     .replace(/^([*+-]|\d+\.)([^\s])/gm, '$1 $2')
+}
+
+function removeConsecutiveDuplicateContent(text: string): string {
+  const dedupedParagraphs = text
+    .split(/(\n{2,})/)
+    .filter((chunk, index, chunks) => {
+      if (/^\n+$/.test(chunk)) return true
+
+      const previousContent = [...chunks.slice(0, index)]
+        .reverse()
+        .find((item) => !/^\n+$/.test(item))
+
+      return chunk.trim() !== previousContent?.trim()
+    })
+    .join('')
+
+  return dedupedParagraphs
+    .split('\n')
+    .map((line) => {
+      const sentences = line.match(/[^。！？.!?]+[。！？.!?]?/g)
+      if (!sentences) return line
+
+      return sentences
+        .filter((sentence, index, list) => {
+          return index === 0 || sentence.trim() !== list[index - 1].trim()
+        })
+        .join('')
+    })
+    .join('\n')
+}
+
+function convertTsvToMarkdownTable(text: string): string {
+  const rows = text
+    .trim()
+    .split(/\r?\n/)
+    .map((row) => row.split('\t').map((cell) => cell.trim().replace(/\|/g, '\\|')))
+    .filter((row) => row.some(Boolean))
+
+  if (!rows.length) return ''
+
+  const columnCount = Math.max(...rows.map((row) => row.length))
+  const normalizeRow = (row: string[]) =>
+    Array.from({ length: columnCount }, (_, index) => row[index] ?? '')
+
+  const [headerRow, ...bodyRows] = rows.map(normalizeRow)
+  const separator = Array.from({ length: columnCount }, () => '---')
+  const tableRows = bodyRows.length ? bodyRows : [Array.from({ length: columnCount }, () => '')]
+
+  return [
+    `| ${headerRow.join(' | ')} |`,
+    `|${separator.join('|')}|`,
+    ...tableRows.map((row) => `| ${row.join(' | ')} |`),
+  ].join('\n')
 }
 
 function getInitialTheme() {
@@ -112,8 +184,204 @@ function getInitialTheme() {
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 
+function createDocument(title = '未命名報告', content = ''): Document {
+  return {
+    id: `doc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    title,
+    content,
+    createdAt: new Date().toISOString(),
+    isFavorite: false,
+  }
+}
+
+function getInitialDocuments(): Document[] {
+  if (typeof window === 'undefined') return [createDocument()]
+
+  const savedDocuments = window.localStorage.getItem(DOCUMENTS_STORAGE_KEY)
+  if (savedDocuments) {
+    try {
+      const parsed = JSON.parse(savedDocuments) as Document[]
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed
+    } catch {
+      /* ignore invalid local storage payload */
+    }
+  }
+
+  const legacyContent = window.localStorage.getItem(CONTENT_STORAGE_KEY) ?? ''
+  return [createDocument('實驗報告', legacyContent)]
+}
+
+function getInitialActiveDocumentId(documents: Document[]) {
+  if (typeof window === 'undefined') return documents[0]?.id ?? ''
+
+  const savedId = window.localStorage.getItem(ACTIVE_DOCUMENT_ID_STORAGE_KEY)
+  if (savedId && documents.some((document) => document.id === savedId)) return savedId
+
+  return documents[0]?.id ?? ''
+}
+
+function getInitialWorkspace() {
+  const documents = getInitialDocuments()
+  return {
+    documents,
+    activeDocumentId: getInitialActiveDocumentId(documents),
+  }
+}
+
+function DocumentSidebar({
+  documents,
+  activeDocumentId,
+  isCollapsed,
+  onToggleCollapsed,
+  onCreateDocument,
+  onSelectDocument,
+  onRenameDocument,
+  onDeleteDocument,
+  onToggleFavorite,
+}: {
+  documents: Document[]
+  activeDocumentId: string
+  isCollapsed: boolean
+  onToggleCollapsed: () => void
+  onCreateDocument: () => void
+  onSelectDocument: (id: string) => void
+  onRenameDocument: (id: string) => void
+  onDeleteDocument: (id: string) => void
+  onToggleFavorite: (id: string) => void
+}) {
+  const favoriteDocuments = documents.filter((document) => document.isFavorite)
+  const normalDocuments = documents.filter((document) => !document.isFavorite)
+
+  if (isCollapsed) {
+    return (
+      <aside className="flex w-14 shrink-0 flex-col items-center border-r border-gray-200 bg-white py-3 transition-colors duration-300 dark:border-gray-800 dark:bg-gray-950">
+        <button
+          type="button"
+          title="展開工作區"
+          onClick={onToggleCollapsed}
+          className={TOOLBAR_ICON_BTN}
+        >
+          <PanelLeftOpen className="h-[18px] w-[18px]" strokeWidth={2} />
+        </button>
+        <button
+          type="button"
+          title="新增檔案"
+          onClick={onCreateDocument}
+          className={`${TOOLBAR_ICON_BTN} mt-2`}
+        >
+          <Plus className="h-[18px] w-[18px]" strokeWidth={2} />
+        </button>
+      </aside>
+    )
+  }
+
+  function renderDocumentButton(document: Document) {
+    const isActive = document.id === activeDocumentId
+
+    return (
+      <div
+        key={document.id}
+        className={`group flex items-center gap-1 rounded-md px-2 py-1.5 transition ${
+          isActive
+            ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/50 dark:text-blue-200'
+            : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
+        }`}
+      >
+        <button
+          type="button"
+          title={document.title}
+          onClick={() => onSelectDocument(document.id)}
+          className="min-w-0 flex-1 truncate text-left text-sm font-medium"
+        >
+          {document.title}
+        </button>
+        <button
+          type="button"
+          title={document.isFavorite ? '取消收藏' : '收藏'}
+          onClick={() => onToggleFavorite(document.id)}
+          className="rounded p-1 text-gray-400 transition hover:bg-gray-200 hover:text-amber-500 dark:hover:bg-gray-700"
+        >
+          <Star
+            className={`h-4 w-4 ${document.isFavorite ? 'fill-amber-400 text-amber-400' : ''}`}
+            strokeWidth={2}
+          />
+        </button>
+        <button
+          type="button"
+          title="重新命名"
+          onClick={() => onRenameDocument(document.id)}
+          className="rounded p-1 text-gray-400 opacity-0 transition hover:bg-gray-200 hover:text-gray-700 group-hover:opacity-100 dark:hover:bg-gray-700 dark:hover:text-gray-200"
+        >
+          <Pencil className="h-4 w-4" strokeWidth={2} />
+        </button>
+        <button
+          type="button"
+          title="刪除檔案"
+          onClick={() => onDeleteDocument(document.id)}
+          className="rounded p-1 text-gray-400 opacity-0 transition hover:bg-red-100 hover:text-red-600 group-hover:opacity-100 dark:hover:bg-red-950/50 dark:hover:text-red-300"
+        >
+          <Trash2 className="h-4 w-4" strokeWidth={2} />
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <aside className="flex w-72 shrink-0 flex-col border-r border-gray-200 bg-white transition-colors duration-300 dark:border-gray-800 dark:bg-gray-950">
+      <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-gray-800">
+        <div>
+          <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">工作區</h2>
+          <p className="text-xs text-gray-500 dark:text-gray-400">{documents.length} 份文件</p>
+        </div>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            title="新增檔案"
+            onClick={onCreateDocument}
+            className={TOOLBAR_ICON_BTN}
+          >
+            <Plus className="h-[18px] w-[18px]" strokeWidth={2} />
+          </button>
+          <button
+            type="button"
+            title="收合工作區"
+            onClick={onToggleCollapsed}
+            className={TOOLBAR_ICON_BTN}
+          >
+            <PanelLeftClose className="h-[18px] w-[18px]" strokeWidth={2} />
+          </button>
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
+        {favoriteDocuments.length > 0 && (
+          <section className="mb-4">
+            <h3 className="mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
+              收藏
+            </h3>
+            <div className="space-y-1">{favoriteDocuments.map(renderDocumentButton)}</div>
+          </section>
+        )}
+
+        <section>
+          <h3 className="mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
+            所有檔案
+          </h3>
+          <div className="space-y-1">{normalDocuments.map(renderDocumentButton)}</div>
+        </section>
+      </div>
+    </aside>
+  )
+}
+
 function App() {
-  const [markdown, setMarkdown] = useState('')
+  const [initialWorkspace] = useState(getInitialWorkspace)
+  const [documents, setDocuments] = useState<Document[]>(initialWorkspace.documents)
+  const [activeDocumentId, setActiveDocumentId] = useState(initialWorkspace.activeDocumentId)
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
+  const activeDocument =
+    documents.find((document) => document.id === activeDocumentId) ?? documents[0]
+  const [markdown, setMarkdown] = useState(activeDocument?.content ?? '')
   const [preview, setPreview] = useState('')
   const [theme, setTheme] = useState<'light' | 'dark'>(getInitialTheme)
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('synced')
@@ -124,8 +392,14 @@ function App() {
   const [isTablePickerOpen, setIsTablePickerOpen] = useState(false)
   const [tableRows, setTableRows] = useState(2)
   const [tableCols, setTableCols] = useState(3)
+  const [isOutlineModalOpen, setIsOutlineModalOpen] = useState(false)
+  const [outlineExampleText, setOutlineExampleText] = useState('')
+  const [outlineLoading, setOutlineLoading] = useState(false)
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
+  const editorScrollDisposableRef = useRef<{ dispose: () => void } | null>(null)
+  const editorPasteCleanupRef = useRef<(() => void) | null>(null)
   const imageInputRef = useRef<HTMLInputElement | null>(null)
+  const previewRef = useRef<HTMLDivElement | null>(null)
 
   const isEditorEmpty = !markdown.trim()
   const isDarkMode = theme === 'dark'
@@ -134,6 +408,38 @@ function App() {
     document.documentElement.classList.toggle('dark', isDarkMode)
     window.localStorage.setItem(THEME_STORAGE_KEY, theme)
   }, [theme, isDarkMode])
+
+  useEffect(() => {
+    window.localStorage.setItem(DOCUMENTS_STORAGE_KEY, JSON.stringify(documents))
+  }, [documents])
+
+  useEffect(() => {
+    window.localStorage.setItem(ACTIVE_DOCUMENT_ID_STORAGE_KEY, activeDocumentId)
+  }, [activeDocumentId])
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      window.localStorage.setItem(CONTENT_STORAGE_KEY, markdown)
+      setDocuments((currentDocuments) =>
+        currentDocuments.map((document) =>
+          document.id === activeDocumentId && document.content !== markdown
+            ? { ...document, content: markdown }
+            : document,
+        ),
+      )
+    }, 300)
+
+    return () => {
+      clearTimeout(timer)
+    }
+  }, [activeDocumentId, markdown])
+
+  useEffect(() => {
+    return () => {
+      editorScrollDisposableRef.current?.dispose()
+      editorPasteCleanupRef.current?.()
+    }
+  }, [])
 
   useEffect(() => {
     if (isEditorEmpty) {
@@ -191,6 +497,18 @@ function App() {
     editorRef.current?.setValue(value)
   }
 
+  function syncPreviewScroll() {
+    const ed = editorRef.current
+    const preview = previewRef.current
+    if (!ed || !preview) return
+
+    const editorMaxScroll = ed.getScrollHeight() - ed.getLayoutInfo().height
+    const scrollRatio = editorMaxScroll > 0 ? ed.getScrollTop() / editorMaxScroll : 0
+    const previewMaxScroll = preview.scrollHeight - preview.clientHeight
+
+    preview.scrollTop = scrollRatio * Math.max(previewMaxScroll, 0)
+  }
+
   function applyEditorEdit(text: string, cursorOffset?: number) {
     const ed = editorRef.current
     if (!ed) return
@@ -213,6 +531,18 @@ function App() {
 
   function insertAtCursor(snippet: string, cursorOffset?: number) {
     applyEditorEdit(snippet, cursorOffset)
+  }
+
+  function handleEditorPaste(event: ClipboardEvent) {
+    const pastedText = event.clipboardData?.getData('text/plain') ?? ''
+    if (!pastedText.includes('\t') || !/\r?\n/.test(pastedText)) return
+
+    const table = convertTsvToMarkdownTable(pastedText)
+    if (!table) return
+
+    event.preventDefault()
+    event.stopPropagation()
+    insertAtCursor(table)
   }
 
   function wrapInlineMarkdown(marker: string, placeholder: string) {
@@ -336,8 +666,102 @@ function App() {
     editorRef.current?.focus()
   }
 
+  async function generateOutline() {
+    setOutlineLoading(true)
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/generate-outline`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sample_structure: outlineExampleText }),
+      })
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`)
+      }
+
+      const data = (await res.json()) as { markdown: string }
+      const outlineMarkdown = data.markdown.trim()
+      if (!outlineMarkdown) {
+        throw new Error('後端未回傳大綱內容')
+      }
+
+      if (editorRef.current) {
+        insertAtCursor(`${markdown.trim() ? '\n\n' : ''}${outlineMarkdown}\n`)
+      } else {
+        syncEditorValue(markdown.trim() ? `${markdown}\n\n${outlineMarkdown}\n` : `${outlineMarkdown}\n`)
+      }
+
+      setIsOutlineModalOpen(false)
+      setOutlineExampleText('')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '產生大綱失敗'
+      window.alert(`產生大綱失敗：${message}`)
+    } finally {
+      setOutlineLoading(false)
+    }
+  }
+
   function toggleTheme() {
     setTheme((current) => (current === 'dark' ? 'light' : 'dark'))
+  }
+
+  function loadDocument(document: Document) {
+    setActiveDocumentId(document.id)
+    syncEditorValue(document.content)
+  }
+
+  function createNewDocument() {
+    const nextDocument = createDocument(`未命名報告 ${documents.length + 1}`)
+    setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
+    loadDocument(nextDocument)
+  }
+
+  function selectDocument(id: string) {
+    const nextDocument = documents.find((document) => document.id === id)
+    if (!nextDocument) return
+
+    loadDocument(nextDocument)
+  }
+
+  function renameDocument(id: string) {
+    const targetDocument = documents.find((document) => document.id === id)
+    if (!targetDocument) return
+
+    const nextTitle = window.prompt('重新命名檔案', targetDocument.title)?.trim()
+    if (!nextTitle) return
+
+    setDocuments((currentDocuments) =>
+      currentDocuments.map((document) =>
+        document.id === id ? { ...document, title: nextTitle } : document,
+      ),
+    )
+  }
+
+  function deleteDocument(id: string) {
+    const targetDocument = documents.find((document) => document.id === id)
+    if (!targetDocument) return
+    if (!window.confirm(`刪除「${targetDocument.title}」？此操作無法復原。`)) return
+
+    const remainingDocuments = documents.filter((document) => document.id !== id)
+    if (!remainingDocuments.length) {
+      const replacementDocument = createDocument()
+      setDocuments([replacementDocument])
+      loadDocument(replacementDocument)
+      return
+    }
+
+    setDocuments(remainingDocuments)
+    if (id === activeDocumentId) {
+      loadDocument(remainingDocuments[0])
+    }
+  }
+
+  function toggleDocumentFavorite(id: string) {
+    setDocuments((currentDocuments) =>
+      currentDocuments.map((document) =>
+        document.id === id ? { ...document, isFavorite: !document.isFavorite } : document,
+      ),
+    )
   }
 
   async function downloadExportFile(endpoint: string, filename: string, status: SyncStatus) {
@@ -460,12 +884,25 @@ function App() {
   const isGenerating = syncStatus === 'pending' || syncStatus === 'rendering'
 
   return (
-    <div className="flex h-full min-h-screen flex-col bg-gray-50 text-gray-900 transition-colors duration-300 dark:bg-gray-900 dark:text-gray-100">
+    <div className="flex h-full min-h-screen bg-gray-50 text-gray-900 transition-colors duration-300 dark:bg-gray-900 dark:text-gray-100">
+      <DocumentSidebar
+        documents={documents}
+        activeDocumentId={activeDocumentId}
+        isCollapsed={isSidebarCollapsed}
+        onToggleCollapsed={() => setIsSidebarCollapsed((current) => !current)}
+        onCreateDocument={createNewDocument}
+        onSelectDocument={selectDocument}
+        onRenameDocument={renameDocument}
+        onDeleteDocument={deleteDocument}
+        onToggleFavorite={toggleDocumentFavorite}
+      />
+
+      <div className="flex min-w-0 flex-1 flex-col">
       <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-gray-200 bg-white px-5 py-4 transition-colors duration-300 dark:border-gray-800 dark:bg-gray-950">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">AutoLabReport</h1>
           <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
-            Phase 4.6 — Word 化工具列 · 所見即所得匯出
+            {activeDocument?.title ?? '未命名報告'} · Word 化工具列 · 所見即所得匯出
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-3">
@@ -624,6 +1061,16 @@ function App() {
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
+                title="生成報告大綱"
+                onClick={() => setIsOutlineModalOpen(true)}
+                className="flex items-center gap-1.5 rounded-lg border border-blue-400/50 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800 shadow-sm transition-all hover:bg-blue-100 active:scale-[0.98] dark:border-blue-500/35 dark:bg-blue-500/15 dark:text-blue-200 dark:hover:bg-blue-500/25"
+              >
+                <Sparkles className="h-4 w-4" strokeWidth={2} />
+                <span className="hidden sm:inline">生成報告大綱</span>
+              </button>
+
+              <button
+                type="button"
                 title="智慧排版修復 — 清理標點空白與連續重複段落"
                 onClick={handleSmartFormat}
                 disabled={isEditorEmpty}
@@ -689,6 +1136,19 @@ function App() {
               value={markdown}
               onMount={(ed) => {
                 editorRef.current = ed
+                editorScrollDisposableRef.current?.dispose()
+                editorScrollDisposableRef.current = ed.onDidScrollChange((event) => {
+                  if (event.scrollTopChanged) {
+                    syncPreviewScroll()
+                  }
+                })
+
+                editorPasteCleanupRef.current?.()
+                const editorDomNode = ed.getDomNode()
+                editorDomNode?.addEventListener('paste', handleEditorPaste)
+                editorPasteCleanupRef.current = () => {
+                  editorDomNode?.removeEventListener('paste', handleEditorPaste)
+                }
               }}
               onChange={(value) => updateMarkdownValue(value ?? '')}
               options={{
@@ -706,7 +1166,10 @@ function App() {
           <div className="border-b border-gray-200 px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-gray-500 transition-colors duration-300 dark:border-gray-800 dark:text-gray-400">
             預覽區 — 所見即所得
           </div>
-          <div className="preview-pane flex-1 overflow-auto bg-gray-100 p-4 transition-colors duration-300 dark:bg-gray-900">
+          <div
+            ref={previewRef}
+            className="preview-pane flex-1 overflow-auto bg-gray-100 p-4 transition-colors duration-300 dark:bg-gray-900"
+          >
             {renderError ? (
               <p className="text-sm text-red-400">預覽錯誤：{renderError}</p>
             ) : isEditorEmpty ? (
@@ -736,6 +1199,50 @@ function App() {
           </div>
         </section>
       </main>
+      </div>
+
+      {isOutlineModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4">
+          <div className="w-full max-w-2xl rounded-lg border border-gray-200 bg-white shadow-2xl transition-colors duration-300 dark:border-gray-700 dark:bg-gray-950">
+            <div className="border-b border-gray-200 px-5 py-4 dark:border-gray-800">
+              <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+                生成報告大綱
+              </h2>
+              <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                貼上範例結構，系統會生成對應的 Markdown 實驗報告大綱。
+              </p>
+            </div>
+
+            <div className="px-5 py-4">
+              <textarea
+                value={outlineExampleText}
+                onChange={(event) => setOutlineExampleText(event.target.value)}
+                placeholder={'# 實驗報告\n## 實驗目的\n## 實驗原理\n## 實驗步驟\n## 結果與討論'}
+                className="h-64 w-full resize-none rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm leading-6 text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+              />
+            </div>
+
+            <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-5 py-4 dark:border-gray-800">
+              <button
+                type="button"
+                onClick={() => setIsOutlineModalOpen(false)}
+                disabled={outlineLoading}
+                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                onClick={generateOutline}
+                disabled={outlineLoading}
+                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {outlineLoading ? '產生中...' : '產生大綱'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

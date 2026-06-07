@@ -20,6 +20,8 @@ def _configure_matplotlib_cjk() -> None:
     """Matplotlib 圖表標題/軸標籤中文防豆腐塊（每次 exec 前也會重設）。"""
     plt.rcParams["font.sans-serif"] = ["Microsoft JhengHei", "SimHei", "Arial"]
     plt.rcParams["axes.unicode_minus"] = False
+    plt.rcParams["text.usetex"] = False
+    plt.rcParams["mathtext.fontset"] = "cm"
 
 
 _configure_matplotlib_cjk()
@@ -30,6 +32,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+
+try:
+    import scipy
+except ImportError:
+    scipy = None
 
 app = FastAPI(title="AutoLabReport API", version="0.3.0")
 
@@ -52,6 +59,14 @@ class RenderResponse(BaseModel):
     markdown: str
 
 
+class OutlineRequest(BaseModel):
+    sample_structure: str
+
+
+class OutlineResponse(BaseModel):
+    markdown: str
+
+
 def _noop_show(*_args: Any, **_kwargs: Any) -> None:
     """讓 plt.show() 在伺服器上安全通過，不彈窗、不阻塞。"""
     return None
@@ -70,6 +85,8 @@ def _run_python_code(code: str) -> tuple[list[plt.Figure], str | None]:
         "np": np,
         "plt": plt,
     }
+    if scipy is not None:
+        namespace["scipy"] = scipy
 
     try:
         exec(code, namespace)
@@ -221,6 +238,59 @@ def export_markdown_to_docx(text: str) -> bytes:
         ) from exc
 
 
+def _extract_outline_headings(sample_structure: str) -> list[tuple[int, str]]:
+    headings: list[tuple[int, str]] = []
+
+    for raw_line in sample_structure.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        markdown_match = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if markdown_match:
+            headings.append((len(markdown_match.group(1)), markdown_match.group(2).strip()))
+            continue
+
+        numbered_match = re.match(r"^(?:\d+(?:\.\d+)*[.)、]?\s*)(.+)$", line)
+        if numbered_match:
+            title = numbered_match.group(1).strip()
+            level = 2 if "." not in line.split(maxsplit=1)[0] else 3
+            headings.append((level, title))
+
+    return headings
+
+
+def generate_outline_from_sample(sample_structure: str) -> str:
+    headings = _extract_outline_headings(sample_structure)
+    if not headings:
+        headings = [
+            (1, "實驗報告"),
+            (2, "實驗目的"),
+            (2, "實驗原理"),
+            (2, "實驗材料與方法"),
+            (2, "實驗數據與結果"),
+            (2, "討論"),
+            (2, "結論"),
+            (2, "參考資料"),
+        ]
+
+    sections: list[str] = []
+    for level, title in headings:
+        safe_level = max(1, min(level, 6))
+        sections.append(f"{'#' * safe_level} {title}")
+        if safe_level == 1:
+            sections.append("")
+            sections.append("- 課程/實驗名稱：")
+            sections.append("- 姓名：")
+            sections.append("- 日期：")
+        else:
+            sections.append("")
+            sections.append("> 請在此填入內容。")
+        sections.append("")
+
+    return "\n".join(sections).strip() + "\n"
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok", "service": "AutoLabReport API"}
@@ -229,6 +299,11 @@ def health():
 @app.post("/api/render", response_model=RenderResponse)
 def render(body: RenderRequest):
     return RenderResponse(markdown=render_markdown(body.markdown))
+
+
+@app.post("/api/generate-outline", response_model=OutlineResponse)
+def generate_outline(body: OutlineRequest):
+    return OutlineResponse(markdown=generate_outline_from_sample(body.sample_structure))
 
 
 @app.post("/api/export")
