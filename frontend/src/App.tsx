@@ -81,6 +81,183 @@ const LATEX_SNIPPETS = [
   },
 ]
 
+const DEFAULT_TEMPLATES = [
+  {
+    id: 'electronics-lab-report',
+    title: '電子電路實驗標準結報',
+    category: '電子電路',
+    description: '適合基礎電路、RC/RL 暫態、放大器量測與誤差討論的完整結報骨架。',
+    content: `# 電子電路實驗標準結報
+
+## 實驗名稱
+
+## 實驗目的
+- 
+
+## 實驗原理
+請整理主要定律、公式與電路模型。
+
+## 實驗器材
+| 器材 | 型號/規格 | 數量 |
+|---|---|---|
+| 示波器 |  |  |
+| 函數產生器 |  |  |
+| 電阻/電容/電感 |  |  |
+
+## 實驗步驟
+1. 
+2. 
+3. 
+
+## 數據紀錄
+| 測量項目 | 理論值 | 實測值 | 誤差 |
+|---|---|---|---|
+|  |  |  |  |
+
+## 結果分析
+
+## 討論與誤差來源
+
+## 結論
+`,
+  },
+  {
+    id: 'general-physics-prelab',
+    title: '普物實驗預報',
+    category: '普通物理',
+    description: '用於實驗前預習，包含目的、原理推導、預期現象與風險檢核。',
+    content: `# 普物實驗預報
+
+## 實驗題目
+
+## 預習目標
+- 
+
+## 理論背景
+請寫下本實驗涉及的物理概念與核心公式。
+
+## 預期實驗流程
+1. 
+2. 
+3. 
+
+## 預期數據與圖形
+
+## 可能誤差來源
+- 儀器解析度：
+- 操作誤差：
+- 環境因素：
+
+## 安全注意事項
+
+## 預習問題
+1. 
+2. 
+`,
+  },
+  {
+    id: 'chemistry-analysis-report',
+    title: '化學分析實驗結報',
+    category: '化學分析',
+    description: '適合滴定、濃度分析、吸光度量測與標準曲線實驗。',
+    content: `# 化學分析實驗結報
+
+## 實驗名稱
+
+## 實驗目的
+
+## 反應原理
+請列出反應式、平衡關係與計算公式。
+
+## 藥品與儀器
+| 名稱 | 濃度/規格 | 用途 |
+|---|---|---|
+|  |  |  |
+
+## 實驗步驟
+
+## 原始數據
+| 試次 | 讀值 1 | 讀值 2 | 平均 |
+|---|---|---|---|
+| 1 |  |  |  |
+
+## 計算過程
+
+## 結果與討論
+
+## 結論
+`,
+  },
+  {
+    id: 'digital-logic-lab',
+    title: '數位邏輯實驗報告',
+    category: '數位邏輯',
+    description: '支援真值表、布林代數、邏輯閘模擬與電路驗證。',
+    content: `# 數位邏輯實驗報告
+
+## 實驗主題
+
+## 實驗目的
+
+## 理論基礎
+### 布林代數
+
+### 邏輯閘關係
+
+## 設計規格
+
+## 真值表
+| A | B | 輸出 Y |
+|---|---|---|
+| 0 | 0 |  |
+| 0 | 1 |  |
+| 1 | 0 |  |
+| 1 | 1 |  |
+
+## 電路圖 / Mermaid
+\`\`\`mermaid
+flowchart LR
+  A[A] --> G1[Logic Gate]
+  B[B] --> G1
+  G1 --> Y[Y]
+\`\`\`
+
+## 實驗結果
+
+## 問題討論
+
+## 結論
+`,
+  },
+  {
+    id: 'data-analysis-lab',
+    title: '數據分析與誤差報告',
+    category: '資料分析',
+    description: '聚焦量測資料整理、標準差、不確定度、圖表與線性回歸分析。',
+    content: `# 數據分析與誤差報告
+
+## 實驗背景
+
+## 量測資料
+| 序號 | x | y | 備註 |
+|---|---|---|---|
+| 1 |  |  |  |
+
+## 統計量
+$$s = \\sqrt{\\frac{\\sum_{i=1}^N (x_i - \\bar{x})^2}{N-1}}$$
+
+## 圖表與回歸
+\`\`\`python
+# 請在此輸入 Python 程式碼，系統將自動繪圖
+\`\`\`
+
+## 誤差分析
+
+## 結論
+`,
+  },
+]
+
 type SyncStatus =
   | 'pending'
   | 'rendering'
@@ -94,8 +271,13 @@ type Document = {
   title: string
   content: string
   createdAt: string
+  updatedAt?: string
   isFavorite: boolean
+  type: 'file' | 'folder'
+  parentId: string | null
 }
+
+type AppView = 'dashboard' | 'editor' | 'templates'
 
 type WebrtcStatusEvent = {
   connected: boolean
@@ -123,7 +305,11 @@ type PendingAiSelection = {
 }
 
 const TOOLBAR_ICON_BTN =
-  'rounded-md p-2 text-gray-500 transition-all hover:bg-gray-100 hover:text-gray-900 active:scale-95 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-100'
+  'rounded-md p-2 text-zinc-500 transition-all hover:bg-zinc-200/50 hover:text-zinc-800 active:scale-95 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100'
+const SUBTLE_BUTTON =
+  'rounded-md border border-zinc-200 px-3 py-1.5 text-sm font-medium text-zinc-600 transition-all hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800'
+const SCROLLBAR_HIDE =
+  'scrollbar-hide [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'
 
 function MermaidBlock({ chart }: { chart: string }) {
   const [svg, setSvg] = useState('')
@@ -161,7 +347,7 @@ function MermaidBlock({ chart }: { chart: string }) {
   }
 
   if (!svg) {
-    return <p className="text-sm text-gray-500">正在渲染 Mermaid 圖表...</p>
+    return <p className="text-sm text-zinc-500">正在渲染 Mermaid 圖表...</p>
   }
 
   return (
@@ -193,7 +379,7 @@ const MARKDOWN_COMPONENTS = {
 }
 
 function ToolbarDivider() {
-  return <div className="mx-2 h-6 w-px shrink-0 bg-gray-300 dark:bg-gray-700" aria-hidden />
+  return <div className="mx-2 h-6 w-px shrink-0 bg-zinc-200/60 dark:bg-zinc-700" aria-hidden />
 }
 
 function ToolbarIconButton({
@@ -327,13 +513,41 @@ function getInitialTheme() {
   return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
 }
 
-function createDocument(title = '未命名報告', content = ''): Document {
+function createDocument(title = '未命名報告', content = '', parentId: string | null = null): Document {
+  const now = new Date().toISOString()
   return {
     id: `doc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     title,
     content,
-    createdAt: new Date().toISOString(),
+    createdAt: now,
+    updatedAt: now,
     isFavorite: false,
+    type: 'file',
+    parentId,
+  }
+}
+
+function createFolder(title = '新資料夾', parentId: string | null = null): Document {
+  const now = new Date().toISOString()
+  return {
+    id: `folder-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    title,
+    content: '',
+    createdAt: now,
+    updatedAt: now,
+    isFavorite: false,
+    type: 'folder',
+    parentId,
+  }
+}
+
+function normalizeDocument(document: Document): Document {
+  return {
+    ...document,
+    content: document.content ?? '',
+    isFavorite: document.isFavorite ?? false,
+    type: document.type ?? 'file',
+    parentId: document.parentId ?? null,
   }
 }
 
@@ -353,7 +567,7 @@ function getInitialDocuments(): Document[] {
   if (savedDocuments) {
     try {
       const parsed = JSON.parse(savedDocuments) as Document[]
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed.map(normalizeDocument)
     } catch {
       /* ignore invalid local storage payload */
     }
@@ -364,12 +578,15 @@ function getInitialDocuments(): Document[] {
 }
 
 function getInitialActiveDocumentId(documents: Document[]) {
-  if (typeof window === 'undefined') return documents[0]?.id ?? ''
+  const firstFileId = documents.find((document) => document.type === 'file')?.id ?? ''
+  if (typeof window === 'undefined') return firstFileId
 
   const savedId = window.localStorage.getItem(ACTIVE_DOCUMENT_ID_STORAGE_KEY)
-  if (savedId && documents.some((document) => document.id === savedId)) return savedId
+  if (savedId && documents.some((document) => document.id === savedId && document.type === 'file')) {
+    return savedId
+  }
 
-  return documents[0]?.id ?? ''
+  return firstFileId
 }
 
 function getInitialWorkspace() {
@@ -383,9 +600,13 @@ function getInitialWorkspace() {
 function DocumentSidebar({
   documents,
   activeDocumentId,
+  currentView,
   isCollapsed,
   onToggleCollapsed,
+  onChangeView,
   onCreateDocument,
+  onCreateFolder,
+  onCreateDocumentInFolder,
   onSelectDocument,
   onRenameDocument,
   onDeleteDocument,
@@ -393,20 +614,45 @@ function DocumentSidebar({
 }: {
   documents: Document[]
   activeDocumentId: string
+  currentView: AppView
   isCollapsed: boolean
   onToggleCollapsed: () => void
+  onChangeView: (view: AppView) => void
   onCreateDocument: () => void
+  onCreateFolder: () => void
+  onCreateDocumentInFolder: (parentId: string) => void
   onSelectDocument: (id: string) => void
   onRenameDocument: (id: string) => void
   onDeleteDocument: (id: string) => void
   onToggleFavorite: (id: string) => void
 }) {
-  const favoriteDocuments = documents.filter((document) => document.isFavorite)
-  const normalDocuments = documents.filter((document) => !document.isFavorite)
+  const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(
+    () => new Set(documents.filter((document) => document.type === 'folder').map((document) => document.id)),
+  )
+  const fileDocuments = documents.filter((document) => document.type === 'file')
+  const favoriteDocuments = fileDocuments.filter((document) => document.isFavorite)
+
+  function toggleFolder(folderId: string) {
+    setExpandedFolderIds((current) => {
+      const next = new Set(current)
+      if (next.has(folderId)) next.delete(folderId)
+      else next.add(folderId)
+      return next
+    })
+  }
+
+  function getChildren(parentId: string | null) {
+    return documents
+      .filter((document) => document.parentId === parentId)
+      .sort((left, right) => {
+        if (left.type !== right.type) return left.type === 'folder' ? -1 : 1
+        return left.title.localeCompare(right.title, 'zh-Hant')
+      })
+  }
 
   if (isCollapsed) {
     return (
-      <aside className="flex w-14 shrink-0 flex-col items-center border-r border-gray-200 bg-white py-3 transition-colors duration-300 dark:border-gray-800 dark:bg-gray-950">
+      <aside className="flex w-14 shrink-0 flex-col items-center border-r border-zinc-200 bg-zinc-100/50 py-3 transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950/70">
         <button
           type="button"
           title="展開工作區"
@@ -417,9 +663,33 @@ function DocumentSidebar({
         </button>
         <button
           type="button"
-          title="新增檔案"
+          title="總覽"
+          onClick={() => onChangeView('dashboard')}
+          className={`${TOOLBAR_ICON_BTN} mt-3`}
+        >
+          🏠
+        </button>
+        <button
+          type="button"
+          title="我的報告"
+          onClick={() => onChangeView('editor')}
+          className={TOOLBAR_ICON_BTN}
+        >
+          📝
+        </button>
+        <button
+          type="button"
+          title="模板市集"
+          onClick={() => onChangeView('templates')}
+          className={TOOLBAR_ICON_BTN}
+        >
+          ✨
+        </button>
+        <button
+          type="button"
+          title="新增報告"
           onClick={onCreateDocument}
-          className={`${TOOLBAR_ICON_BTN} mt-2`}
+          className={`${TOOLBAR_ICON_BTN} mt-auto`}
         >
           <Plus className="h-[18px] w-[18px]" strokeWidth={2} />
         </button>
@@ -427,73 +697,91 @@ function DocumentSidebar({
     )
   }
 
-  function renderDocumentButton(document: Document) {
+  function renderDocumentNode(document: Document, depth = 0): ReactNode {
     const isActive = document.id === activeDocumentId
+    const isFolder = document.type === 'folder'
+    const isExpanded = expandedFolderIds.has(document.id)
+    const children = isFolder ? getChildren(document.id) : []
 
     return (
-      <div
-        key={document.id}
-        className={`group flex items-center gap-1 rounded-md px-2 py-1.5 transition ${
-          isActive
-            ? 'bg-blue-50 text-blue-700 dark:bg-blue-950/50 dark:text-blue-200'
-            : 'text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800'
-        }`}
-      >
-        <button
-          type="button"
-          title={document.title}
-          onClick={() => onSelectDocument(document.id)}
-          className="min-w-0 flex-1 truncate text-left text-sm font-medium"
+      <div key={document.id}>
+        <div
+          className={`group flex items-center gap-1 rounded-md py-1.5 pr-2 transition ${
+            isActive && !isFolder
+              ? 'border border-zinc-200/50 bg-white font-medium text-zinc-900 shadow-sm dark:border-zinc-700/70 dark:bg-zinc-900 dark:text-zinc-100'
+              : 'text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
+          }`}
+          style={{ paddingLeft: `${10 + depth * 22}px` }}
         >
-          {document.title}
-        </button>
-        <button
-          type="button"
-          title={document.isFavorite ? '取消收藏' : '收藏'}
-          onClick={() => onToggleFavorite(document.id)}
-          className="rounded p-1 text-gray-400 transition hover:bg-gray-200 hover:text-amber-500 dark:hover:bg-gray-700"
-        >
-          <Star
-            className={`h-4 w-4 ${document.isFavorite ? 'fill-amber-400 text-amber-400' : ''}`}
-            strokeWidth={2}
-          />
-        </button>
-        <button
-          type="button"
-          title="重新命名"
-          onClick={() => onRenameDocument(document.id)}
-          className="rounded p-1 text-gray-400 opacity-0 transition hover:bg-gray-200 hover:text-gray-700 group-hover:opacity-100 dark:hover:bg-gray-700 dark:hover:text-gray-200"
-        >
-          <Pencil className="h-4 w-4" strokeWidth={2} />
-        </button>
-        <button
-          type="button"
-          title="刪除檔案"
-          onClick={() => onDeleteDocument(document.id)}
-          className="rounded p-1 text-gray-400 opacity-0 transition hover:bg-red-100 hover:text-red-600 group-hover:opacity-100 dark:hover:bg-red-950/50 dark:hover:text-red-300"
-        >
-          <Trash2 className="h-4 w-4" strokeWidth={2} />
-        </button>
+          <button
+            type="button"
+            title={document.title}
+            onClick={() => {
+              if (isFolder) toggleFolder(document.id)
+              else onSelectDocument(document.id)
+            }}
+            className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-left text-sm font-medium"
+          >
+            <span className="shrink-0">{isFolder ? (isExpanded ? '📂' : '📁') : '📄'}</span>
+            <span className="truncate">{document.title}</span>
+          </button>
+          {isFolder ? (
+            <button
+              type="button"
+              title="在此資料夾建立新報告"
+              onClick={() => {
+                setExpandedFolderIds((current) => new Set(current).add(document.id))
+                onCreateDocumentInFolder(document.id)
+              }}
+              className="rounded p-1 text-zinc-400 opacity-0 transition hover:bg-zinc-200/70 hover:text-blue-600 group-hover:opacity-100 dark:hover:bg-zinc-700 dark:hover:text-blue-300"
+            >
+              <Plus className="h-4 w-4" strokeWidth={2} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              title={document.isFavorite ? '取消收藏' : '收藏'}
+              onClick={() => onToggleFavorite(document.id)}
+              className="rounded p-1 text-zinc-400 transition hover:bg-zinc-200/70 hover:text-amber-500 dark:hover:bg-zinc-700"
+            >
+              <Star
+                className={`h-4 w-4 ${document.isFavorite ? 'fill-amber-400 text-amber-400' : ''}`}
+                strokeWidth={2}
+              />
+            </button>
+          )}
+          <button
+            type="button"
+            title="重新命名"
+            onClick={() => onRenameDocument(document.id)}
+            className="rounded p-1 text-zinc-400 opacity-0 transition hover:bg-zinc-200/70 hover:text-zinc-700 group-hover:opacity-100 dark:hover:bg-zinc-700 dark:hover:text-zinc-200"
+          >
+            <Pencil className="h-4 w-4" strokeWidth={2} />
+          </button>
+          <button
+            type="button"
+            title={isFolder ? '刪除資料夾' : '刪除檔案'}
+            onClick={() => onDeleteDocument(document.id)}
+            className="rounded p-1 text-zinc-400 opacity-0 transition hover:bg-red-100 hover:text-red-600 group-hover:opacity-100 dark:hover:bg-red-950/50 dark:hover:text-red-300"
+          >
+            <Trash2 className="h-4 w-4" strokeWidth={2} />
+          </button>
+        </div>
+        {isFolder && isExpanded && children.length > 0 && (
+          <div className="mt-1 space-y-1">{children.map((child) => renderDocumentNode(child, depth + 1))}</div>
+        )}
       </div>
     )
   }
 
   return (
-    <aside className="flex w-72 shrink-0 flex-col border-r border-gray-200 bg-white transition-colors duration-300 dark:border-gray-800 dark:bg-gray-950">
-      <div className="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-gray-800">
+    <aside className="flex w-72 shrink-0 flex-col border-r border-zinc-200 bg-zinc-100/50 transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950/70">
+      <div className="flex items-center justify-between border-b border-zinc-200/60 px-4 py-3 dark:border-zinc-800">
         <div>
-          <h2 className="text-sm font-semibold text-gray-900 dark:text-gray-100">工作區</h2>
-          <p className="text-xs text-gray-500 dark:text-gray-400">{documents.length} 份文件</p>
+          <h2 className="text-sm font-semibold text-zinc-950 dark:text-zinc-100">AutoLabReport</h2>
+          <p className="text-xs text-zinc-500 dark:text-zinc-400">SaaS Workspace</p>
         </div>
         <div className="flex items-center gap-1">
-          <button
-            type="button"
-            title="新增檔案"
-            onClick={onCreateDocument}
-            className={TOOLBAR_ICON_BTN}
-          >
-            <Plus className="h-[18px] w-[18px]" strokeWidth={2} />
-          </button>
           <button
             type="button"
             title="收合工作區"
@@ -505,24 +793,238 @@ function DocumentSidebar({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-auto px-3 py-3">
+      <nav className="space-y-1 border-b border-zinc-200/60 px-3 py-3 dark:border-zinc-800">
+        {[
+          ['dashboard', '🏠', '總覽'] as const,
+          ['editor', '📝', '我的報告'] as const,
+          ['templates', '✨', '模板市集'] as const,
+        ].map(([view, icon, label]) => (
+          <button
+            key={view}
+            type="button"
+            onClick={() => onChangeView(view)}
+            className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium transition ${
+              currentView === view
+                ? 'border border-zinc-200/50 bg-white font-medium text-zinc-900 shadow-sm dark:border-zinc-700/70 dark:bg-zinc-900 dark:text-zinc-100'
+                : 'text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
+            }`}
+          >
+            <span className="w-5 text-center">{icon}</span>
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      <div className={`min-h-0 flex-1 overflow-auto px-3 py-3 ${SCROLLBAR_HIDE}`}>
+        <div className="mb-3 flex items-center justify-between px-2">
+          <div>
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+              近期檔案
+            </h3>
+            <p className="text-[11px] text-zinc-400">{fileDocuments.length} 份報告</p>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              title="建立新資料夾"
+              onClick={onCreateFolder}
+              className={TOOLBAR_ICON_BTN}
+            >
+              📁
+            </button>
+            <button
+              type="button"
+              title="建立新報告"
+              onClick={onCreateDocument}
+              className={TOOLBAR_ICON_BTN}
+            >
+              <Plus className="h-[18px] w-[18px]" strokeWidth={2} />
+            </button>
+          </div>
+        </div>
         {favoriteDocuments.length > 0 && (
           <section className="mb-4">
-            <h3 className="mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
+            <h3 className="mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-zinc-400">
               收藏
             </h3>
-            <div className="space-y-1">{favoriteDocuments.map(renderDocumentButton)}</div>
+            <div className="space-y-1">{favoriteDocuments.map((document) => renderDocumentNode(document))}</div>
           </section>
         )}
 
         <section>
-          <h3 className="mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-gray-400">
-            所有檔案
+          <h3 className="mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+            全部
           </h3>
-          <div className="space-y-1">{normalDocuments.map(renderDocumentButton)}</div>
+          <div className="space-y-1">{getChildren(null).map((document) => renderDocumentNode(document))}</div>
         </section>
       </div>
     </aside>
+  )
+}
+
+function formatDocumentTime(value?: string) {
+  if (!value) return '尚未記錄'
+
+  try {
+    return new Intl.DateTimeFormat('zh-TW', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    }).format(new Date(value))
+  } catch {
+    return '尚未記錄'
+  }
+}
+
+function DashboardView({
+  documents,
+  onOpenDocument,
+  onCreateDocument,
+}: {
+  documents: Document[]
+  onOpenDocument: (id: string) => void
+  onCreateDocument: () => void
+}) {
+  const fileDocuments = documents.filter((document) => document.type === 'file')
+  const recentDocuments = [...fileDocuments].sort((left, right) => {
+    const leftTime = new Date(left.updatedAt ?? left.createdAt).getTime()
+    const rightTime = new Date(right.updatedAt ?? right.createdAt).getTime()
+    return rightTime - leftTime
+  })
+
+  return (
+    <main className={`min-h-0 flex-1 overflow-auto bg-zinc-50 transition-colors duration-300 dark:bg-zinc-950 ${SCROLLBAR_HIDE}`}>
+      <div className="mx-auto max-w-6xl px-8 py-12">
+        <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="mb-2 text-sm font-medium text-zinc-500 dark:text-zinc-400">
+              Dashboard
+            </p>
+            <h1 className="mb-8 text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
+              早安，準備好撰寫今天的實驗結報了嗎？
+            </h1>
+          </div>
+          <button
+            type="button"
+            onClick={onCreateDocument}
+            className="rounded-lg bg-zinc-950 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+          >
+            新增報告
+          </button>
+        </div>
+
+        <section>
+          <div className="mb-3 flex items-center justify-between">
+            <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
+              近期編輯檔案
+            </h2>
+            <span className="text-sm text-zinc-400">{fileDocuments.length} 份文件</span>
+          </div>
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+            {recentDocuments.map((document) => (
+              <button
+                key={document.id}
+                type="button"
+                onClick={() => onOpenDocument(document.id)}
+                className="group flex min-h-44 cursor-pointer flex-col rounded-xl border border-zinc-200 bg-white p-6 text-left shadow-sm transition-all duration-300 hover:border-zinc-300 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
+              >
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <h3 className="mb-2 truncate text-lg font-semibold text-zinc-800 dark:text-zinc-50">
+                      {document.title}
+                    </h3>
+                    <p className="text-sm text-zinc-500 dark:text-zinc-400">
+                      最後修改：{formatDocumentTime(document.updatedAt ?? document.createdAt)}
+                    </p>
+                  </div>
+                  {document.isFavorite && (
+                    <Star className="h-4 w-4 shrink-0 fill-amber-400 text-amber-400" />
+                  )}
+                </div>
+                <p className="line-clamp-3 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+                  {document.content.trim() || '尚未撰寫內容'}
+                </p>
+              </button>
+            ))}
+          </div>
+        </section>
+      </div>
+    </main>
+  )
+}
+
+function TemplatesView({
+  onUseTemplate,
+}: {
+  onUseTemplate: (template: (typeof DEFAULT_TEMPLATES)[number]) => void
+}) {
+  const [selectedCategory, setSelectedCategory] = useState('全部')
+  const categories = ['全部', ...Array.from(new Set(DEFAULT_TEMPLATES.map((template) => template.category)))]
+  const templates =
+    selectedCategory === '全部'
+      ? DEFAULT_TEMPLATES
+      : DEFAULT_TEMPLATES.filter((template) => template.category === selectedCategory)
+
+  return (
+    <main className={`min-h-0 flex-1 overflow-auto bg-zinc-50 transition-colors duration-300 dark:bg-zinc-950 ${SCROLLBAR_HIDE}`}>
+      <div className="mx-auto max-w-6xl px-8 py-12">
+        <p className="mb-2 text-sm font-medium text-zinc-500 dark:text-zinc-400">Templates</p>
+        <h1 className="mb-8 text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
+          探索實驗模板
+        </h1>
+        <p className="-mt-5 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+          從常見 STEM 實驗骨架開始，套用後會建立成新的本地報告並直接進入編輯器。
+        </p>
+
+        <div className="mt-6 flex flex-wrap gap-2">
+          {categories.map((category) => (
+            <button
+              key={category}
+              type="button"
+              onClick={() => setSelectedCategory(category)}
+              className={`rounded-full border px-3 py-1.5 text-sm font-medium transition ${
+                selectedCategory === category
+                  ? 'border-zinc-950 bg-zinc-950 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-950'
+                  : 'border-zinc-200/60 bg-white text-zinc-600 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800'
+              }`}
+            >
+              {category}
+            </button>
+          ))}
+        </div>
+
+        <div className="mt-8 grid grid-cols-1 gap-6 md:grid-cols-3">
+          {templates.map((template) => (
+            <article
+              key={template.id}
+              className="flex min-h-72 cursor-pointer flex-col rounded-xl border border-zinc-200 bg-white p-6 shadow-sm transition-all duration-300 hover:border-zinc-300 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
+            >
+              <div className="mb-4">
+                <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                  {template.category}
+                </span>
+              </div>
+              <h2 className="mb-2 text-lg font-semibold text-zinc-800 dark:text-zinc-50">
+                {template.title}
+              </h2>
+              <p className="text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+                {template.description}
+              </p>
+              <div className="mt-auto pt-4">
+                <button
+                  type="button"
+                  onClick={() => onUseTemplate(template)}
+                  className="w-full rounded-lg bg-zinc-900 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+                >
+                  套用此模板
+                </button>
+              </div>
+            </article>
+          ))}
+        </div>
+      </div>
+    </main>
   )
 }
 
@@ -530,9 +1032,11 @@ function App() {
   const [initialWorkspace] = useState(getInitialWorkspace)
   const [documents, setDocuments] = useState<Document[]>(initialWorkspace.documents)
   const [activeDocumentId, setActiveDocumentId] = useState(initialWorkspace.activeDocumentId)
+  const [currentView, setCurrentView] = useState<AppView>('dashboard')
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
   const activeDocument =
-    documents.find((document) => document.id === activeDocumentId) ?? documents[0]
+    documents.find((document) => document.id === activeDocumentId && document.type === 'file') ??
+    documents.find((document) => document.type === 'file')
   const [markdown, setMarkdown] = useState(activeDocument?.content ?? '')
   const [preview, setPreview] = useState('')
   const [theme, setTheme] = useState<'light' | 'dark'>(getInitialTheme)
@@ -593,7 +1097,7 @@ function App() {
       setDocuments((currentDocuments) =>
         currentDocuments.map((document) =>
           document.id === activeDocumentId && document.content !== markdown
-            ? { ...document, content: markdown }
+            ? { ...document, content: markdown, updatedAt: new Date().toISOString() }
             : document,
         ),
       )
@@ -1138,6 +1642,8 @@ function App() {
   }
 
   function loadDocument(document: Document) {
+    if (document.type !== 'file') return
+
     setActiveDocumentId(document.id)
     isApplyingRemoteRef.current = true
     updateMarkdownValue(document.content)
@@ -1145,17 +1651,47 @@ function App() {
     isApplyingRemoteRef.current = false
   }
 
-  function createNewDocument() {
-    const nextDocument = createDocument(`未命名報告 ${documents.length + 1}`)
+  function createDocumentForParent(parentId: string | null) {
+    const fileCount = documents.filter((document) => document.type === 'file').length
+    const nextDocument = createDocument(`未命名報告 ${fileCount + 1}`, '', parentId)
     setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
     loadDocument(nextDocument)
+    setCurrentView('editor')
+  }
+
+  function createNewDocument() {
+    createDocumentForParent(null)
+  }
+
+  function createDocumentFromTemplate(template: (typeof DEFAULT_TEMPLATES)[number]) {
+    const nextDocument = createDocument(template.title, template.content, null)
+    setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
+    loadDocument(nextDocument)
+    setCurrentView('editor')
+    window.setTimeout(() => {
+      editorRef.current?.focus()
+      editorRef.current?.setPosition({ lineNumber: 1, column: 1 })
+    }, 0)
+  }
+
+  function createNewFolder(parentId: string | null = null) {
+    const title = window.prompt('資料夾名稱', '新資料夾')?.trim()
+    if (!title) return
+
+    const nextFolder = createFolder(title, parentId)
+    setDocuments((currentDocuments) => [...currentDocuments, nextFolder])
+  }
+
+  function createDocumentInFolder(parentId: string) {
+    createDocumentForParent(parentId)
   }
 
   function selectDocument(id: string) {
     const nextDocument = documents.find((document) => document.id === id)
-    if (!nextDocument) return
+    if (!nextDocument || nextDocument.type !== 'file') return
 
     loadDocument(nextDocument)
+    setCurrentView('editor')
   }
 
   function renameDocument(id: string) {
@@ -1167,7 +1703,7 @@ function App() {
 
     setDocuments((currentDocuments) =>
       currentDocuments.map((document) =>
-        document.id === id ? { ...document, title: nextTitle } : document,
+        document.id === id ? { ...document, title: nextTitle, updatedAt: new Date().toISOString() } : document,
       ),
     )
   }
@@ -1175,26 +1711,41 @@ function App() {
   function deleteDocument(id: string) {
     const targetDocument = documents.find((document) => document.id === id)
     if (!targetDocument) return
-    if (!window.confirm(`刪除「${targetDocument.title}」？此操作無法復原。`)) return
+    const deleteLabel = targetDocument.type === 'folder' ? '資料夾與其中所有項目' : '檔案'
+    if (!window.confirm(`刪除${deleteLabel}「${targetDocument.title}」？此操作無法復原。`)) return
 
-    const remainingDocuments = documents.filter((document) => document.id !== id)
-    if (!remainingDocuments.length) {
+    const idsToDelete = new Set<string>([id])
+    let previousSize = 0
+    while (idsToDelete.size !== previousSize) {
+      previousSize = idsToDelete.size
+      documents.forEach((document) => {
+        if (document.parentId && idsToDelete.has(document.parentId)) {
+          idsToDelete.add(document.id)
+        }
+      })
+    }
+
+    const remainingDocuments = documents.filter((document) => !idsToDelete.has(document.id))
+    const remainingFiles = remainingDocuments.filter((document) => document.type === 'file')
+    if (!remainingFiles.length) {
       const replacementDocument = createDocument()
-      setDocuments([replacementDocument])
+      setDocuments([...remainingDocuments.filter((document) => document.type === 'folder'), replacementDocument])
       loadDocument(replacementDocument)
       return
     }
 
     setDocuments(remainingDocuments)
-    if (id === activeDocumentId) {
-      loadDocument(remainingDocuments[0])
+    if (idsToDelete.has(activeDocumentId)) {
+      loadDocument(remainingFiles[0])
     }
   }
 
   function toggleDocumentFavorite(id: string) {
     setDocuments((currentDocuments) =>
       currentDocuments.map((document) =>
-        document.id === id ? { ...document, isFavorite: !document.isFavorite } : document,
+        document.id === id && document.type === 'file'
+          ? { ...document, isFavorite: !document.isFavorite, updatedAt: new Date().toISOString() }
+          : document,
       ),
     )
   }
@@ -1320,13 +1871,17 @@ function App() {
   const isGenerating = syncStatus === 'pending' || syncStatus === 'rendering'
 
   return (
-    <div className="flex h-full min-h-screen bg-gray-50 text-gray-900 transition-colors duration-300 dark:bg-gray-900 dark:text-gray-100">
+    <div className="flex h-full min-h-screen bg-zinc-50 font-sans text-zinc-800 transition-colors duration-300 dark:bg-zinc-950 dark:text-zinc-100">
       <DocumentSidebar
         documents={documents}
         activeDocumentId={activeDocumentId}
+        currentView={currentView}
         isCollapsed={isSidebarCollapsed}
         onToggleCollapsed={() => setIsSidebarCollapsed((current) => !current)}
+        onChangeView={setCurrentView}
         onCreateDocument={createNewDocument}
+        onCreateFolder={createNewFolder}
+        onCreateDocumentInFolder={createDocumentInFolder}
         onSelectDocument={selectDocument}
         onRenameDocument={renameDocument}
         onDeleteDocument={deleteDocument}
@@ -1334,10 +1889,10 @@ function App() {
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
-      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-gray-200 bg-white px-5 py-4 transition-colors duration-300 dark:border-gray-800 dark:bg-gray-950">
+      <header className="sticky top-0 z-40 flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50/80 px-5 py-4 backdrop-blur-md transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950/80">
         <div>
           <h1 className="text-xl font-semibold tracking-tight">AutoLabReport</h1>
-          <p className="mt-0.5 text-sm text-gray-500 dark:text-gray-400">
+          <p className="mt-0.5 text-sm text-zinc-500 dark:text-zinc-400">
             {activeDocument?.title ?? '未命名報告'} · Word 化工具列 · 所見即所得匯出
           </p>
         </div>
@@ -1363,7 +1918,7 @@ function App() {
           {healthMessage && (
             <span
               className={`max-w-xs truncate text-xs ${
-                healthMessage.includes('失敗') ? 'text-red-400' : 'text-gray-500 dark:text-gray-400'
+                healthMessage.includes('失敗') ? 'text-red-400' : 'text-zinc-500 dark:text-zinc-400'
               }`}
             >
               {healthMessage}
@@ -1373,15 +1928,24 @@ function App() {
             type="button"
             onClick={checkBackendHealth}
             disabled={healthLoading}
-            className="rounded-lg border border-gray-300 bg-white px-3.5 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-100 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+            className={SUBTLE_BUTTON}
           >
             {healthLoading ? '檢查中…' : '測試後端連線'}
           </button>
         </div>
       </header>
 
-      <main className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-2">
-        <section className="flex min-h-0 flex-col border-b border-gray-200 transition-colors duration-300 dark:border-gray-800 lg:border-b-0 lg:border-r">
+      {currentView === 'dashboard' ? (
+        <DashboardView
+          documents={documents}
+          onOpenDocument={selectDocument}
+          onCreateDocument={createNewDocument}
+        />
+      ) : currentView === 'templates' ? (
+        <TemplatesView onUseTemplate={createDocumentFromTemplate} />
+      ) : (
+      <main className="grid min-h-0 flex-1 grid-cols-1 bg-white lg:grid-cols-2 dark:bg-zinc-950">
+        <section className="flex min-h-0 flex-grow flex-col border-b border-zinc-200 transition-colors duration-300 dark:border-zinc-800 lg:border-b-0 lg:border-r">
           <input
             ref={imageInputRef}
             type="file"
@@ -1390,12 +1954,12 @@ function App() {
             onChange={handleImageUpload}
           />
 
-          <div className="border-b border-gray-200 px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-gray-500 transition-colors duration-300 dark:border-gray-800 dark:text-gray-400">
+          <div className="border-b border-zinc-200/60 px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-zinc-500 transition-colors duration-300 dark:border-zinc-800 dark:text-zinc-400">
             編輯區 — 貼上 LLM 報告
           </div>
 
           <div
-            className="flex flex-wrap items-center justify-between gap-y-2 border-b border-gray-200 bg-white px-6 py-3 shadow-sm transition-colors duration-300 dark:border-gray-800 dark:bg-gray-950"
+            className="sticky top-0 z-30 flex flex-wrap items-center justify-between gap-y-2 border-b border-zinc-200 bg-zinc-50/80 px-6 py-3 shadow-sm backdrop-blur-md transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950/80"
             role="toolbar"
             aria-label="排版與匯出工具列"
           >
@@ -1457,7 +2021,7 @@ function App() {
                     insertLatexSnippet(event.target.value)
                     event.target.value = ''
                   }}
-                  className="h-9 max-w-[150px] rounded-md border border-gray-300 bg-white px-2 text-sm font-medium text-gray-600 outline-none transition hover:bg-gray-100 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-300 dark:hover:bg-gray-800"
+                  className="h-9 max-w-[150px] rounded-md border border-zinc-200 bg-white px-2 text-sm font-medium text-zinc-600 outline-none transition hover:bg-zinc-100 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-800"
                 >
                   <option value="">∑ 公式</option>
                   {LATEX_SNIPPETS.map((snippet) => (
@@ -1475,9 +2039,9 @@ function App() {
                   </ToolbarIconButton>
 
                   {isTablePickerOpen && (
-                    <div className="absolute left-0 top-full z-10 mt-2 w-56 rounded-lg border border-gray-200 bg-white p-3 shadow-lg dark:border-gray-700 dark:bg-gray-900">
+                    <div className="absolute left-0 top-full z-10 mt-2 w-56 rounded-lg border border-zinc-200/60 bg-white p-3 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
                       <div className="grid grid-cols-2 gap-3">
-                        <label className="text-xs font-medium text-gray-600 dark:text-gray-300">
+                        <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300">
                           行數
                           <input
                             type="number"
@@ -1485,10 +2049,10 @@ function App() {
                             max={20}
                             value={tableRows}
                             onChange={(event) => setTableRows(Number(event.target.value))}
-                            className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 outline-none transition focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                            className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-sm text-zinc-900 outline-none transition focus:border-blue-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
                           />
                         </label>
-                        <label className="text-xs font-medium text-gray-600 dark:text-gray-300">
+                        <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300">
                           列數
                           <input
                             type="number"
@@ -1496,7 +2060,7 @@ function App() {
                             max={10}
                             value={tableCols}
                             onChange={(event) => setTableCols(Number(event.target.value))}
-                            className="mt-1 w-full rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm text-gray-900 outline-none transition focus:border-blue-500 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-100"
+                            className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-sm text-zinc-900 outline-none transition focus:border-blue-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
                           />
                         </label>
                       </div>
@@ -1584,10 +2148,10 @@ function App() {
             </div>
           </div>
 
-          <div className="relative min-h-[280px] flex-1 lg:min-h-0">
+          <div className="relative min-h-[280px] flex-1 flex-grow bg-white font-mono leading-relaxed lg:min-h-0 dark:bg-zinc-950">
             {aiSelectionMenu.visible && (
               <div
-                className="absolute z-50 flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-1.5 py-1.5 text-sm shadow-xl transition-colors duration-200 dark:border-gray-700 dark:bg-gray-950"
+                className="absolute z-50 flex items-center gap-1 rounded-lg border border-zinc-200/60 bg-white px-1.5 py-1.5 text-sm shadow-xl transition-colors duration-200 dark:border-zinc-700 dark:bg-zinc-950"
                 style={{
                   top: aiSelectionMenu.top,
                   left: aiSelectionMenu.left,
@@ -1647,6 +2211,9 @@ function App() {
                 minimap: { enabled: false },
                 wordWrap: 'on',
                 fontSize: 14,
+                lineHeight: 24,
+                fontFamily:
+                  'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
                 scrollBeyondLastLine: false,
                 placeholder: '在此貼上 ChatGPT / Gemini 產生的實驗報告…',
               }}
@@ -1654,27 +2221,27 @@ function App() {
           </div>
         </section>
 
-        <section className="flex min-h-0 flex-col transition-colors duration-300">
-          <div className="border-b border-gray-200 px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-gray-500 transition-colors duration-300 dark:border-gray-800 dark:text-gray-400">
+        <section className="flex min-h-0 flex-grow flex-col bg-white transition-colors duration-300 dark:bg-zinc-950">
+          <div className="border-b border-zinc-200/60 px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-zinc-500 transition-colors duration-300 dark:border-zinc-800 dark:text-zinc-400">
             預覽區 — 所見即所得
           </div>
           <div
             ref={previewRef}
-            className="preview-pane flex-1 overflow-auto bg-gray-100 p-4 transition-colors duration-300 dark:bg-gray-900"
+            className={`preview-pane flex-1 overflow-auto bg-white px-12 py-16 transition-colors duration-300 dark:bg-zinc-950 ${SCROLLBAR_HIDE}`}
           >
             {renderError ? (
               <p className="text-sm text-red-400">預覽錯誤：{renderError}</p>
             ) : isEditorEmpty ? (
-              <div className="flex h-full min-h-[320px] flex-col items-center justify-center rounded-lg border border-dashed border-gray-300 bg-white px-8 py-12 text-center transition-colors duration-300 dark:border-gray-700 dark:bg-gray-950/40">
+              <div className="flex h-full min-h-[320px] flex-col items-center justify-center rounded-lg border border-dashed border-zinc-200/60 bg-white px-8 py-12 text-center transition-colors duration-300 dark:border-zinc-700 dark:bg-zinc-950/40">
                 <div className="mb-4 text-5xl">🤖</div>
-                <p className="max-w-md text-base leading-relaxed text-gray-600 dark:text-gray-300">
+                <p className="max-w-md text-base leading-relaxed text-zinc-600 dark:text-zinc-300">
                   歡迎使用 AutoLabReport！請將 LLM 生成的實驗報告貼在左側，或使用上方工具列排版，我們將自動為您生成精美排版與數據圖表。
                 </p>
               </div>
             ) : preview ? (
               <div
                 id="pdf-preview-content"
-                className="pdf-export-surface markdown-preview rounded-lg border border-gray-200 bg-white p-6 text-gray-900 shadow-sm transition-colors duration-300 dark:border-gray-800 dark:bg-gray-950 dark:text-gray-100"
+                className="pdf-export-surface markdown-preview prose prose-zinc max-w-none prose-headings:font-semibold prose-p:leading-loose rounded-lg bg-white text-zinc-900 transition-colors duration-300 dark:prose-invert dark:bg-zinc-950 dark:text-zinc-100"
               >
                 <ReactMarkdown
                   remarkPlugins={REMARK_PLUGINS}
@@ -1686,40 +2253,41 @@ function App() {
                 </ReactMarkdown>
               </div>
             ) : (
-              <p className="text-sm text-gray-500">正在準備預覽…</p>
+              <p className="text-sm text-zinc-500">正在準備預覽…</p>
             )}
           </div>
         </section>
       </main>
+      )}
       </div>
 
       {isOutlineModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 px-4">
-          <div className="w-full max-w-2xl rounded-lg border border-gray-200 bg-white shadow-2xl transition-colors duration-300 dark:border-gray-700 dark:bg-gray-950">
-            <div className="border-b border-gray-200 px-5 py-4 dark:border-gray-800">
-              <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/30 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-2xl border border-zinc-100 bg-white p-8 shadow-2xl transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950">
+            <div>
+              <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
                 生成報告大綱
               </h2>
-              <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+              <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
                 貼上範例結構，系統會生成對應的 Markdown 實驗報告大綱。
               </p>
             </div>
 
-            <div className="px-5 py-4">
+            <div className="py-6">
               <textarea
                 value={outlineExampleText}
                 onChange={(event) => setOutlineExampleText(event.target.value)}
                 placeholder={'# 實驗報告\n## 實驗目的\n## 實驗原理\n## 實驗步驟\n## 結果與討論'}
-                className="h-64 w-full resize-none rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm leading-6 text-gray-900 outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
+                className={`h-64 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-sm leading-6 text-zinc-900 outline-none transition-all focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:bg-zinc-950 ${SCROLLBAR_HIDE}`}
               />
             </div>
 
-            <div className="flex items-center justify-end gap-2 border-t border-gray-200 px-5 py-4 dark:border-gray-800">
+            <div className="flex items-center justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setIsOutlineModalOpen(false)}
                 disabled={outlineLoading}
-                className="rounded-lg border border-gray-300 bg-white px-4 py-2 text-sm font-medium text-gray-700 transition hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-200 dark:hover:bg-gray-800"
+                className={SUBTLE_BUTTON}
               >
                 取消
               </button>
@@ -1737,7 +2305,7 @@ function App() {
       )}
 
       {bridgeToast && (
-        <div className="fixed bottom-5 right-5 z-[60] rounded-lg bg-gray-950 px-4 py-3 text-sm font-medium text-white shadow-2xl dark:bg-gray-100 dark:text-gray-950">
+        <div className="fixed bottom-5 right-5 z-[60] rounded-lg bg-zinc-950 px-4 py-3 text-sm font-medium text-white shadow-2xl dark:bg-zinc-100 dark:text-zinc-950">
           {bridgeToast}
         </div>
       )}
