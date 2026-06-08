@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -247,11 +248,19 @@ type Document = {
   parentId: string | null
 }
 
-type AppView = 'dashboard' | 'editor' | 'favorites' | 'templates' | 'trash'
-
-type WebrtcStatusEvent = {
-  connected: boolean
+type SupabaseDocumentRow = {
+  id: string
+  title: string | null
+  content: string | null
+  created_at?: string | null
+  updated_at?: string | null
+  is_favorite?: boolean | null
+  is_trashed?: boolean | null
+  type?: 'file' | 'folder' | null
+  parent_id?: string | null
 }
+
+type AppView = 'dashboard' | 'editor' | 'favorites' | 'templates' | 'trash'
 
 type AiSelectionMenuState = {
   visible: boolean
@@ -486,6 +495,21 @@ function normalizeDocument(document: Document): Document {
     isTrashed: document.isTrashed ?? false,
     type: document.type ?? 'file',
     parentId: document.parentId ?? null,
+  }
+}
+
+function mapSupabaseDocument(row: SupabaseDocumentRow): Document {
+  const createdAt = row.created_at ?? new Date().toISOString()
+  return {
+    id: row.id,
+    title: row.title?.trim() || '未命名報告',
+    content: row.content ?? '',
+    createdAt,
+    updatedAt: row.updated_at ?? createdAt,
+    isFavorite: row.is_favorite ?? false,
+    isTrashed: row.is_trashed ?? false,
+    type: row.type ?? 'file',
+    parentId: row.parent_id ?? null,
   }
 }
 
@@ -1029,6 +1053,7 @@ function DashboardView({
   onToggleFavorite,
   onDeleteDocument,
   favoriteOnly = false,
+  isLoading = false,
 }: {
   documents: Document[]
   onOpenDocument: (id: string) => void
@@ -1038,6 +1063,7 @@ function DashboardView({
   onToggleFavorite: (id: string) => void
   onDeleteDocument: (id: string) => void
   favoriteOnly?: boolean
+  isLoading?: boolean
 }) {
   const [openMenuId, setOpenMenuId] = useState<string | null>(null)
   const openMenuRef = useRef<HTMLDivElement | null>(null)
@@ -1088,9 +1114,10 @@ function DashboardView({
             <button
               type="button"
               onClick={onCreateDocument}
+              disabled={isLoading}
               className="rounded-lg bg-zinc-950 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
             >
-              新增報告
+              {isLoading ? '處理中...' : '新增報告'}
             </button>
           )}
         </div>
@@ -1115,9 +1142,10 @@ function DashboardView({
                 <button
                   type="button"
                   onClick={onCreateDocument}
-                  className="mt-6 rounded-xl bg-zinc-950 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+                  disabled={isLoading}
+                  className="mt-6 rounded-xl bg-zinc-950 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
                 >
-                  建立第一份報告
+                  {isLoading ? '處理中...' : '建立第一份報告'}
                 </button>
               )}
             </div>
@@ -1148,6 +1176,7 @@ function DashboardView({
                         event.stopPropagation()
                         onToggleFavorite(document.id)
                       }}
+                      disabled={isLoading}
                       className="absolute right-4 top-4 z-10 rounded-full bg-white/90 p-2 text-zinc-400 shadow-sm ring-1 ring-zinc-200/70 transition hover:scale-105 hover:text-amber-500 dark:bg-zinc-900/90 dark:ring-zinc-700"
                     >
                       <Star
@@ -1219,6 +1248,7 @@ function DashboardView({
                               setOpenMenuId(null)
                               onRenameDocument(document.id)
                             }}
+                            disabled={isLoading}
                             className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
                           >
                             📄 重新命名
@@ -1230,6 +1260,7 @@ function DashboardView({
                               setOpenMenuId(null)
                               onShareDocument(document.id)
                             }}
+                            disabled={isLoading}
                             className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
                           >
                             ✨ 分享產生連結
@@ -1241,6 +1272,7 @@ function DashboardView({
                               setOpenMenuId(null)
                               onToggleFavorite(document.id)
                             }}
+                            disabled={isLoading}
                             className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
                           >
                             {document.isFavorite ? '⭐ 取消收藏' : '⭐ 加入收藏'}
@@ -1253,6 +1285,7 @@ function DashboardView({
                               setOpenMenuId(null)
                               onDeleteDocument(document.id)
                             }}
+                            disabled={isLoading}
                             className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/40"
                           >
                             🗑️ 刪除此報告
@@ -1637,6 +1670,7 @@ function WorkspaceApp({
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('synced')
   const [renderError, setRenderError] = useState<string | null>(null)
   const [, setExporting] = useState(false)
+  const [databaseLoading, setDatabaseLoading] = useState(false)
   const [isOutlineModalOpen, setIsOutlineModalOpen] = useState(false)
   const [isExtensionModalOpen, setIsExtensionModalOpen] = useState(false)
   const [isAdvancedMenuOpen, setIsAdvancedMenuOpen] = useState(false)
@@ -1652,8 +1686,6 @@ function WorkspaceApp({
     left: 0,
     selectedText: '',
   })
-  const [collaborationStatus, setCollaborationStatus] = useState('等待連線...')
-  const [onlineCount, setOnlineCount] = useState(1)
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
   const editorScrollDisposableRef = useRef<{ dispose: () => void } | null>(null)
   const editorContentDisposableRef = useRef<{ dispose: () => void } | null>(null)
@@ -1673,6 +1705,52 @@ function WorkspaceApp({
 
   const isEditorEmpty = !markdown.trim()
   const isDarkMode = theme === 'dark'
+  const shouldUseSupabaseDocuments = Boolean(supabase && user && !isGuest)
+
+  const applyLoadedDocument = useCallback((document: Document) => {
+    setActiveDocumentId(document.id)
+    isApplyingRemoteRef.current = true
+    updateMarkdownValue(document.content)
+    editorRef.current?.setValue(document.content)
+    isApplyingRemoteRef.current = false
+  }, [])
+
+  const refreshSupabaseDocuments = useCallback(
+    async (openDocumentId?: string) => {
+      if (!supabase || !shouldUseSupabaseDocuments) return [] as Document[]
+
+      setDatabaseLoading(true)
+      try {
+        const { data, error } = await supabase
+          .from('documents')
+          .select('*')
+          .eq('is_trashed', false)
+          .order('updated_at', { ascending: false })
+
+        if (error) throw error
+
+        const nextDocuments = ((data ?? []) as SupabaseDocumentRow[]).map(mapSupabaseDocument)
+        setDocuments(nextDocuments)
+
+        const documentToOpen = openDocumentId
+          ? nextDocuments.find((document) => document.id === openDocumentId)
+          : undefined
+        if (documentToOpen) {
+          applyLoadedDocument(documentToOpen)
+          setCurrentView('editor')
+        }
+
+        return nextDocuments
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '資料庫讀取失敗'
+        setBridgeToast(`資料庫同步失敗：${message}`)
+        return [] as Document[]
+      } finally {
+        setDatabaseLoading(false)
+      }
+    },
+    [applyLoadedDocument, shouldUseSupabaseDocuments],
+  )
 
   useEffect(() => {
     document.documentElement.classList.toggle('dark', isDarkMode)
@@ -1686,6 +1764,16 @@ function WorkspaceApp({
   useEffect(() => {
     window.localStorage.setItem(ACTIVE_DOCUMENT_ID_STORAGE_KEY, activeDocumentId)
   }, [activeDocumentId])
+
+  useEffect(() => {
+    if (!shouldUseSupabaseDocuments) return
+
+    const fetchTimer = window.setTimeout(() => {
+      void refreshSupabaseDocuments()
+    }, 0)
+
+    return () => window.clearTimeout(fetchTimer)
+  }, [refreshSupabaseDocuments, shouldUseSupabaseDocuments, user?.id])
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -1714,12 +1802,18 @@ function WorkspaceApp({
             : document,
         ),
       )
+      if (supabase && shouldUseSupabaseDocuments && activeDocumentId) {
+        void supabase
+          .from('documents')
+          .update({ content: markdown })
+          .eq('id', activeDocumentId)
+      }
     }, 300)
 
     return () => {
       clearTimeout(timer)
     }
-  }, [activeDocumentId, markdown])
+  }, [activeDocumentId, markdown, shouldUseSupabaseDocuments])
 
   useEffect(() => {
     return () => {
@@ -1860,22 +1954,10 @@ function WorkspaceApp({
 
     const provider = new WebrtcProvider(activeDocumentId, roomDoc)
     providerRef.current = provider
-    const initialStatusTimer = window.setTimeout(() => {
-      setCollaborationStatus('等待連線...')
-      setOnlineCount(provider.awareness.getStates().size || 1)
-    }, 0)
     provider.awareness.setLocalStateField('user', {
       name: `User-${Math.random().toString(36).slice(2, 6)}`,
     })
 
-    const handleStatus = (event: WebrtcStatusEvent) => {
-      setCollaborationStatus(
-        event.connected ? '🔗 已連線至協作房間' : '等待連線...',
-      )
-    }
-    const handleAwarenessChange = () => {
-      setOnlineCount(provider.awareness.getStates().size || 1)
-    }
     const handleYTextChange = () => {
       const remoteValue = ytext.toString()
       isApplyingRemoteRef.current = true
@@ -1886,20 +1968,13 @@ function WorkspaceApp({
       isApplyingRemoteRef.current = false
     }
 
-    provider.on('status', handleStatus)
-    provider.awareness.on('change', handleAwarenessChange)
     ytext.observe(handleYTextChange)
     ytextObserverCleanupRef.current = () => {
       ytext.unobserve(handleYTextChange)
-      provider.awareness.off('change', handleAwarenessChange)
-      provider.off('status', handleStatus)
     }
 
     return () => {
-      clearTimeout(initialStatusTimer)
       ytext.unobserve(handleYTextChange)
-      provider.awareness.off('change', handleAwarenessChange)
-      provider.off('status', handleStatus)
       provider.destroy()
       if (providerRef.current === provider) {
         providerRef.current = null
@@ -2164,7 +2239,31 @@ function WorkspaceApp({
     isApplyingRemoteRef.current = false
   }
 
-  function createDocumentForParent(parentId: string | null) {
+  async function createDocumentForParent(parentId: string | null) {
+    if (databaseLoading) return
+
+    if (supabase && shouldUseSupabaseDocuments) {
+      setDatabaseLoading(true)
+      try {
+        const { data, error } = await supabase
+          .from('documents')
+          .insert([{ title: '未命名報告', content: '' }])
+          .select('*')
+          .single()
+
+        if (error) throw error
+
+        const nextDocument = mapSupabaseDocument(data as SupabaseDocumentRow)
+        await refreshSupabaseDocuments(nextDocument.id)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '新增報告失敗'
+        setBridgeToast(`新增報告失敗：${message}`)
+      } finally {
+        setDatabaseLoading(false)
+      }
+      return
+    }
+
     const fileCount = documents.filter((document) => document.type === 'file' && !document.isTrashed).length
     const nextDocument = createDocument(`未命名報告 ${fileCount + 1}`, '', parentId)
     setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
@@ -2173,10 +2272,38 @@ function WorkspaceApp({
   }
 
   function createNewDocument() {
-    createDocumentForParent(null)
+    void createDocumentForParent(null)
   }
 
-  function createDocumentFromTemplate(template: (typeof DEFAULT_TEMPLATES)[number]) {
+  async function createDocumentFromTemplate(template: (typeof DEFAULT_TEMPLATES)[number]) {
+    if (databaseLoading) return
+
+    if (supabase && shouldUseSupabaseDocuments) {
+      setDatabaseLoading(true)
+      try {
+        const { data, error } = await supabase
+          .from('documents')
+          .insert([{ title: template.title, content: template.content }])
+          .select('*')
+          .single()
+
+        if (error) throw error
+
+        const nextDocument = mapSupabaseDocument(data as SupabaseDocumentRow)
+        await refreshSupabaseDocuments(nextDocument.id)
+        window.setTimeout(() => {
+          editorRef.current?.focus()
+          editorRef.current?.setPosition({ lineNumber: 1, column: 1 })
+        }, 0)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '套用模板失敗'
+        setBridgeToast(`套用模板失敗：${message}`)
+      } finally {
+        setDatabaseLoading(false)
+      }
+      return
+    }
+
     const nextDocument = createDocument(template.title, template.content, null)
     setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
     loadDocument(nextDocument)
@@ -2196,7 +2323,7 @@ function WorkspaceApp({
   }
 
   function createDocumentInFolder(parentId: string) {
-    createDocumentForParent(parentId)
+    void createDocumentForParent(parentId)
   }
 
   function selectDocument(id: string) {
@@ -2207,12 +2334,30 @@ function WorkspaceApp({
     setCurrentView('editor')
   }
 
-  function renameDocument(id: string) {
+  async function renameDocument(id: string) {
+    if (databaseLoading) return
+
     const targetDocument = documents.find((document) => document.id === id)
     if (!targetDocument) return
 
     const nextTitle = window.prompt('重新命名檔案', targetDocument.title)?.trim()
     if (!nextTitle) return
+
+    if (supabase && shouldUseSupabaseDocuments) {
+      setDatabaseLoading(true)
+      try {
+        const { error } = await supabase.from('documents').update({ title: nextTitle }).eq('id', id)
+        if (error) throw error
+        await refreshSupabaseDocuments()
+        if (id === activeDocumentId) setTitleDraft(nextTitle)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '重新命名失敗'
+        setBridgeToast(`重新命名失敗：${message}`)
+      } finally {
+        setDatabaseLoading(false)
+      }
+      return
+    }
 
     setDocuments((currentDocuments) =>
       currentDocuments.map((document) =>
@@ -2221,11 +2366,33 @@ function WorkspaceApp({
     )
   }
 
-  function updateActiveDocumentTitle(nextTitle: string) {
+  async function updateActiveDocumentTitle(nextTitle: string) {
+    if (databaseLoading) return
+
     const trimmedTitle = nextTitle.trim()
     if (!activeDocument || !trimmedTitle) {
       setTitleDraft(activeDocument?.title ?? '')
       setIsTitleEditing(false)
+      return
+    }
+
+    if (supabase && shouldUseSupabaseDocuments) {
+      setDatabaseLoading(true)
+      try {
+        const { error } = await supabase
+          .from('documents')
+          .update({ title: trimmedTitle })
+          .eq('id', activeDocument.id)
+        if (error) throw error
+        await refreshSupabaseDocuments()
+        setTitleDraft(trimmedTitle)
+        setIsTitleEditing(false)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '重新命名失敗'
+        setBridgeToast(`重新命名失敗：${message}`)
+      } finally {
+        setDatabaseLoading(false)
+      }
       return
     }
 
@@ -2240,11 +2407,48 @@ function WorkspaceApp({
     setIsTitleEditing(false)
   }
 
-  function deleteDocument(id: string) {
+  async function deleteDocument(id: string) {
+    if (databaseLoading) return
+
     const targetDocument = documents.find((document) => document.id === id)
     if (!targetDocument) return
     const deleteLabel = targetDocument.type === 'folder' ? '資料夾與其中所有項目' : '檔案'
     if (!window.confirm(`將${deleteLabel}「${targetDocument.title}」移至垃圾桶？`)) return
+
+    if (supabase && shouldUseSupabaseDocuments && targetDocument.type === 'file') {
+      setDatabaseLoading(true)
+      try {
+        const { error } = await supabase.from('documents').update({ is_trashed: true }).eq('id', id)
+        if (error) throw error
+
+        const now = new Date().toISOString()
+        const nextDocuments = documents.map((document) =>
+          document.id === id ? { ...document, isTrashed: true, updatedAt: now } : document,
+        )
+        const remainingFiles = nextDocuments.filter((document) => document.type === 'file' && !document.isTrashed)
+        setDocuments(nextDocuments)
+
+        if (id === activeDocumentId) {
+          const nextDocument = remainingFiles[0]
+          if (nextDocument) {
+            loadDocument(nextDocument)
+          } else {
+            setActiveDocumentId('')
+            isApplyingRemoteRef.current = true
+            updateMarkdownValue('')
+            editorRef.current?.setValue('')
+            isApplyingRemoteRef.current = false
+            setCurrentView('dashboard')
+          }
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '刪除報告失敗'
+        setBridgeToast(`刪除報告失敗：${message}`)
+      } finally {
+        setDatabaseLoading(false)
+      }
+      return
+    }
 
     const idsToDelete = new Set<string>([id])
     let previousSize = 0
@@ -2319,7 +2523,31 @@ function WorkspaceApp({
     setDocuments((currentDocuments) => currentDocuments.filter((document) => !idsToDelete.has(document.id)))
   }
 
-  function toggleDocumentFavorite(id: string) {
+  async function toggleDocumentFavorite(id: string) {
+    if (databaseLoading) return
+
+    const targetDocument = documents.find((document) => document.id === id)
+    if (!targetDocument || targetDocument.type !== 'file' || targetDocument.isTrashed) return
+
+    if (supabase && shouldUseSupabaseDocuments) {
+      const nextFavoriteState = !targetDocument.isFavorite
+      setDatabaseLoading(true)
+      try {
+        const { error } = await supabase
+          .from('documents')
+          .update({ is_favorite: nextFavoriteState })
+          .eq('id', id)
+        if (error) throw error
+        await refreshSupabaseDocuments()
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '收藏狀態更新失敗'
+        setBridgeToast(`收藏狀態更新失敗：${message}`)
+      } finally {
+        setDatabaseLoading(false)
+      }
+      return
+    }
+
     setDocuments((currentDocuments) =>
       currentDocuments.map((document) =>
         document.id === id && document.type === 'file' && !document.isTrashed
@@ -2579,9 +2807,6 @@ function WorkspaceApp({
             {syncStatus === 'error' && (
               <span className="text-xs font-medium text-red-500">同步失敗</span>
             )}
-            <span className="text-xs font-medium text-zinc-500">
-              {collaborationStatus} · {onlineCount} 人在線
-            </span>
             <button
               type="button"
               onClick={shareCurrentDocument}
@@ -2677,9 +2902,6 @@ function WorkspaceApp({
             {syncStatus === 'error' && (
               <span className="text-sm font-medium text-red-400">預覽同步失敗</span>
             )}
-            <span className="text-xs font-medium text-blue-600 dark:text-blue-300">
-              {collaborationStatus} · {onlineCount} 人在線
-            </span>
           </div>
         </header>
       )}
@@ -2693,6 +2915,7 @@ function WorkspaceApp({
           onShareDocument={shareDocument}
           onToggleFavorite={toggleDocumentFavorite}
           onDeleteDocument={deleteDocument}
+          isLoading={databaseLoading}
         />
       ) : currentView === 'favorites' ? (
         <DashboardView
@@ -2704,6 +2927,7 @@ function WorkspaceApp({
           onToggleFavorite={toggleDocumentFavorite}
           onDeleteDocument={deleteDocument}
           favoriteOnly
+          isLoading={databaseLoading}
         />
       ) : currentView === 'trash' ? (
         <TrashView
