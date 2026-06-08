@@ -12,6 +12,7 @@ import 'katex/dist/katex.min.css'
 import mermaid from 'mermaid'
 import * as Y from 'yjs'
 import { WebrtcProvider } from 'y-webrtc'
+import { createClient, type User } from '@supabase/supabase-js'
 import {
   PanelLeftClose,
   PanelLeftOpen,
@@ -34,6 +35,10 @@ const THEME_STORAGE_KEY = 'autolabreport-theme'
 const CONTENT_STORAGE_KEY = 'autoLabReport_content'
 const DOCUMENTS_STORAGE_KEY = 'autoLabReport_documents'
 const ACTIVE_DOCUMENT_ID_STORAGE_KEY = 'autoLabReport_activeDocumentId'
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
+const supabase =
+  SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null
 
 const REMARK_PLUGINS = [remarkMath]
 const REHYPE_PLUGINS = [rehypeKatex, rehypeRaw]
@@ -241,7 +246,7 @@ type Document = {
   parentId: string | null
 }
 
-type AppView = 'dashboard' | 'editor' | 'templates' | 'trash'
+type AppView = 'dashboard' | 'editor' | 'favorites' | 'templates' | 'trash'
 
 type WebrtcStatusEvent = {
   connected: boolean
@@ -548,6 +553,9 @@ function DocumentSidebar({
   onToggleFavorite,
   onOpenExtensionModal,
   onOpenFeedback,
+  user,
+  isGuest,
+  onSignOut,
 }: {
   documents: Document[]
   activeDocumentId: string
@@ -564,6 +572,9 @@ function DocumentSidebar({
   onToggleFavorite: (id: string) => void
   onOpenExtensionModal: () => void
   onOpenFeedback: () => void
+  user: User | null
+  isGuest: boolean
+  onSignOut: () => void
 }) {
   const [isProjectTreeOpen, setIsProjectTreeOpen] = useState(true)
   const [isMoreOpen, setIsMoreOpen] = useState(false)
@@ -573,6 +584,9 @@ function DocumentSidebar({
   const visibleDocuments = documents.filter((document) => !document.isTrashed)
   const fileDocuments = visibleDocuments.filter((document) => document.type === 'file')
   const favoriteDocuments = fileDocuments.filter((document) => document.isFavorite)
+  const userName = getUserDisplayName(user, isGuest)
+  const avatarUrl = getUserAvatarUrl(user)
+  const userInitial = getUserInitial(user, isGuest)
 
   function toggleFolder(folderId: string) {
     setExpandedFolderIds((current) => {
@@ -624,6 +638,14 @@ function DocumentSidebar({
         </button>
         <button
           type="button"
+          title="收藏夾"
+          onClick={() => onChangeView('favorites')}
+          className={TOOLBAR_ICON_BTN}
+        >
+          ⭐
+        </button>
+        <button
+          type="button"
           title="模板市集"
           onClick={() => onChangeView('templates')}
           className={TOOLBAR_ICON_BTN}
@@ -648,11 +670,11 @@ function DocumentSidebar({
         </button>
         <button
           type="button"
-          title="垃圾桶"
-          onClick={() => onChangeView('trash')}
+          title="登出"
+          onClick={onSignOut}
           className={TOOLBAR_ICON_BTN}
         >
-          🗑️
+          ⎋
         </button>
       </aside>
     )
@@ -796,6 +818,19 @@ function DocumentSidebar({
         </button>
         <button
           type="button"
+          onClick={() => onChangeView('favorites')}
+          className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm font-medium transition ${
+            currentView === 'favorites'
+              ? 'border border-zinc-200/50 bg-white font-medium text-zinc-900 shadow-sm dark:border-zinc-700/70 dark:bg-zinc-900 dark:text-zinc-100'
+              : 'text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
+          }`}
+        >
+          <span className="w-5 text-center">⭐</span>
+          <span className="flex-1">收藏夾</span>
+          <span className="text-xs text-zinc-400">{favoriteDocuments.length}</span>
+        </button>
+        <button
+          type="button"
           onClick={() => onChangeView('templates')}
           className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm font-medium transition ${
             currentView === 'templates'
@@ -813,18 +848,6 @@ function DocumentSidebar({
         >
           <span className="w-5 text-center">🧩</span>
           安裝擴充套件
-        </button>
-        <button
-          type="button"
-          onClick={() => onChangeView('trash')}
-          className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm font-medium transition ${
-            currentView === 'trash'
-              ? 'border border-zinc-200/50 bg-white font-medium text-zinc-900 shadow-sm dark:border-zinc-700/70 dark:bg-zinc-900 dark:text-zinc-100'
-              : 'text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
-          }`}
-        >
-          <span className="w-5 text-center">🗑️</span>
-          垃圾桶
         </button>
       </nav>
 
@@ -857,15 +880,6 @@ function DocumentSidebar({
                 </button>
               </div>
             </div>
-            {favoriteDocuments.length > 0 && (
-              <section className="mb-4">
-                <h3 className="mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-zinc-400">
-                  收藏
-                </h3>
-                <div className="space-y-1">{favoriteDocuments.map((document) => renderDocumentNode(document))}</div>
-              </section>
-            )}
-
             <section>
               <h3 className="mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-zinc-400">
                 全部
@@ -916,6 +930,37 @@ function DocumentSidebar({
           </div>
         )}
       </div>
+
+      <div className="border-t border-zinc-200/60 p-3 dark:border-zinc-800">
+        <div className="flex items-center gap-3 rounded-xl bg-white p-3 shadow-sm ring-1 ring-zinc-200/60 dark:bg-zinc-900 dark:ring-zinc-800">
+          {avatarUrl ? (
+            <img
+              src={avatarUrl}
+              alt={userName}
+              className="h-10 w-10 rounded-full object-cover"
+              referrerPolicy="no-referrer"
+            />
+          ) : (
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-zinc-900 text-sm font-semibold text-white dark:bg-zinc-100 dark:text-zinc-950">
+              {userInitial}
+            </div>
+          )}
+          <div className="min-w-0 flex-1">
+            <p className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">{userName}</p>
+            <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">
+              {isGuest ? '訪客模式' : user?.email ?? '已登入'}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onSignOut}
+            title="登出"
+            className="rounded-lg px-2 py-1.5 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+          >
+            登出
+          </button>
+        </div>
+      </div>
     </aside>
   )
 }
@@ -952,23 +997,79 @@ function getDocumentPreview(document: Document): string {
     .slice(0, 100)
 }
 
+function getUserDisplayName(user: User | null, isGuest = false): string {
+  if (isGuest) return '訪客使用者'
+
+  const fullName = user?.user_metadata?.full_name
+  if (typeof fullName === 'string' && fullName.trim()) return fullName.trim()
+
+  const name = user?.user_metadata?.name
+  if (typeof name === 'string' && name.trim()) return name.trim()
+
+  return user?.email ?? 'AutoLabReport 使用者'
+}
+
+function getUserAvatarUrl(user: User | null): string {
+  const avatarUrl = user?.user_metadata?.avatar_url
+  return typeof avatarUrl === 'string' ? avatarUrl : ''
+}
+
+function getUserInitial(user: User | null, isGuest = false): string {
+  const displayName = getUserDisplayName(user, isGuest)
+  return displayName.trim().charAt(0).toUpperCase() || 'A'
+}
+
 function DashboardView({
   documents,
   onOpenDocument,
   onCreateDocument,
+  onRenameDocument,
+  onShareDocument,
   onToggleFavorite,
+  onDeleteDocument,
+  favoriteOnly = false,
 }: {
   documents: Document[]
   onOpenDocument: (id: string) => void
   onCreateDocument: () => void
+  onRenameDocument: (id: string) => void
+  onShareDocument: (id: string) => void
   onToggleFavorite: (id: string) => void
+  onDeleteDocument: (id: string) => void
+  favoriteOnly?: boolean
 }) {
-  const fileDocuments = documents.filter((document) => document.type === 'file' && !document.isTrashed)
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null)
+  const openMenuRef = useRef<HTMLDivElement | null>(null)
+  const fileDocuments = documents.filter(
+    (document) => document.type === 'file' && !document.isTrashed && (!favoriteOnly || document.isFavorite),
+  )
   const recentDocuments = [...fileDocuments].sort((left, right) => {
     const leftTime = new Date(left.updatedAt ?? left.createdAt).getTime()
     const rightTime = new Date(right.updatedAt ?? right.createdAt).getTime()
     return rightTime - leftTime
   })
+  const pageKicker = favoriteOnly ? 'Favorites' : 'Dashboard'
+  const pageTitle = favoriteOnly ? '收藏夾' : '早安，準備好撰寫今天的實驗結報了嗎？'
+  const sectionTitle = favoriteOnly ? '已收藏檔案' : '近期編輯檔案'
+  const emptyTitle = favoriteOnly ? '尚未收藏任何報告' : '目前沒有報告'
+  const emptyDescription = favoriteOnly
+    ? '在文件卡片或檔案樹點擊星號，即可把常用報告收進收藏夾。'
+    : '點擊右上角建立第一份報告吧！'
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (
+        openMenuRef.current &&
+        event.target instanceof Node &&
+        !openMenuRef.current.contains(event.target)
+      ) {
+        setOpenMenuId(null)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
 
   return (
     <main className={`min-h-0 flex-1 overflow-auto bg-zinc-50 transition-colors duration-300 dark:bg-zinc-950 ${SCROLLBAR_HIDE}`}>
@@ -976,25 +1077,27 @@ function DashboardView({
         <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
           <div>
             <p className="mb-2 text-sm font-medium text-zinc-500 dark:text-zinc-400">
-              Dashboard
+              {pageKicker}
             </p>
             <h1 className="mb-8 text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
-              早安，準備好撰寫今天的實驗結報了嗎？
+              {pageTitle}
             </h1>
           </div>
-          <button
-            type="button"
-            onClick={onCreateDocument}
-            className="rounded-lg bg-zinc-950 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
-          >
-            新增報告
-          </button>
+          {!favoriteOnly && (
+            <button
+              type="button"
+              onClick={onCreateDocument}
+              className="rounded-lg bg-zinc-950 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+            >
+              新增報告
+            </button>
+          )}
         </div>
 
         <section>
           <div className="mb-3 flex items-center justify-between">
             <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
-              近期編輯檔案
+              {sectionTitle}
             </h2>
             <span className="text-sm text-zinc-400">{fileDocuments.length} 份文件</span>
           </div>
@@ -1003,17 +1106,19 @@ function DashboardView({
               <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-zinc-100 text-2xl dark:bg-zinc-800">
                 📄
               </div>
-              <h3 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">目前沒有報告</h3>
+              <h3 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">{emptyTitle}</h3>
               <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
-                點擊右上角建立第一份報告吧！
+                {emptyDescription}
               </p>
-              <button
-                type="button"
-                onClick={onCreateDocument}
-                className="mt-6 rounded-xl bg-zinc-950 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
-              >
-                建立第一份報告
-              </button>
+              {!favoriteOnly && (
+                <button
+                  type="button"
+                  onClick={onCreateDocument}
+                  className="mt-6 rounded-xl bg-zinc-950 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+                >
+                  建立第一份報告
+                </button>
+              )}
             </div>
           ) : (
             <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
@@ -1088,13 +1193,72 @@ function DashboardView({
                         </p>
                       </div>
                     </div>
-                    <span
-                      className="absolute bottom-4 right-4 rounded-full px-2 py-1 text-lg leading-none text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
-                      onClick={(event) => event.stopPropagation()}
-                      title="更多操作"
+                    <div
+                      ref={openMenuId === document.id ? openMenuRef : null}
+                      className="absolute bottom-4 right-4"
                     >
-                      ⋯
-                    </span>
+                      <button
+                        type="button"
+                        className="rounded-full px-2 py-1 text-lg leading-none text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          setOpenMenuId((current) => (current === document.id ? null : document.id))
+                        }}
+                        title="更多操作"
+                        aria-label="更多操作"
+                      >
+                        ⋯
+                      </button>
+                      {openMenuId === document.id && (
+                        <div className="absolute bottom-full right-0 z-50 mb-2 w-56 overflow-hidden rounded-xl border border-zinc-200 bg-white py-2 text-sm shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              setOpenMenuId(null)
+                              onRenameDocument(document.id)
+                            }}
+                            className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                          >
+                            📄 重新命名
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              setOpenMenuId(null)
+                              onShareDocument(document.id)
+                            }}
+                            className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                          >
+                            ✨ 分享產生連結
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              setOpenMenuId(null)
+                              onToggleFavorite(document.id)
+                            }}
+                            className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                          >
+                            {document.isFavorite ? '⭐ 取消收藏' : '⭐ 加入收藏'}
+                          </button>
+                          <div className="my-2 h-px bg-zinc-100 dark:bg-zinc-800" />
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation()
+                              setOpenMenuId(null)
+                              onDeleteDocument(document.id)
+                            }}
+                            className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/40"
+                          >
+                            🗑️ 刪除此報告
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                   </article>
                 )
@@ -1268,7 +1432,15 @@ function TemplatesView({
   )
 }
 
-function LandingPage({ onLogin }: { onLogin: () => void }) {
+function LandingPage({
+  onLogin,
+  onContinueAsGuest,
+  authLoading,
+}: {
+  onLogin: () => void
+  onContinueAsGuest: () => void
+  authLoading: boolean
+}) {
   return (
     <div className={`min-h-screen overflow-auto bg-[#FAFAFC] text-zinc-900 ${SCROLLBAR_HIDE}`}>
       <nav className="mx-auto flex max-w-7xl items-center justify-between px-8 py-6">
@@ -1276,6 +1448,7 @@ function LandingPage({ onLogin }: { onLogin: () => void }) {
         <button
           type="button"
           onClick={onLogin}
+          disabled={authLoading}
           className="text-sm font-medium text-zinc-500 transition-colors hover:text-zinc-900"
         >
           登入
@@ -1290,59 +1463,86 @@ function LandingPage({ onLogin }: { onLogin: () => void }) {
           <p className="mx-auto mt-6 max-w-2xl text-center text-lg leading-8 text-zinc-500 md:text-xl">
             結合 AI 驅動與 Markdown 協作，為理工實驗結報打造的下一代撰寫平台。
           </p>
-          <button
-            type="button"
-            onClick={onLogin}
-            className="mx-auto mt-10 flex items-center justify-center gap-2 rounded-full bg-zinc-900 px-6 py-3 text-sm font-medium text-white shadow-sm transition-all hover:bg-zinc-800"
-          >
-            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white text-xs font-semibold text-zinc-900">
-              G
-            </span>
-            使用 Google 繼續
-          </button>
+          <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row sm:gap-4">
+            <button
+              type="button"
+              onClick={onLogin}
+              disabled={authLoading}
+              className="flex min-w-36 items-center justify-center gap-2 rounded-full bg-zinc-900 px-6 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <span>➕</span>
+              {authLoading ? '連線中' : '註冊'}
+            </button>
+            <button
+              type="button"
+              onClick={onLogin}
+              disabled={authLoading}
+              className="flex min-w-36 items-center justify-center gap-2 rounded-full border border-zinc-200 bg-white px-6 py-3 text-sm font-semibold text-zinc-800 shadow-sm transition-all hover:-translate-y-0.5 hover:border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <span>👤</span>
+              登入
+            </button>
+            <button
+              type="button"
+              onClick={onContinueAsGuest}
+              disabled={authLoading}
+              className="flex min-w-36 items-center justify-center gap-2 rounded-full px-5 py-3 text-sm font-semibold text-zinc-500 transition-colors hover:text-zinc-900"
+            >
+              <span>🏃‍♂️</span>
+              以訪客身份繼續
+            </button>
+          </div>
 
-          <div className="mx-auto mt-16 h-96 max-w-5xl overflow-hidden rounded-2xl border border-zinc-200/60 bg-white shadow-[0_20px_50px_rgba(0,0,0,0.03)]">
-            <div className="flex h-10 items-center gap-2 border-b border-zinc-100 px-5">
-              <span className="h-2.5 w-2.5 rounded-full bg-zinc-200" />
-              <span className="h-2.5 w-2.5 rounded-full bg-zinc-200" />
-              <span className="h-2.5 w-2.5 rounded-full bg-zinc-200" />
+          <div className="mx-auto mt-16 max-w-5xl overflow-hidden rounded-2xl border border-zinc-200/70 bg-white shadow-xl shadow-zinc-200/60">
+            <div className="flex h-12 items-center justify-between border-b border-zinc-100 px-5">
+              <div className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 rounded-full bg-zinc-200" />
+                <span className="h-2.5 w-2.5 rounded-full bg-zinc-200" />
+                <span className="h-2.5 w-2.5 rounded-full bg-zinc-200" />
+              </div>
+              <div className="h-7 w-28 rounded-full bg-zinc-100" />
             </div>
-            <div className="grid h-[calc(100%-2.5rem)] grid-cols-[260px_1fr]">
-              <aside className="border-r border-zinc-100 bg-zinc-50/70 p-6">
-                <div className="mb-8 h-4 w-28 rounded-full bg-zinc-200/80" />
+            <div className="grid min-h-96 grid-cols-1 md:grid-cols-[220px_1fr]">
+              <aside className="border-b border-zinc-100 bg-zinc-50/80 p-5 md:border-b-0 md:border-r">
+                <div className="mb-6 h-9 rounded-xl bg-zinc-900/90" />
                 <div className="space-y-3">
-                  <div className="h-8 rounded-lg bg-white shadow-sm" />
-                  <div className="h-8 rounded-lg bg-zinc-200/50" />
-                  <div className="h-8 rounded-lg bg-zinc-200/40" />
+                  <div className="h-8 rounded-lg bg-white shadow-sm ring-1 ring-zinc-100" />
+                  <div className="h-8 rounded-lg bg-zinc-100" />
+                  <div className="h-8 rounded-lg bg-zinc-100" />
+                  <div className="h-8 rounded-lg bg-zinc-100/70" />
                 </div>
-                <div className="mt-10 space-y-3">
-                  <div className="h-3 w-20 rounded-full bg-zinc-200/70" />
-                  <div className="h-7 rounded-md bg-zinc-200/40" />
-                  <div className="h-7 rounded-md bg-zinc-200/40" />
+                <div className="mt-8 space-y-3">
+                  <div className="h-3 w-20 rounded-full bg-zinc-200/80" />
+                  <div className="h-7 rounded-md bg-zinc-100" />
+                  <div className="h-7 rounded-md bg-zinc-100" />
                 </div>
               </aside>
-              <div className="grid grid-cols-2">
-                <div className="border-r border-zinc-100 p-8">
-                  <div className="mb-8 h-5 w-44 rounded-full bg-zinc-200/80" />
-                  <div className="space-y-4">
-                    <div className="h-3 w-11/12 rounded-full bg-zinc-200/70" />
-                    <div className="h-3 w-10/12 rounded-full bg-zinc-200/60" />
-                    <div className="h-3 w-8/12 rounded-full bg-zinc-200/60" />
-                    <div className="h-24 rounded-xl border border-zinc-100 bg-zinc-50" />
-                    <div className="h-3 w-9/12 rounded-full bg-zinc-200/60" />
-                    <div className="h-3 w-7/12 rounded-full bg-zinc-200/50" />
+              <div className="bg-white p-6 md:p-8">
+                <div className="mb-7 flex flex-wrap items-center justify-between gap-4">
+                  <div>
+                    <div className="mb-3 h-5 w-56 rounded-full bg-zinc-200/80" />
+                    <div className="h-3 w-72 max-w-full rounded-full bg-zinc-100" />
                   </div>
+                  <div className="h-9 w-32 rounded-full bg-zinc-900/90" />
                 </div>
-                <div className="p-8">
-                  <div className="mb-8 h-5 w-36 rounded-full bg-zinc-200/80" />
-                  <div className="space-y-5">
-                    <div className="h-4 w-8/12 rounded-full bg-zinc-200/70" />
-                    <div className="space-y-3">
-                      <div className="h-3 rounded-full bg-zinc-200/50" />
-                      <div className="h-3 w-11/12 rounded-full bg-zinc-200/50" />
-                      <div className="h-3 w-10/12 rounded-full bg-zinc-200/50" />
+                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                  {[0, 1, 2].map((item) => (
+                    <div key={item} className="rounded-2xl border border-zinc-100 bg-zinc-50 p-4">
+                      <div className="mb-5 h-24 rounded-xl bg-white shadow-sm ring-1 ring-zinc-100" />
+                      <div className="mb-2 h-3 w-10/12 rounded-full bg-zinc-200/80" />
+                      <div className="h-3 w-7/12 rounded-full bg-zinc-200/60" />
                     </div>
-                    <div className="h-32 rounded-xl bg-zinc-50 ring-1 ring-zinc-100" />
+                  ))}
+                </div>
+                <div className="mt-6 rounded-2xl border border-zinc-100 bg-zinc-50 p-5">
+                  <div className="mb-4 h-4 w-44 rounded-full bg-zinc-200/80" />
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <div className="h-3 rounded-full bg-zinc-200/70" />
+                      <div className="h-3 w-11/12 rounded-full bg-zinc-200/60" />
+                      <div className="h-3 w-8/12 rounded-full bg-zinc-200/50" />
+                    </div>
+                    <div className="h-20 rounded-xl bg-white shadow-sm ring-1 ring-zinc-100" />
                   </div>
                 </div>
               </div>
@@ -1354,7 +1554,15 @@ function LandingPage({ onLogin }: { onLogin: () => void }) {
   )
 }
 
-function WorkspaceApp() {
+function WorkspaceApp({
+  user,
+  isGuest,
+  onSignOut,
+}: {
+  user: User | null
+  isGuest: boolean
+  onSignOut: () => void
+}) {
   const [initialWorkspace] = useState(getInitialWorkspace)
   const [documents, setDocuments] = useState<Document[]>(initialWorkspace.documents)
   const [activeDocumentId, setActiveDocumentId] = useState(initialWorkspace.activeDocumentId)
@@ -2195,20 +2403,34 @@ function WorkspaceApp() {
       return
     }
 
-    const shareUrl = `${window.location.origin}/?docId=${activeDocument.id}`
+    await shareDocument(activeDocument.id, true)
+  }
+
+  async function shareDocument(documentId: string, updateShareButton = false) {
+    const targetDocument = documents.find(
+      (document) => document.id === documentId && document.type === 'file' && !document.isTrashed,
+    )
+    if (!targetDocument) {
+      setBridgeToast('找不到可分享的報告')
+      return
+    }
+
+    const shareUrl = `${window.location.origin}/?docId=${targetDocument.id}`
 
     try {
       await navigator.clipboard.writeText(shareUrl)
-      setShareCopied(true)
+      if (updateShareButton) setShareCopied(true)
       setBridgeToast('分享連結已複製')
 
-      if (shareResetTimerRef.current !== null) {
-        window.clearTimeout(shareResetTimerRef.current)
+      if (updateShareButton) {
+        if (shareResetTimerRef.current !== null) {
+          window.clearTimeout(shareResetTimerRef.current)
+        }
+        shareResetTimerRef.current = window.setTimeout(() => {
+          setShareCopied(false)
+          shareResetTimerRef.current = null
+        }, 2000)
       }
-      shareResetTimerRef.current = window.setTimeout(() => {
-        setShareCopied(false)
-        shareResetTimerRef.current = null
-      }, 2000)
     } catch (err) {
       const message = err instanceof Error ? err.message : '剪貼簿寫入失敗'
       setBridgeToast(`分享連結複製失敗：${message}`)
@@ -2242,6 +2464,9 @@ function WorkspaceApp() {
         onToggleFavorite={toggleDocumentFavorite}
         onOpenExtensionModal={() => setIsExtensionModalOpen(true)}
         onOpenFeedback={openFeedback}
+        user={user}
+        isGuest={isGuest}
+        onSignOut={onSignOut}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
@@ -2404,7 +2629,21 @@ function WorkspaceApp() {
           documents={documents}
           onOpenDocument={selectDocument}
           onCreateDocument={createNewDocument}
+          onRenameDocument={renameDocument}
+          onShareDocument={shareDocument}
           onToggleFavorite={toggleDocumentFavorite}
+          onDeleteDocument={deleteDocument}
+        />
+      ) : currentView === 'favorites' ? (
+        <DashboardView
+          documents={documents}
+          onOpenDocument={selectDocument}
+          onCreateDocument={createNewDocument}
+          onRenameDocument={renameDocument}
+          onShareDocument={shareDocument}
+          onToggleFavorite={toggleDocumentFavorite}
+          onDeleteDocument={deleteDocument}
+          favoriteOnly
         />
       ) : currentView === 'trash' ? (
         <TrashView
@@ -2657,13 +2896,82 @@ function WorkspaceApp() {
 }
 
 function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [user, setUser] = useState<User | null>(null)
+  const [isGuest, setIsGuest] = useState(false)
+  const [authLoading, setAuthLoading] = useState(Boolean(supabase))
 
-  if (!isAuthenticated) {
-    return <LandingPage onLogin={() => setIsAuthenticated(true)} />
+  useEffect(() => {
+    if (!supabase) return
+
+    let isMounted = true
+
+    supabase.auth.getSession().then(({ data }) => {
+      if (!isMounted) return
+      setUser(data.session?.user ?? null)
+      setAuthLoading(false)
+    })
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null)
+      setAuthLoading(false)
+      if (session?.user) setIsGuest(false)
+    })
+
+    return () => {
+      isMounted = false
+      subscription.unsubscribe()
+    }
+  }, [])
+
+  async function signInWithGoogle() {
+    if (!supabase) {
+      window.alert('尚未設定 Supabase 環境變數，請先設定 VITE_SUPABASE_URL 與 VITE_SUPABASE_ANON_KEY。')
+      return
+    }
+
+    setAuthLoading(true)
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: window.location.origin,
+      },
+    })
+
+    if (error) {
+      setAuthLoading(false)
+      window.alert(`登入失敗：${error.message}`)
+    }
   }
 
-  return <WorkspaceApp />
+  async function signOut() {
+    setIsGuest(false)
+    setUser(null)
+    if (supabase) {
+      await supabase.auth.signOut()
+    }
+  }
+
+  if (authLoading) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-[#FAFAFC] text-sm font-medium text-zinc-500">
+        正在確認登入狀態...
+      </div>
+    )
+  }
+
+  if (!user && !isGuest) {
+    return (
+      <LandingPage
+        onLogin={signInWithGoogle}
+        onContinueAsGuest={() => setIsGuest(true)}
+        authLoading={authLoading}
+      />
+    )
+  }
+
+  return <WorkspaceApp user={user} isGuest={isGuest} onSignOut={signOut} />
 }
 
 export default App
