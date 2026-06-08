@@ -19,8 +19,6 @@ import {
   AlignRight,
   Bold,
   Code,
-  FileDown,
-  FileText,
   Heading1,
   Heading2,
   Image,
@@ -611,6 +609,7 @@ function DocumentSidebar({
   onRenameDocument,
   onDeleteDocument,
   onToggleFavorite,
+  onOpenExtensionModal,
 }: {
   documents: Document[]
   activeDocumentId: string
@@ -625,7 +624,10 @@ function DocumentSidebar({
   onRenameDocument: (id: string) => void
   onDeleteDocument: (id: string) => void
   onToggleFavorite: (id: string) => void
+  onOpenExtensionModal: () => void
 }) {
+  const [isProjectTreeOpen, setIsProjectTreeOpen] = useState(true)
+  const [isMoreOpen, setIsMoreOpen] = useState(false)
   const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(
     () => new Set(documents.filter((document) => document.type === 'folder').map((document) => document.id)),
   )
@@ -671,11 +673,14 @@ function DocumentSidebar({
         </button>
         <button
           type="button"
-          title="我的報告"
-          onClick={() => onChangeView('editor')}
+          title="項目"
+          onClick={() => {
+            setIsProjectTreeOpen(true)
+            onChangeView('editor')
+          }}
           className={TOOLBAR_ICON_BTN}
         >
-          📝
+          📁
         </button>
         <button
           type="button"
@@ -692,6 +697,14 @@ function DocumentSidebar({
           className={`${TOOLBAR_ICON_BTN} mt-auto`}
         >
           <Plus className="h-[18px] w-[18px]" strokeWidth={2} />
+        </button>
+        <button
+          type="button"
+          title="安裝擴充套件"
+          onClick={onOpenExtensionModal}
+          className={TOOLBAR_ICON_BTN}
+        >
+          🧩
         </button>
       </aside>
     )
@@ -775,8 +788,8 @@ function DocumentSidebar({
   }
 
   return (
-    <aside className="flex w-72 shrink-0 flex-col border-r border-zinc-200 bg-zinc-100/50 transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950/70">
-      <div className="flex items-center justify-between border-b border-zinc-200/60 px-4 py-3 dark:border-zinc-800">
+    <aside className="flex w-72 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950/70">
+      <div className="flex items-center justify-between px-5 py-5">
         <div>
           <h2 className="text-sm font-semibold text-zinc-950 dark:text-zinc-100">AutoLabReport</h2>
           <p className="text-xs text-zinc-500 dark:text-zinc-400">SaaS Workspace</p>
@@ -793,70 +806,138 @@ function DocumentSidebar({
         </div>
       </div>
 
-      <nav className="space-y-1 border-b border-zinc-200/60 px-3 py-3 dark:border-zinc-800">
-        {[
-          ['dashboard', '🏠', '總覽'] as const,
-          ['editor', '📝', '我的報告'] as const,
-          ['templates', '✨', '模板市集'] as const,
-        ].map(([view, icon, label]) => (
-          <button
-            key={view}
-            type="button"
-            onClick={() => onChangeView(view)}
-            className={`flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm font-medium transition ${
-              currentView === view
-                ? 'border border-zinc-200/50 bg-white font-medium text-zinc-900 shadow-sm dark:border-zinc-700/70 dark:bg-zinc-900 dark:text-zinc-100'
-                : 'text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
-            }`}
-          >
-            <span className="w-5 text-center">{icon}</span>
-            {label}
-          </button>
-        ))}
+      <div className="px-4 pb-4">
+        <button
+          type="button"
+          onClick={onCreateDocument}
+          className="flex w-full items-center justify-center gap-2 rounded-xl bg-zinc-900 px-4 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:bg-zinc-800 active:scale-[0.99] dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+        >
+          <Plus className="h-4 w-4" strokeWidth={2.2} />
+          建立新報告
+        </button>
+      </div>
+
+      <nav className="space-y-1 px-3 pb-3">
+        <button
+          type="button"
+          onClick={() => onChangeView('dashboard')}
+          className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm font-medium transition ${
+            currentView === 'dashboard'
+              ? 'border border-zinc-200/50 bg-white font-medium text-zinc-900 shadow-sm dark:border-zinc-700/70 dark:bg-zinc-900 dark:text-zinc-100'
+              : 'text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
+          }`}
+        >
+          <span className="w-5 text-center">🏠</span>
+          首頁
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setIsProjectTreeOpen((current) => !current)
+            onChangeView('editor')
+          }}
+          className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm font-medium transition ${
+            currentView === 'editor'
+              ? 'border border-zinc-200/50 bg-white font-medium text-zinc-900 shadow-sm dark:border-zinc-700/70 dark:bg-zinc-900 dark:text-zinc-100'
+              : 'text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
+          }`}
+        >
+          <span className="w-5 text-center">📁</span>
+          <span className="flex-1">項目</span>
+          <span className="text-xs text-zinc-400">{isProjectTreeOpen ? '⌄' : '›'}</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => onChangeView('templates')}
+          className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm font-medium transition ${
+            currentView === 'templates'
+              ? 'border border-zinc-200/50 bg-white font-medium text-zinc-900 shadow-sm dark:border-zinc-700/70 dark:bg-zinc-900 dark:text-zinc-100'
+              : 'text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
+          }`}
+        >
+          <span className="w-5 text-center">✨</span>
+          探索模板
+        </button>
+        <button
+          type="button"
+          onClick={onOpenExtensionModal}
+          className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm font-medium text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100"
+        >
+          <span className="w-5 text-center">🧩</span>
+          安裝擴充套件
+        </button>
       </nav>
 
       <div className={`min-h-0 flex-1 overflow-auto px-3 py-3 ${SCROLLBAR_HIDE}`}>
-        <div className="mb-3 flex items-center justify-between px-2">
-          <div>
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
-              近期檔案
-            </h3>
-            <p className="text-[11px] text-zinc-400">{fileDocuments.length} 份報告</p>
-          </div>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              title="建立新資料夾"
-              onClick={onCreateFolder}
-              className={TOOLBAR_ICON_BTN}
-            >
-              📁
-            </button>
-            <button
-              type="button"
-              title="建立新報告"
-              onClick={onCreateDocument}
-              className={TOOLBAR_ICON_BTN}
-            >
-              <Plus className="h-[18px] w-[18px]" strokeWidth={2} />
-            </button>
-          </div>
-        </div>
-        {favoriteDocuments.length > 0 && (
-          <section className="mb-4">
-            <h3 className="mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-zinc-400">
-              收藏
-            </h3>
-            <div className="space-y-1">{favoriteDocuments.map((document) => renderDocumentNode(document))}</div>
-          </section>
-        )}
+        {isProjectTreeOpen && (
+          <>
+            <div className="mb-3 flex items-center justify-between px-2">
+              <div>
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+                  項目
+                </h3>
+                <p className="text-[11px] text-zinc-400">{fileDocuments.length} 份報告</p>
+              </div>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  title="建立新資料夾"
+                  onClick={onCreateFolder}
+                  className={TOOLBAR_ICON_BTN}
+                >
+                  📁
+                </button>
+                <button
+                  type="button"
+                  title="建立新報告"
+                  onClick={onCreateDocument}
+                  className={TOOLBAR_ICON_BTN}
+                >
+                  <Plus className="h-[18px] w-[18px]" strokeWidth={2} />
+                </button>
+              </div>
+            </div>
+            {favoriteDocuments.length > 0 && (
+              <section className="mb-4">
+                <h3 className="mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+                  收藏
+                </h3>
+                <div className="space-y-1">{favoriteDocuments.map((document) => renderDocumentNode(document))}</div>
+              </section>
+            )}
 
-        <section>
-          <h3 className="mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-zinc-400">
-            全部
-          </h3>
-          <div className="space-y-1">{getChildren(null).map((document) => renderDocumentNode(document))}</div>
-        </section>
+            <section>
+              <h3 className="mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+                全部
+              </h3>
+              <div className="space-y-1">{getChildren(null).map((document) => renderDocumentNode(document))}</div>
+            </section>
+          </>
+        )}
+      </div>
+
+      <div className="relative border-t border-zinc-200/60 p-3 dark:border-zinc-800">
+        <button
+          type="button"
+          onClick={() => setIsMoreOpen((current) => !current)}
+          className="flex w-full items-center justify-between rounded-md px-3 py-2 text-sm font-medium text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100"
+        >
+          <span>更多</span>
+          <span>⋯</span>
+        </button>
+        {isMoreOpen && (
+          <div className="absolute bottom-14 left-3 right-3 rounded-xl border border-zinc-200/60 bg-white p-2 shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
+            {['🗑️ 垃圾桶', '💡 意見回饋', '⚙️ 設定'].map((item) => (
+              <button
+                key={item}
+                type="button"
+                className="w-full rounded-lg px-3 py-2 text-left text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              >
+                {item}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </aside>
   )
@@ -921,15 +1002,32 @@ function DashboardView({
             </h2>
             <span className="text-sm text-zinc-400">{fileDocuments.length} 份文件</span>
           </div>
-          <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
             {recentDocuments.map((document) => (
               <button
                 key={document.id}
                 type="button"
                 onClick={() => onOpenDocument(document.id)}
-                className="group flex min-h-44 cursor-pointer flex-col rounded-xl border border-zinc-200 bg-white p-6 text-left shadow-sm transition-all duration-300 hover:border-zinc-300 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
+                className="group relative flex h-80 cursor-pointer flex-col overflow-hidden rounded-2xl border border-zinc-200/60 bg-white text-left shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-zinc-300 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
               >
-                <div className="mb-4 flex items-start justify-between gap-3">
+                <div className="flex flex-[2] items-center justify-center bg-zinc-50 px-8 py-8 dark:bg-zinc-900/60">
+                  <div className="w-full max-w-44 rounded-xl border border-zinc-200/60 bg-white p-5 shadow-[0_10px_30px_rgba(0,0,0,0.04)] dark:border-zinc-800 dark:bg-zinc-950">
+                    <div className="mb-4 flex items-center gap-2">
+                      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-100 text-xl dark:bg-zinc-800">
+                        📄
+                      </div>
+                      <div className="h-3 w-20 rounded-full bg-zinc-200/80 dark:bg-zinc-700" />
+                    </div>
+                    <div className="space-y-2.5">
+                      <div className="h-2.5 rounded-full bg-zinc-200/70 dark:bg-zinc-700" />
+                      <div className="h-2.5 w-11/12 rounded-full bg-zinc-200/60 dark:bg-zinc-700" />
+                      <div className="h-2.5 w-9/12 rounded-full bg-zinc-200/60 dark:bg-zinc-700" />
+                      <div className="mt-4 h-14 rounded-lg bg-zinc-100 dark:bg-zinc-800" />
+                    </div>
+                  </div>
+                </div>
+
+                <div className="relative flex flex-1 items-start gap-3 border-t border-zinc-100 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
                   <div className="min-w-0">
                     <h3 className="mb-2 truncate text-lg font-semibold text-zinc-800 dark:text-zinc-50">
                       {document.title}
@@ -941,10 +1039,14 @@ function DashboardView({
                   {document.isFavorite && (
                     <Star className="h-4 w-4 shrink-0 fill-amber-400 text-amber-400" />
                   )}
+                  <span
+                    className="absolute bottom-4 right-4 rounded-full px-2 py-1 text-lg leading-none text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                    onClick={(event) => event.stopPropagation()}
+                    title="更多操作"
+                  >
+                    ⋯
+                  </span>
                 </div>
-                <p className="line-clamp-3 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
-                  {document.content.trim() || '尚未撰寫內容'}
-                </p>
               </button>
             ))}
           </div>
@@ -1028,7 +1130,93 @@ function TemplatesView({
   )
 }
 
-function App() {
+function LandingPage({ onLogin }: { onLogin: () => void }) {
+  return (
+    <div className={`min-h-screen overflow-auto bg-[#FAFAFC] text-zinc-900 ${SCROLLBAR_HIDE}`}>
+      <nav className="mx-auto flex max-w-7xl items-center justify-between px-8 py-6">
+        <div className="text-sm font-semibold tracking-tight">AutoLabReport</div>
+        <button
+          type="button"
+          onClick={onLogin}
+          className="text-sm font-medium text-zinc-500 transition-colors hover:text-zinc-900"
+        >
+          登入
+        </button>
+      </nav>
+
+      <main className="px-6 pb-20">
+        <section className="mx-auto max-w-6xl pt-10">
+          <h1 className="mx-auto mt-20 text-center text-5xl font-bold tracking-tight text-zinc-900 md:text-7xl">
+            重塑你的學術生產力。
+          </h1>
+          <p className="mx-auto mt-6 max-w-2xl text-center text-lg leading-8 text-zinc-500 md:text-xl">
+            結合 AI 驅動與 Markdown 協作，為理工實驗結報打造的下一代撰寫平台。
+          </p>
+          <button
+            type="button"
+            onClick={onLogin}
+            className="mx-auto mt-10 flex items-center justify-center gap-2 rounded-full bg-zinc-900 px-6 py-3 text-sm font-medium text-white shadow-sm transition-all hover:bg-zinc-800"
+          >
+            <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white text-xs font-semibold text-zinc-900">
+              G
+            </span>
+            使用 Google 繼續
+          </button>
+
+          <div className="mx-auto mt-16 h-96 max-w-5xl overflow-hidden rounded-2xl border border-zinc-200/60 bg-white shadow-[0_20px_50px_rgba(0,0,0,0.03)]">
+            <div className="flex h-10 items-center gap-2 border-b border-zinc-100 px-5">
+              <span className="h-2.5 w-2.5 rounded-full bg-zinc-200" />
+              <span className="h-2.5 w-2.5 rounded-full bg-zinc-200" />
+              <span className="h-2.5 w-2.5 rounded-full bg-zinc-200" />
+            </div>
+            <div className="grid h-[calc(100%-2.5rem)] grid-cols-[260px_1fr]">
+              <aside className="border-r border-zinc-100 bg-zinc-50/70 p-6">
+                <div className="mb-8 h-4 w-28 rounded-full bg-zinc-200/80" />
+                <div className="space-y-3">
+                  <div className="h-8 rounded-lg bg-white shadow-sm" />
+                  <div className="h-8 rounded-lg bg-zinc-200/50" />
+                  <div className="h-8 rounded-lg bg-zinc-200/40" />
+                </div>
+                <div className="mt-10 space-y-3">
+                  <div className="h-3 w-20 rounded-full bg-zinc-200/70" />
+                  <div className="h-7 rounded-md bg-zinc-200/40" />
+                  <div className="h-7 rounded-md bg-zinc-200/40" />
+                </div>
+              </aside>
+              <div className="grid grid-cols-2">
+                <div className="border-r border-zinc-100 p-8">
+                  <div className="mb-8 h-5 w-44 rounded-full bg-zinc-200/80" />
+                  <div className="space-y-4">
+                    <div className="h-3 w-11/12 rounded-full bg-zinc-200/70" />
+                    <div className="h-3 w-10/12 rounded-full bg-zinc-200/60" />
+                    <div className="h-3 w-8/12 rounded-full bg-zinc-200/60" />
+                    <div className="h-24 rounded-xl border border-zinc-100 bg-zinc-50" />
+                    <div className="h-3 w-9/12 rounded-full bg-zinc-200/60" />
+                    <div className="h-3 w-7/12 rounded-full bg-zinc-200/50" />
+                  </div>
+                </div>
+                <div className="p-8">
+                  <div className="mb-8 h-5 w-36 rounded-full bg-zinc-200/80" />
+                  <div className="space-y-5">
+                    <div className="h-4 w-8/12 rounded-full bg-zinc-200/70" />
+                    <div className="space-y-3">
+                      <div className="h-3 rounded-full bg-zinc-200/50" />
+                      <div className="h-3 w-11/12 rounded-full bg-zinc-200/50" />
+                      <div className="h-3 w-10/12 rounded-full bg-zinc-200/50" />
+                    </div>
+                    <div className="h-32 rounded-xl bg-zinc-50 ring-1 ring-zinc-100" />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+  )
+}
+
+function WorkspaceApp() {
   const [initialWorkspace] = useState(getInitialWorkspace)
   const [documents, setDocuments] = useState<Document[]>(initialWorkspace.documents)
   const [activeDocumentId, setActiveDocumentId] = useState(initialWorkspace.activeDocumentId)
@@ -1044,11 +1232,15 @@ function App() {
   const [renderError, setRenderError] = useState<string | null>(null)
   const [healthMessage, setHealthMessage] = useState<string | null>(null)
   const [healthLoading, setHealthLoading] = useState(false)
-  const [exporting, setExporting] = useState(false)
+  const [, setExporting] = useState(false)
   const [isTablePickerOpen, setIsTablePickerOpen] = useState(false)
   const [tableRows, setTableRows] = useState(2)
   const [tableCols, setTableCols] = useState(3)
   const [isOutlineModalOpen, setIsOutlineModalOpen] = useState(false)
+  const [isExtensionModalOpen, setIsExtensionModalOpen] = useState(false)
+  const [isAdvancedMenuOpen, setIsAdvancedMenuOpen] = useState(false)
+  const [isTitleEditing, setIsTitleEditing] = useState(false)
+  const [titleDraft, setTitleDraft] = useState(activeDocument?.title ?? '')
   const [outlineExampleText, setOutlineExampleText] = useState('')
   const [outlineLoading, setOutlineLoading] = useState(false)
   const [bridgeToast, setBridgeToast] = useState<string | null>(null)
@@ -1067,6 +1259,7 @@ function App() {
   const editorPasteCleanupRef = useRef<(() => void) | null>(null)
   const imageInputRef = useRef<HTMLInputElement | null>(null)
   const previewRef = useRef<HTMLDivElement | null>(null)
+  const advancedMenuRef = useRef<HTMLDivElement | null>(null)
   const documentsRef = useRef<Document[]>(documents)
   const providerRef = useRef<WebrtcProvider | null>(null)
   const ytextRef = useRef<Y.Text | null>(null)
@@ -1090,6 +1283,23 @@ function App() {
   useEffect(() => {
     window.localStorage.setItem(ACTIVE_DOCUMENT_ID_STORAGE_KEY, activeDocumentId)
   }, [activeDocumentId])
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (
+        advancedMenuRef.current &&
+        event.target instanceof Node &&
+        !advancedMenuRef.current.contains(event.target)
+      ) {
+        setIsAdvancedMenuOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+    }
+  }, [])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -1708,6 +1918,25 @@ function App() {
     )
   }
 
+  function updateActiveDocumentTitle(nextTitle: string) {
+    const trimmedTitle = nextTitle.trim()
+    if (!activeDocument || !trimmedTitle) {
+      setTitleDraft(activeDocument?.title ?? '')
+      setIsTitleEditing(false)
+      return
+    }
+
+    setDocuments((currentDocuments) =>
+      currentDocuments.map((document) =>
+        document.id === activeDocument.id
+          ? { ...document, title: trimmedTitle, updatedAt: new Date().toISOString() }
+          : document,
+      ),
+    )
+    setTitleDraft(trimmedTitle)
+    setIsTitleEditing(false)
+  }
+
   function deleteDocument(id: string) {
     const targetDocument = documents.find((document) => document.id === id)
     if (!targetDocument) return
@@ -1850,6 +2079,41 @@ function App() {
     }
   }
 
+  function downloadMarkdownReport() {
+    if (isEditorEmpty) {
+      setRenderError('請先貼上或撰寫報告內容再下載')
+      return
+    }
+
+    const filename = `${activeDocument?.title ?? 'AutoLabReport'}.md`
+    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.URL.revokeObjectURL(url)
+    setIsAdvancedMenuOpen(false)
+  }
+
+  function syncWithGithub() {
+    setBridgeToast('GitHub 同步功能準備中')
+    setIsAdvancedMenuOpen(false)
+  }
+
+  function shareCurrentDocument() {
+    setBridgeToast('分享連結功能準備中')
+  }
+
+  function deleteActiveDocument() {
+    if (!activeDocument) return
+
+    setIsAdvancedMenuOpen(false)
+    deleteDocument(activeDocument.id)
+  }
+
   async function checkBackendHealth() {
     setHealthLoading(true)
     setHealthMessage(null)
@@ -1886,54 +2150,180 @@ function App() {
         onRenameDocument={renameDocument}
         onDeleteDocument={deleteDocument}
         onToggleFavorite={toggleDocumentFavorite}
+        onOpenExtensionModal={() => setIsExtensionModalOpen(true)}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
-      <header className="sticky top-0 z-40 flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50/80 px-5 py-4 backdrop-blur-md transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950/80">
-        <div>
-          <h1 className="text-xl font-semibold tracking-tight">AutoLabReport</h1>
-          <p className="mt-0.5 text-sm text-zinc-500 dark:text-zinc-400">
-            {activeDocument?.title ?? '未命名報告'} · Word 化工具列 · 所見即所得匯出
-          </p>
-        </div>
-        <div className="flex flex-wrap items-center gap-3">
-          {syncStatus === 'exporting' && (
-            <span className="text-sm font-medium text-amber-400">⚡ 正在打包 Word 檔...</span>
-          )}
-          {syncStatus === 'exportingPdf' && (
-            <span className="text-sm font-medium text-amber-400">⚡ 正在編譯 PDF...</span>
-          )}
-          {isGenerating && (
-            <span className="text-sm font-medium text-amber-400">⚡ 報告動態生成中...</span>
-          )}
-          {syncStatus === 'synced' && !isGenerating && !isEditorEmpty && (
-            <span className="text-sm font-medium text-emerald-400">✅ 預覽已同步</span>
-          )}
-          {syncStatus === 'error' && (
-            <span className="text-sm font-medium text-red-400">預覽同步失敗</span>
-          )}
-          <span className="text-xs font-medium text-blue-600 dark:text-blue-300">
-            {collaborationStatus} · {onlineCount} 人在線
-          </span>
-          {healthMessage && (
-            <span
-              className={`max-w-xs truncate text-xs ${
-                healthMessage.includes('失敗') ? 'text-red-400' : 'text-zinc-500 dark:text-zinc-400'
-              }`}
-            >
-              {healthMessage}
+      {currentView === 'editor' ? (
+        <header className="sticky top-0 z-40 flex h-14 shrink-0 items-center justify-between gap-3 border-b border-zinc-200 bg-white px-4 transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950">
+          <div className="min-w-0 flex-1">
+            {isTitleEditing ? (
+              <input
+                value={titleDraft}
+                autoFocus
+                onChange={(event) => setTitleDraft(event.target.value)}
+                onBlur={() => updateActiveDocumentTitle(titleDraft)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    updateActiveDocumentTitle(titleDraft)
+                  }
+                  if (event.key === 'Escape') {
+                    setTitleDraft(activeDocument?.title ?? '')
+                    setIsTitleEditing(false)
+                  }
+                }}
+                className="w-full max-w-md rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-1.5 text-sm font-semibold text-zinc-900 outline-none transition focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:bg-zinc-950"
+              />
+            ) : (
+              <button
+                type="button"
+                onClick={() => {
+                  setTitleDraft(activeDocument?.title ?? '')
+                  setIsTitleEditing(true)
+                }}
+                className="max-w-md truncate rounded-lg px-2 py-1 text-left text-sm font-semibold text-zinc-900 transition-colors hover:bg-zinc-100 dark:text-zinc-100 dark:hover:bg-zinc-900"
+                title="點擊重新命名"
+              >
+                {activeDocument?.title ?? '未命名報告'}
+              </button>
+            )}
+          </div>
+
+          <div className="flex items-center gap-2">
+            {syncStatus === 'exporting' && (
+              <span className="text-xs font-medium text-amber-500">正在打包 Word</span>
+            )}
+            {syncStatus === 'exportingPdf' && (
+              <span className="text-xs font-medium text-amber-500">正在編譯 PDF</span>
+            )}
+            {isGenerating && <span className="text-xs font-medium text-amber-500">同步中</span>}
+            {syncStatus === 'synced' && !isGenerating && !isEditorEmpty && (
+              <span className="text-xs font-medium text-emerald-600">已同步</span>
+            )}
+            {syncStatus === 'error' && (
+              <span className="text-xs font-medium text-red-500">同步失敗</span>
+            )}
+            <span className="text-xs font-medium text-zinc-500">
+              {collaborationStatus} · {onlineCount} 人在線
             </span>
-          )}
-          <button
-            type="button"
-            onClick={checkBackendHealth}
-            disabled={healthLoading}
-            className={SUBTLE_BUTTON}
-          >
-            {healthLoading ? '檢查中…' : '測試後端連線'}
-          </button>
-        </div>
-      </header>
+            <button
+              type="button"
+              onClick={shareCurrentDocument}
+              className="rounded-lg bg-zinc-900 px-3.5 py-1.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+            >
+              ✨ 分享
+            </button>
+
+            <div ref={advancedMenuRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setIsAdvancedMenuOpen((current) => !current)}
+                className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-lg leading-none text-zinc-600 shadow-sm transition hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                title="進階操作"
+              >
+                ⋯
+              </button>
+              {isAdvancedMenuOpen && (
+                <div className="absolute right-0 top-full z-50 mt-2 w-60 overflow-hidden rounded-xl border border-zinc-200 bg-white py-2 text-sm shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
+                  <button
+                    type="button"
+                    onClick={downloadMarkdownReport}
+                    className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                  >
+                    <span>📥</span>
+                    下載為 Markdown
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAdvancedMenuOpen(false)
+                      exportWordReport()
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                  >
+                    <span>📄</span>
+                    匯出為 Word (.docx)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAdvancedMenuOpen(false)
+                      exportPdfReport()
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                  >
+                    <span>🖨️</span>
+                    匯出為 PDF
+                  </button>
+                  <button
+                    type="button"
+                    onClick={syncWithGithub}
+                    className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                  >
+                    <span>🔄</span>
+                    與 GitHub 同步
+                  </button>
+                  <div className="my-2 h-px bg-zinc-100 dark:bg-zinc-800" />
+                  <button
+                    type="button"
+                    onClick={deleteActiveDocument}
+                    className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/40"
+                  >
+                    <span>🗑️</span>
+                    刪除此報告
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        </header>
+      ) : (
+        <header className="sticky top-0 z-40 flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50/80 px-5 py-4 backdrop-blur-md transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950/80">
+          <div>
+            <h1 className="text-xl font-semibold tracking-tight">AutoLabReport</h1>
+            <p className="mt-0.5 text-sm text-zinc-500 dark:text-zinc-400">
+              {activeDocument?.title ?? '未命名報告'} · Word 化工具列 · 所見即所得匯出
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            {syncStatus === 'exporting' && (
+              <span className="text-sm font-medium text-amber-400">⚡ 正在打包 Word 檔...</span>
+            )}
+            {syncStatus === 'exportingPdf' && (
+              <span className="text-sm font-medium text-amber-400">⚡ 正在編譯 PDF...</span>
+            )}
+            {isGenerating && (
+              <span className="text-sm font-medium text-amber-400">⚡ 報告動態生成中...</span>
+            )}
+            {syncStatus === 'synced' && !isGenerating && !isEditorEmpty && (
+              <span className="text-sm font-medium text-emerald-400">✅ 預覽已同步</span>
+            )}
+            {syncStatus === 'error' && (
+              <span className="text-sm font-medium text-red-400">預覽同步失敗</span>
+            )}
+            <span className="text-xs font-medium text-blue-600 dark:text-blue-300">
+              {collaborationStatus} · {onlineCount} 人在線
+            </span>
+            {healthMessage && (
+              <span
+                className={`max-w-xs truncate text-xs ${
+                  healthMessage.includes('失敗') ? 'text-red-400' : 'text-zinc-500 dark:text-zinc-400'
+                }`}
+              >
+                {healthMessage}
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={checkBackendHealth}
+              disabled={healthLoading}
+              className={SUBTLE_BUTTON}
+            >
+              {healthLoading ? '檢查中…' : '測試後端連線'}
+            </button>
+          </div>
+        </header>
+      )}
 
       {currentView === 'dashboard' ? (
         <DashboardView
@@ -2110,31 +2500,6 @@ function App() {
                 <span className="hidden sm:inline">清理 LLM 廢話</span>
               </button>
 
-              <ToolbarDivider />
-
-              <button
-                type="button"
-                title="匯出 Word 報告"
-                onClick={exportWordReport}
-                disabled={exporting || isEditorEmpty}
-                className="flex items-center gap-1.5 rounded-lg bg-blue-600 px-3.5 py-2 text-sm font-semibold text-white shadow-md transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <FileText className="h-4 w-4" strokeWidth={2} />
-                <span className="hidden sm:inline">匯出 Word</span>
-              </button>
-              <button
-                type="button"
-                title="匯出 PDF（所見即所得）"
-                onClick={exportPdfReport}
-                disabled={exporting || isEditorEmpty}
-                className="flex items-center gap-1.5 rounded-lg bg-red-600 px-3.5 py-2 text-sm font-semibold text-white shadow-md transition hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <FileDown className="h-4 w-4" strokeWidth={2} />
-                <span className="hidden sm:inline">匯出 PDF</span>
-              </button>
-
-              <ToolbarDivider />
-
               <ToolbarIconButton
                 title={isDarkMode ? '切換至淺色模式' : '切換至深色模式'}
                 onClick={toggleTheme}
@@ -2180,7 +2545,7 @@ function App() {
             <Editor
               height="100%"
               defaultLanguage="markdown"
-              theme={isDarkMode ? 'vs-dark' : 'light'}
+              theme="vs-dark"
               value={markdown}
               onMount={(ed) => {
                 editorRef.current = ed
@@ -2304,6 +2669,41 @@ function App() {
         </div>
       )}
 
+      {isExtensionModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/30 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-2xl border border-zinc-100 bg-white p-8 shadow-2xl transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950">
+            <div className="mb-6 flex items-start gap-4">
+              <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-zinc-100 text-2xl dark:bg-zinc-900">
+                🧩
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+                  安裝 AutoLabReport Bridge
+                </h2>
+                <p className="mt-2 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+                  Chrome 擴充套件已建立在專案根目錄的 extension 資料夾。請到 Chrome 的擴充功能頁面開啟開發人員模式，選擇「載入未封裝項目」，並選取該資料夾。
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-zinc-200/60 bg-zinc-50 p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
+              <div className="font-medium text-zinc-900 dark:text-zinc-100">路徑</div>
+              <div className="mt-1 font-mono text-xs">D:\AutoLabReport\extension</div>
+            </div>
+
+            <div className="mt-6 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setIsExtensionModalOpen(false)}
+                className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+              >
+                知道了
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {bridgeToast && (
         <div className="fixed bottom-5 right-5 z-[60] rounded-lg bg-zinc-950 px-4 py-3 text-sm font-medium text-white shadow-2xl dark:bg-zinc-100 dark:text-zinc-950">
           {bridgeToast}
@@ -2311,6 +2711,16 @@ function App() {
       )}
     </div>
   )
+}
+
+function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
+
+  if (!isAuthenticated) {
+    return <LandingPage onLogin={() => setIsAuthenticated(true)} />
+  }
+
+  return <WorkspaceApp />
 }
 
 export default App

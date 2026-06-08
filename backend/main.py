@@ -296,6 +296,11 @@ def health():
     return {"status": "ok", "service": "AutoLabReport API"}
 
 
+@app.get("/keep-alive")
+def keep_alive():
+    return {"status": "I am awake!", "message": "Render 伺服器保活中"}
+
+
 @app.post("/api/render", response_model=RenderResponse)
 def render(body: RenderRequest):
     return RenderResponse(markdown=render_markdown(body.markdown))
