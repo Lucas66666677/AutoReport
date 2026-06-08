@@ -1,0 +1,8 @@
+{
+  "dependencies": {
+    "mermaid": "^11.15.0",
+    "y-protocols": "^1.0.7",
+    "y-webrtc": "^10.3.0",
+    "yjs": "^13.6.31"
+  }
+}

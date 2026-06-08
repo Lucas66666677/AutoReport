@@ -1,0 +1,32 @@
+{
+  "manifest_version": 3,
+  "name": "AutoLabReport Bridge",
+  "version": "1.0",
+  "description": "Send selected or latest ChatGPT markdown content to AutoLabReport.",
+  "permissions": ["activeTab", "scripting", "tabs"],
+  "host_permissions": [
+    "*://chatgpt.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "*://*.vercel.app/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://chatgpt.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://localhost/*",
+        "http://127.0.0.1/*",
+        "*://*.vercel.app/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

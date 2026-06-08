@@ -3,12 +3,16 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type HTMLAttributes,
   type ImgHTMLAttributes,
   type ReactNode,
 } from 'react'
 import Editor from '@monaco-editor/react'
 import html2pdf from 'html2pdf.js'
 import 'katex/dist/katex.min.css'
+import mermaid from 'mermaid'
+import * as Y from 'yjs'
+import { WebrtcProvider } from 'y-webrtc'
 import {
   AlignCenter,
   AlignLeft,
@@ -50,6 +54,32 @@ const ACTIVE_DOCUMENT_ID_STORAGE_KEY = 'autoLabReport_activeDocumentId'
 
 const REMARK_PLUGINS = [remarkMath]
 const REHYPE_PLUGINS = [rehypeKatex, rehypeRaw]
+const ydoc = new Y.Doc()
+const documentYDocs = new Map<string, Y.Doc>()
+const YTEXT_NAME = 'monaco-or-textarea'
+const LOCAL_YJS_ORIGIN = 'local-monaco'
+
+mermaid.initialize({ startOnLoad: false, theme: 'default' })
+
+const LATEX_SNIPPETS = [
+  {
+    label: '電磁學：馬克士威方程組 (高斯)',
+    value: '$$\\nabla \\cdot \\mathbf{E} = \\frac{\\rho}{\\varepsilon_0}$$',
+  },
+  {
+    label: '電磁學：波動方程式',
+    value:
+      '$$\\nabla^2 \\mathbf{E} = \\mu_0 \\varepsilon_0 \\frac{\\partial^2 \\mathbf{E}}{\\partial t^2}$$',
+  },
+  {
+    label: '數位邏輯：布林代數範例',
+    value: '$f = y + z$',
+  },
+  {
+    label: '實驗誤差分析：標準差',
+    value: '$$s = \\sqrt{\\frac{\\sum_{i=1}^N (x_i - \\bar{x})^2}{N-1}}$$',
+  },
+]
 
 type SyncStatus =
   | 'pending'
@@ -67,13 +97,99 @@ type Document = {
   isFavorite: boolean
 }
 
+type WebrtcStatusEvent = {
+  connected: boolean
+}
+
+type AiSelectionMenuState = {
+  visible: boolean
+  top: number
+  left: number
+  selectedText: string
+}
+
+type StoredSelectionRange = {
+  startLineNumber: number
+  startColumn: number
+  endLineNumber: number
+  endColumn: number
+}
+
+type PendingAiSelection = {
+  range: StoredSelectionRange
+  startOffset: number
+  endOffset: number
+  text: string
+}
+
 const TOOLBAR_ICON_BTN =
   'rounded-md p-2 text-gray-500 transition-all hover:bg-gray-100 hover:text-gray-900 active:scale-95 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-100'
+
+function MermaidBlock({ chart }: { chart: string }) {
+  const [svg, setSvg] = useState('')
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    let isCancelled = false
+    const renderId = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+    async function renderMermaid() {
+      try {
+        const result = await mermaid.render(renderId, chart)
+        if (!isCancelled) {
+          setSvg(result.svg)
+          setError(null)
+        }
+      } catch (err) {
+        if (!isCancelled) {
+          const message = err instanceof Error ? err.message : 'Mermaid 渲染失敗'
+          setError(message)
+          setSvg('')
+        }
+      }
+    }
+
+    renderMermaid()
+
+    return () => {
+      isCancelled = true
+    }
+  }, [chart])
+
+  if (error) {
+    return <pre className="text-sm text-red-400">{error}</pre>
+  }
+
+  if (!svg) {
+    return <p className="text-sm text-gray-500">正在渲染 Mermaid 圖表...</p>
+  }
+
+  return (
+    <div
+      className="my-4 overflow-x-auto"
+      dangerouslySetInnerHTML={{ __html: svg }}
+    />
+  )
+}
 
 const MARKDOWN_COMPONENTS = {
   img: ({ alt, src, ...props }: ImgHTMLAttributes<HTMLImageElement>) => (
     <img {...props} src={src} alt={alt ?? 'matplotlib plot'} className="pdf-plot-image" />
   ),
+  code: ({ children, className, ...props }: HTMLAttributes<HTMLElement>) => {
+    const match = /language-(\w+)/.exec(className ?? '')
+    const code = String(children ?? '').replace(/\n$/, '')
+
+    if (match?.[1] === 'mermaid') {
+      return <MermaidBlock chart={code} />
+    }
+
+    return (
+      <code {...props} className={className}>
+        {children}
+      </code>
+    )
+  },
 }
 
 function ToolbarDivider() {
@@ -175,6 +291,33 @@ function convertTsvToMarkdownTable(text: string): string {
   ].join('\n')
 }
 
+function applyAutoNumbering(text: string): string {
+  let figureCount = 1
+  let tableCount = 1
+
+  return text
+    .replace(/!\[([^\]]*)\]\(([^)\r\n]+)\)|\[@fig:[^\]\s]+\]/g, (_match, caption, url) => {
+      const currentFigure = figureCount
+      figureCount += 1
+
+      if (caption !== undefined && url !== undefined) {
+        const normalizedCaption = String(caption).trim()
+        const numberedCaption = /^圖\s*\d+\s*[:：]/.test(normalizedCaption)
+          ? normalizedCaption
+          : `圖 ${currentFigure}: ${normalizedCaption || '圖片'}`
+
+        return `![${numberedCaption}](${url})`
+      }
+
+      return `圖 ${currentFigure}`
+    })
+    .replace(/\[@tbl:[^\]\s]+\]/g, () => {
+      const currentTable = tableCount
+      tableCount += 1
+      return `表 ${currentTable}`
+    })
+}
+
 function getInitialTheme() {
   if (typeof window === 'undefined') return 'dark'
 
@@ -192,6 +335,15 @@ function createDocument(title = '未命名報告', content = ''): Document {
     createdAt: new Date().toISOString(),
     isFavorite: false,
   }
+}
+
+function getDocumentYDoc(documentId: string) {
+  const existingDoc = documentYDocs.get(documentId)
+  if (existingDoc) return existingDoc
+
+  const nextDoc = documentYDocs.size === 0 ? ydoc : new Y.Doc()
+  documentYDocs.set(documentId, nextDoc)
+  return nextDoc
 }
 
 function getInitialDocuments(): Document[] {
@@ -395,11 +547,29 @@ function App() {
   const [isOutlineModalOpen, setIsOutlineModalOpen] = useState(false)
   const [outlineExampleText, setOutlineExampleText] = useState('')
   const [outlineLoading, setOutlineLoading] = useState(false)
+  const [bridgeToast, setBridgeToast] = useState<string | null>(null)
+  const [aiSelectionMenu, setAiSelectionMenu] = useState<AiSelectionMenuState>({
+    visible: false,
+    top: 0,
+    left: 0,
+    selectedText: '',
+  })
+  const [collaborationStatus, setCollaborationStatus] = useState('等待連線...')
+  const [onlineCount, setOnlineCount] = useState(1)
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
   const editorScrollDisposableRef = useRef<{ dispose: () => void } | null>(null)
+  const editorContentDisposableRef = useRef<{ dispose: () => void } | null>(null)
+  const editorSelectionDisposableRef = useRef<{ dispose: () => void } | null>(null)
   const editorPasteCleanupRef = useRef<(() => void) | null>(null)
   const imageInputRef = useRef<HTMLInputElement | null>(null)
   const previewRef = useRef<HTMLDivElement | null>(null)
+  const documentsRef = useRef<Document[]>(documents)
+  const providerRef = useRef<WebrtcProvider | null>(null)
+  const ytextRef = useRef<Y.Text | null>(null)
+  const ytextObserverCleanupRef = useRef<(() => void) | null>(null)
+  const isApplyingRemoteRef = useRef(false)
+  const activeAiSelectionRef = useRef<PendingAiSelection | null>(null)
+  const pendingAiSelectionRef = useRef<PendingAiSelection | null>(null)
 
   const isEditorEmpty = !markdown.trim()
   const isDarkMode = theme === 'dark'
@@ -437,9 +607,161 @@ function App() {
   useEffect(() => {
     return () => {
       editorScrollDisposableRef.current?.dispose()
+      editorContentDisposableRef.current?.dispose()
+      editorSelectionDisposableRef.current?.dispose()
       editorPasteCleanupRef.current?.()
+      ytextObserverCleanupRef.current?.()
+      providerRef.current?.destroy()
     }
   }, [])
+
+  useEffect(() => {
+    documentsRef.current = documents
+  }, [documents])
+
+  useEffect(() => {
+    function handleAutoLabReportInsert(event: Event) {
+      const customEvent = event as CustomEvent<{ text?: string }>
+      const incomingText = customEvent.detail?.text?.trim()
+      if (!incomingText) return
+
+      const ytext = ytextRef.current
+      const ed = editorRef.current
+      const model = ed?.getModel()
+      const position = ed?.getPosition()
+      const cursorOffset = model && position ? model.getOffsetAt(position) : ytext?.length ?? 0
+      const pendingReplacement = pendingAiSelectionRef.current
+
+      if (ytext && pendingReplacement) {
+        ytext.doc?.transact(() => {
+          ytext.delete(
+            pendingReplacement.startOffset,
+            pendingReplacement.endOffset - pendingReplacement.startOffset,
+          )
+          ytext.insert(pendingReplacement.startOffset, incomingText)
+        }, LOCAL_YJS_ORIGIN)
+        pendingAiSelectionRef.current = null
+        setAiSelectionMenu((current) => ({ ...current, visible: false }))
+      } else if (ytext) {
+        ytext.doc?.transact(() => {
+          ytext.insert(cursorOffset, incomingText)
+        }, LOCAL_YJS_ORIGIN)
+      } else if (ed && pendingReplacement) {
+        ed.executeEdits('extension-bridge', [
+          {
+            range: pendingReplacement.range,
+            text: incomingText,
+            forceMoveMarkers: true,
+          },
+        ])
+        ed.focus()
+        pendingAiSelectionRef.current = null
+        setAiSelectionMenu((current) => ({ ...current, visible: false }))
+      } else if (ed) {
+        const selection = ed.getSelection()
+        if (selection) {
+          ed.executeEdits('extension-bridge', [
+            { range: selection, text: incomingText, forceMoveMarkers: true },
+          ])
+          ed.focus()
+        }
+      }
+
+      setBridgeToast('✨ 成功接收 AI 內容並同步至協作房間！')
+    }
+
+    window.addEventListener('AutoLabReport_Insert', handleAutoLabReportInsert)
+    window.addEventListener('autolabreport:bridge-text', handleAutoLabReportInsert)
+
+    return () => {
+      window.removeEventListener('AutoLabReport_Insert', handleAutoLabReportInsert)
+      window.removeEventListener('autolabreport:bridge-text', handleAutoLabReportInsert)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!bridgeToast) return
+
+    const timer = window.setTimeout(() => {
+      setBridgeToast(null)
+    }, 2600)
+
+    return () => {
+      clearTimeout(timer)
+    }
+  }, [bridgeToast])
+
+  useEffect(() => {
+    if (!activeDocumentId) return
+
+    ytextObserverCleanupRef.current?.()
+    providerRef.current?.destroy()
+
+    const activeDoc = documentsRef.current.find((document) => document.id === activeDocumentId)
+    const roomDoc = getDocumentYDoc(activeDocumentId)
+    const ytext = roomDoc.getText(YTEXT_NAME)
+
+    if (ytext.length === 0 && activeDoc?.content) {
+      roomDoc.transact(() => {
+        ytext.insert(0, activeDoc.content)
+      }, LOCAL_YJS_ORIGIN)
+    }
+
+    ytextRef.current = ytext
+    const nextMarkdown = ytext.toString()
+    isApplyingRemoteRef.current = true
+    updateMarkdownValue(nextMarkdown)
+    editorRef.current?.setValue(nextMarkdown)
+    isApplyingRemoteRef.current = false
+
+    const provider = new WebrtcProvider(activeDocumentId, roomDoc)
+    providerRef.current = provider
+    const initialStatusTimer = window.setTimeout(() => {
+      setCollaborationStatus('等待連線...')
+      setOnlineCount(provider.awareness.getStates().size || 1)
+    }, 0)
+    provider.awareness.setLocalStateField('user', {
+      name: `User-${Math.random().toString(36).slice(2, 6)}`,
+    })
+
+    const handleStatus = (event: WebrtcStatusEvent) => {
+      setCollaborationStatus(
+        event.connected ? '🔗 已連線至協作房間' : '等待連線...',
+      )
+    }
+    const handleAwarenessChange = () => {
+      setOnlineCount(provider.awareness.getStates().size || 1)
+    }
+    const handleYTextChange = () => {
+      const remoteValue = ytext.toString()
+      isApplyingRemoteRef.current = true
+      updateMarkdownValue(remoteValue)
+      if (editorRef.current && editorRef.current.getValue() !== remoteValue) {
+        editorRef.current.setValue(remoteValue)
+      }
+      isApplyingRemoteRef.current = false
+    }
+
+    provider.on('status', handleStatus)
+    provider.awareness.on('change', handleAwarenessChange)
+    ytext.observe(handleYTextChange)
+    ytextObserverCleanupRef.current = () => {
+      ytext.unobserve(handleYTextChange)
+      provider.awareness.off('change', handleAwarenessChange)
+      provider.off('status', handleStatus)
+    }
+
+    return () => {
+      clearTimeout(initialStatusTimer)
+      ytext.unobserve(handleYTextChange)
+      provider.awareness.off('change', handleAwarenessChange)
+      provider.off('status', handleStatus)
+      provider.destroy()
+      if (providerRef.current === provider) {
+        providerRef.current = null
+      }
+    }
+  }, [activeDocumentId])
 
   useEffect(() => {
     if (isEditorEmpty) {
@@ -449,13 +771,14 @@ function App() {
     const controller = new AbortController()
 
     const timer = window.setTimeout(async () => {
+      const previewMarkdown = applyAutoNumbering(markdown)
       setSyncStatus('rendering')
       setRenderError(null)
       try {
         const res = await fetch(`${API_BASE_URL}/api/render`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ markdown }),
+          body: JSON.stringify({ markdown: previewMarkdown }),
           signal: controller.signal,
         })
         if (!res.ok) {
@@ -494,7 +817,43 @@ function App() {
 
   function syncEditorValue(value: string) {
     updateMarkdownValue(value)
-    editorRef.current?.setValue(value)
+    if (editorRef.current) {
+      editorRef.current.setValue(value)
+      return
+    }
+
+    const ytext = ytextRef.current
+    if (!ytext) return
+
+    ytext.doc?.transact(() => {
+      ytext.delete(0, ytext.length)
+      ytext.insert(0, value)
+    }, LOCAL_YJS_ORIGIN)
+  }
+
+  function applyMonacoChangesToYText(event: editor.IModelContentChangedEvent) {
+    if (isApplyingRemoteRef.current) return
+
+    const ytext = ytextRef.current
+    if (!ytext) {
+      updateMarkdownValue(editorRef.current?.getValue() ?? '')
+      return
+    }
+
+    ytext.doc?.transact(() => {
+      [...event.changes]
+        .sort((left, right) => right.rangeOffset - left.rangeOffset)
+        .forEach((change) => {
+          if (change.rangeLength > 0) {
+            ytext.delete(change.rangeOffset, change.rangeLength)
+          }
+          if (change.text) {
+            ytext.insert(change.rangeOffset, change.text)
+          }
+        })
+    }, LOCAL_YJS_ORIGIN)
+
+    updateMarkdownValue(ytext.toString())
   }
 
   function syncPreviewScroll() {
@@ -507,6 +866,72 @@ function App() {
     const previewMaxScroll = preview.scrollHeight - preview.clientHeight
 
     preview.scrollTop = scrollRatio * Math.max(previewMaxScroll, 0)
+  }
+
+  function updateAiSelectionMenu(ed: editor.IStandaloneCodeEditor) {
+    const selection = ed.getSelection()
+    const model = ed.getModel()
+    if (!selection || !model || selection.isEmpty()) {
+      activeAiSelectionRef.current = null
+      setAiSelectionMenu((current) =>
+        current.visible ? { ...current, visible: false, selectedText: '' } : current,
+      )
+      return
+    }
+
+    const selectedText = model.getValueInRange(selection)
+    if (!selectedText.trim()) {
+      activeAiSelectionRef.current = null
+      setAiSelectionMenu((current) =>
+        current.visible ? { ...current, visible: false, selectedText: '' } : current,
+      )
+      return
+    }
+
+    const startPosition = selection.getStartPosition()
+    const endPosition = selection.getEndPosition()
+    const visiblePosition = ed.getScrolledVisiblePosition(endPosition)
+    const layoutInfo = ed.getLayoutInfo()
+    const top = Math.max(8, (visiblePosition?.top ?? 48) - 46)
+    const left = Math.min(
+      Math.max(8, visiblePosition?.left ?? 8),
+      Math.max(8, layoutInfo.width - 220),
+    )
+
+    activeAiSelectionRef.current = {
+      range: {
+        startLineNumber: selection.startLineNumber,
+        startColumn: selection.startColumn,
+        endLineNumber: selection.endLineNumber,
+        endColumn: selection.endColumn,
+      },
+      startOffset: model.getOffsetAt(startPosition),
+      endOffset: model.getOffsetAt(endPosition),
+      text: selectedText,
+    }
+    setAiSelectionMenu({
+      visible: true,
+      top,
+      left,
+      selectedText,
+    })
+  }
+
+  function requestAiEdit(action: 'rewrite' | 'expand') {
+    const activeSelection = activeAiSelectionRef.current
+    if (!activeSelection) return
+
+    pendingAiSelectionRef.current = activeSelection
+    window.dispatchEvent(
+      new CustomEvent('AutoLabReport_RequestAI', {
+        detail: {
+          text: activeSelection.text,
+          action,
+        },
+      }),
+    )
+    setAiSelectionMenu((current) => ({ ...current, visible: false }))
+    setBridgeToast(action === 'rewrite' ? '已送出潤飾重寫請求' : '已送出擴寫內容請求')
   }
 
   function applyEditorEdit(text: string, cursorOffset?: number) {
@@ -642,6 +1067,13 @@ function App() {
     insertAtCursor('```python\n# 請在此輸入 Python 程式碼，系統將自動繪圖\n```')
   }
 
+  function insertLatexSnippet(value: string) {
+    if (!value) return
+
+    const snippet = value.startsWith('$$') ? `\n${value}\n` : value
+    insertAtCursor(snippet)
+  }
+
   function handleImageUpload(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     event.target.value = ''
@@ -707,7 +1139,10 @@ function App() {
 
   function loadDocument(document: Document) {
     setActiveDocumentId(document.id)
-    syncEditorValue(document.content)
+    isApplyingRemoteRef.current = true
+    updateMarkdownValue(document.content)
+    editorRef.current?.setValue(document.content)
+    isApplyingRemoteRef.current = false
   }
 
   function createNewDocument() {
@@ -768,10 +1203,11 @@ function App() {
     setExporting(true)
     setSyncStatus(status)
     try {
+      const exportMarkdown = applyAutoNumbering(markdown)
       const res = await fetch(`${API_BASE_URL}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ markdown }),
+        body: JSON.stringify({ markdown: exportMarkdown }),
       })
       if (!res.ok) {
         let detail = `HTTP ${res.status}`
@@ -921,6 +1357,9 @@ function App() {
           {syncStatus === 'error' && (
             <span className="text-sm font-medium text-red-400">預覽同步失敗</span>
           )}
+          <span className="text-xs font-medium text-blue-600 dark:text-blue-300">
+            {collaborationStatus} · {onlineCount} 人在線
+          </span>
           {healthMessage && (
             <span
               className={`max-w-xs truncate text-xs ${
@@ -1010,6 +1449,23 @@ function App() {
                 <ToolbarIconButton title="插入 Python 程式碼區塊" onClick={insertPythonCodeBlock}>
                   <Code className="h-[18px] w-[18px]" strokeWidth={2} />
                 </ToolbarIconButton>
+                <select
+                  title="插入常用 LaTeX 公式"
+                  aria-label="插入常用 LaTeX 公式"
+                  value=""
+                  onChange={(event) => {
+                    insertLatexSnippet(event.target.value)
+                    event.target.value = ''
+                  }}
+                  className="h-9 max-w-[150px] rounded-md border border-gray-300 bg-white px-2 text-sm font-medium text-gray-600 outline-none transition hover:bg-gray-100 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 dark:border-gray-700 dark:bg-gray-950 dark:text-gray-300 dark:hover:bg-gray-800"
+                >
+                  <option value="">∑ 公式</option>
+                  {LATEX_SNIPPETS.map((snippet) => (
+                    <option key={snippet.label} value={snippet.value}>
+                      {snippet.label}
+                    </option>
+                  ))}
+                </select>
                 <div className="relative">
                   <ToolbarIconButton
                     title="插入表格"
@@ -1128,7 +1584,35 @@ function App() {
             </div>
           </div>
 
-          <div className="min-h-[280px] flex-1 lg:min-h-0">
+          <div className="relative min-h-[280px] flex-1 lg:min-h-0">
+            {aiSelectionMenu.visible && (
+              <div
+                className="absolute z-50 flex items-center gap-1 rounded-lg border border-gray-200 bg-white px-1.5 py-1.5 text-sm shadow-xl transition-colors duration-200 dark:border-gray-700 dark:bg-gray-950"
+                style={{
+                  top: aiSelectionMenu.top,
+                  left: aiSelectionMenu.left,
+                }}
+              >
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => requestAiEdit('rewrite')}
+                  className="rounded-md px-3 py-1.5 font-medium text-purple-700 transition hover:bg-purple-50 dark:text-purple-200 dark:hover:bg-purple-950/60"
+                  title="潤飾重寫選取文字"
+                >
+                  ✨ 潤飾重寫
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => requestAiEdit('expand')}
+                  className="rounded-md px-3 py-1.5 font-medium text-blue-700 transition hover:bg-blue-50 dark:text-blue-200 dark:hover:bg-blue-950/60"
+                  title="擴寫選取文字"
+                >
+                  📈 擴寫內容
+                </button>
+              </div>
+            )}
             <Editor
               height="100%"
               defaultLanguage="markdown"
@@ -1140,7 +1624,16 @@ function App() {
                 editorScrollDisposableRef.current = ed.onDidScrollChange((event) => {
                   if (event.scrollTopChanged) {
                     syncPreviewScroll()
+                    updateAiSelectionMenu(ed)
                   }
+                })
+                editorContentDisposableRef.current?.dispose()
+                editorContentDisposableRef.current = ed.onDidChangeModelContent(
+                  applyMonacoChangesToYText,
+                )
+                editorSelectionDisposableRef.current?.dispose()
+                editorSelectionDisposableRef.current = ed.onDidChangeCursorSelection(() => {
+                  updateAiSelectionMenu(ed)
                 })
 
                 editorPasteCleanupRef.current?.()
@@ -1150,7 +1643,6 @@ function App() {
                   editorDomNode?.removeEventListener('paste', handleEditorPaste)
                 }
               }}
-              onChange={(value) => updateMarkdownValue(value ?? '')}
               options={{
                 minimap: { enabled: false },
                 wordWrap: 'on',
@@ -1241,6 +1733,12 @@ function App() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {bridgeToast && (
+        <div className="fixed bottom-5 right-5 z-[60] rounded-lg bg-gray-950 px-4 py-3 text-sm font-medium text-white shadow-2xl dark:bg-gray-100 dark:text-gray-950">
+          {bridgeToast}
         </div>
       )}
     </div>
