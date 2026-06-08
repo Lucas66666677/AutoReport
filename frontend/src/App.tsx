@@ -2,6 +2,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type FormEvent,
   type HTMLAttributes,
   type ImgHTMLAttributes,
   type ReactNode,
@@ -12,7 +13,7 @@ import 'katex/dist/katex.min.css'
 import mermaid from 'mermaid'
 import * as Y from 'yjs'
 import { WebrtcProvider } from 'y-webrtc'
-import { createClient, type User } from '@supabase/supabase-js'
+import { createClient, type Provider, type User } from '@supabase/supabase-js'
 import {
   PanelLeftClose,
   PanelLeftOpen,
@@ -1433,21 +1434,39 @@ function TemplatesView({
 }
 
 function LandingPage({
-  onLogin,
+  onOAuthLogin,
+  onSendMagicLink,
   onContinueAsGuest,
   authLoading,
 }: {
-  onLogin: () => void
+  onOAuthLogin: (provider: Provider) => void
+  onSendMagicLink: (email: string) => Promise<boolean>
   onContinueAsGuest: () => void
   authLoading: boolean
 }) {
+  const [email, setEmail] = useState('')
+  const [magicLinkSent, setMagicLinkSent] = useState(false)
+  const [magicLinkLoading, setMagicLinkLoading] = useState(false)
+
+  async function handleMagicLinkSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!email.trim() || magicLinkSent) return
+
+    setMagicLinkLoading(true)
+    const didSend = await onSendMagicLink(email.trim())
+    setMagicLinkLoading(false)
+    if (didSend) {
+      setMagicLinkSent(true)
+    }
+  }
+
   return (
     <div className={`min-h-screen overflow-auto bg-[#FAFAFC] text-zinc-900 ${SCROLLBAR_HIDE}`}>
       <nav className="mx-auto flex max-w-7xl items-center justify-between px-8 py-6">
         <div className="text-sm font-semibold tracking-tight">AutoLabReport</div>
         <button
           type="button"
-          onClick={onLogin}
+          onClick={() => onOAuthLogin('google')}
           disabled={authLoading}
           className="text-sm font-medium text-zinc-500 transition-colors hover:text-zinc-900"
         >
@@ -1463,30 +1482,71 @@ function LandingPage({
           <p className="mx-auto mt-6 max-w-2xl text-center text-lg leading-8 text-zinc-500 md:text-xl">
             結合 AI 驅動與 Markdown 協作，為理工實驗結報打造的下一代撰寫平台。
           </p>
-          <div className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row sm:gap-4">
-            <button
-              type="button"
-              onClick={onLogin}
-              disabled={authLoading}
-              className="flex min-w-36 items-center justify-center gap-2 rounded-full bg-zinc-900 px-6 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:-translate-y-0.5 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <span>➕</span>
-              {authLoading ? '連線中' : '註冊'}
-            </button>
-            <button
-              type="button"
-              onClick={onLogin}
-              disabled={authLoading}
-              className="flex min-w-36 items-center justify-center gap-2 rounded-full border border-zinc-200 bg-white px-6 py-3 text-sm font-semibold text-zinc-800 shadow-sm transition-all hover:-translate-y-0.5 hover:border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <span>👤</span>
-              登入
-            </button>
+          <div className="mx-auto mt-10 max-w-md rounded-2xl border border-zinc-200/70 bg-white p-6 shadow-xl shadow-zinc-200/60">
+            <form onSubmit={handleMagicLinkSubmit} className="space-y-3">
+              <label className="block text-sm font-semibold text-zinc-900" htmlFor="magic-link-email">
+                使用 Email 登入
+              </label>
+              <input
+                id="magic-link-email"
+                type="email"
+                value={email}
+                onChange={(event) => {
+                  setEmail(event.target.value)
+                  setMagicLinkSent(false)
+                }}
+                placeholder="輸入您的電子信箱"
+                className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 outline-none transition-all placeholder:text-zinc-400 focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10"
+                disabled={magicLinkLoading || magicLinkSent}
+                required
+              />
+              <button
+                type="submit"
+                disabled={!email.trim() || magicLinkLoading || magicLinkSent}
+                className="w-full rounded-xl bg-zinc-900 px-4 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {magicLinkSent
+                  ? '✅ 連結已發送，請檢查信箱'
+                  : magicLinkLoading
+                    ? '傳送中...'
+                    : '✨ 傳送登入連結'}
+              </button>
+            </form>
+
+            <div className="my-6 flex items-center gap-4 text-zinc-400">
+              <div className="h-px flex-1 bg-zinc-200" />
+              <span className="text-xs font-medium uppercase tracking-wider">或</span>
+              <div className="h-px flex-1 bg-zinc-200" />
+            </div>
+
+            <div className="space-y-3">
+              <button
+                type="button"
+                onClick={() => onOAuthLogin('google')}
+                disabled={authLoading}
+                className="flex w-full items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm font-semibold text-zinc-800 shadow-sm transition-all hover:border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-zinc-900 text-xs font-semibold text-white">
+                  G
+                </span>
+                使用 Google 繼續
+              </button>
+              <button
+                type="button"
+                onClick={() => onOAuthLogin('github')}
+                disabled={authLoading}
+                className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#24292f] px-4 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:bg-[#24292f]/90 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <span>GitHub</span>
+                使用 GitHub 繼續
+              </button>
+            </div>
+
             <button
               type="button"
               onClick={onContinueAsGuest}
               disabled={authLoading}
-              className="flex min-w-36 items-center justify-center gap-2 rounded-full px-5 py-3 text-sm font-semibold text-zinc-500 transition-colors hover:text-zinc-900"
+              className="mx-auto mt-5 flex items-center justify-center gap-2 px-3 py-2 text-sm font-semibold text-zinc-500 transition-colors hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
             >
               <span>🏃‍♂️</span>
               以訪客身份繼續
@@ -2925,7 +2985,7 @@ function App() {
     }
   }, [])
 
-  async function signInWithGoogle() {
+  async function signInWithOAuth(provider: Provider) {
     if (!supabase) {
       window.alert('尚未設定 Supabase 環境變數，請先設定 VITE_SUPABASE_URL 與 VITE_SUPABASE_ANON_KEY。')
       return
@@ -2933,7 +2993,7 @@ function App() {
 
     setAuthLoading(true)
     const { error } = await supabase.auth.signInWithOAuth({
-      provider: 'google',
+      provider,
       options: {
         redirectTo: window.location.origin,
       },
@@ -2943,6 +3003,27 @@ function App() {
       setAuthLoading(false)
       window.alert(`登入失敗：${error.message}`)
     }
+  }
+
+  async function sendMagicLink(email: string): Promise<boolean> {
+    if (!supabase) {
+      window.alert('尚未設定 Supabase 環境變數，請先設定 VITE_SUPABASE_URL 與 VITE_SUPABASE_ANON_KEY。')
+      return false
+    }
+
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: {
+        emailRedirectTo: window.location.origin,
+      },
+    })
+
+    if (error) {
+      window.alert(`登入連結發送失敗：${error.message}`)
+      return false
+    }
+
+    return true
   }
 
   async function signOut() {
@@ -2964,7 +3045,8 @@ function App() {
   if (!user && !isGuest) {
     return (
       <LandingPage
-        onLogin={signInWithGoogle}
+        onOAuthLogin={signInWithOAuth}
+        onSendMagicLink={sendMagicLink}
         onContinueAsGuest={() => setIsGuest(true)}
         authLoading={authLoading}
       />
