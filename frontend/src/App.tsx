@@ -2,7 +2,6 @@ import {
   useEffect,
   useRef,
   useState,
-  type ChangeEvent,
   type HTMLAttributes,
   type ImgHTMLAttributes,
   type ReactNode,
@@ -14,27 +13,13 @@ import mermaid from 'mermaid'
 import * as Y from 'yjs'
 import { WebrtcProvider } from 'y-webrtc'
 import {
-  AlignCenter,
-  AlignLeft,
-  AlignRight,
-  Bold,
-  Code,
-  Heading1,
-  Heading2,
-  Image,
-  Italic,
-  Moon,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
   Plus,
-  Redo2,
   Sparkles,
   Star,
-  Sun,
-  Table,
   Trash2,
-  Undo2,
   Wand2,
 } from 'lucide-react'
 import type { editor } from 'monaco-editor'
@@ -58,26 +43,6 @@ const YTEXT_NAME = 'monaco-or-textarea'
 const LOCAL_YJS_ORIGIN = 'local-monaco'
 
 mermaid.initialize({ startOnLoad: false, theme: 'default' })
-
-const LATEX_SNIPPETS = [
-  {
-    label: '電磁學：馬克士威方程組 (高斯)',
-    value: '$$\\nabla \\cdot \\mathbf{E} = \\frac{\\rho}{\\varepsilon_0}$$',
-  },
-  {
-    label: '電磁學：波動方程式',
-    value:
-      '$$\\nabla^2 \\mathbf{E} = \\mu_0 \\varepsilon_0 \\frac{\\partial^2 \\mathbf{E}}{\\partial t^2}$$',
-  },
-  {
-    label: '數位邏輯：布林代數範例',
-    value: '$f = y + z$',
-  },
-  {
-    label: '實驗誤差分析：標準差',
-    value: '$$s = \\sqrt{\\frac{\\sum_{i=1}^N (x_i - \\bar{x})^2}{N-1}}$$',
-  },
-]
 
 const DEFAULT_TEMPLATES = [
   {
@@ -271,11 +236,12 @@ type Document = {
   createdAt: string
   updatedAt?: string
   isFavorite: boolean
+  isTrashed: boolean
   type: 'file' | 'folder'
   parentId: string | null
 }
 
-type AppView = 'dashboard' | 'editor' | 'templates'
+type AppView = 'dashboard' | 'editor' | 'templates' | 'trash'
 
 type WebrtcStatusEvent = {
   connected: boolean
@@ -374,41 +340,6 @@ const MARKDOWN_COMPONENTS = {
       </code>
     )
   },
-}
-
-function ToolbarDivider() {
-  return <div className="mx-2 h-6 w-px shrink-0 bg-zinc-200/60 dark:bg-zinc-700" aria-hidden />
-}
-
-function ToolbarIconButton({
-  title,
-  onClick,
-  children,
-  className = '',
-}: {
-  title: string
-  onClick: () => void
-  children: ReactNode
-  className?: string
-}) {
-  return (
-    <button
-      type="button"
-      title={title}
-      aria-label={title}
-      onClick={onClick}
-      className={`${TOOLBAR_ICON_BTN} ${className}`}
-    >
-      {children}
-    </button>
-  )
-}
-
-function cleanLlmFluff(text: string): string {
-  return text
-    .replace(/^[^\r\n]*(好的|當然|這是一份|以下是)[^\r\n]*(?:\r?\n|$)/, '')
-    .replace(/(?:\r?\n)?[^\r\n]*(希望這|如果有任何問題|以上就是)[^\r\n]*\s*$/, '')
-    .trim()
 }
 
 function smartFormat(text: string): string {
@@ -520,6 +451,7 @@ function createDocument(title = '未命名報告', content = '', parentId: strin
     createdAt: now,
     updatedAt: now,
     isFavorite: false,
+    isTrashed: false,
     type: 'file',
     parentId,
   }
@@ -534,6 +466,7 @@ function createFolder(title = '新資料夾', parentId: string | null = null): D
     createdAt: now,
     updatedAt: now,
     isFavorite: false,
+    isTrashed: false,
     type: 'folder',
     parentId,
   }
@@ -544,6 +477,7 @@ function normalizeDocument(document: Document): Document {
     ...document,
     content: document.content ?? '',
     isFavorite: document.isFavorite ?? false,
+    isTrashed: document.isTrashed ?? false,
     type: document.type ?? 'file',
     parentId: document.parentId ?? null,
   }
@@ -559,28 +493,31 @@ function getDocumentYDoc(documentId: string) {
 }
 
 function getInitialDocuments(): Document[] {
-  if (typeof window === 'undefined') return [createDocument()]
+  if (typeof window === 'undefined') return []
 
   const savedDocuments = window.localStorage.getItem(DOCUMENTS_STORAGE_KEY)
   if (savedDocuments) {
     try {
       const parsed = JSON.parse(savedDocuments) as Document[]
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed.map(normalizeDocument)
+      if (Array.isArray(parsed)) return parsed.map(normalizeDocument)
     } catch {
       /* ignore invalid local storage payload */
     }
   }
 
   const legacyContent = window.localStorage.getItem(CONTENT_STORAGE_KEY) ?? ''
-  return [createDocument('實驗報告', legacyContent)]
+  return legacyContent.trim() ? [createDocument('實驗報告', legacyContent)] : []
 }
 
 function getInitialActiveDocumentId(documents: Document[]) {
-  const firstFileId = documents.find((document) => document.type === 'file')?.id ?? ''
+  const firstFileId = documents.find((document) => document.type === 'file' && !document.isTrashed)?.id ?? ''
   if (typeof window === 'undefined') return firstFileId
 
   const savedId = window.localStorage.getItem(ACTIVE_DOCUMENT_ID_STORAGE_KEY)
-  if (savedId && documents.some((document) => document.id === savedId && document.type === 'file')) {
+  if (
+    savedId &&
+    documents.some((document) => document.id === savedId && document.type === 'file' && !document.isTrashed)
+  ) {
     return savedId
   }
 
@@ -610,6 +547,7 @@ function DocumentSidebar({
   onDeleteDocument,
   onToggleFavorite,
   onOpenExtensionModal,
+  onOpenFeedback,
 }: {
   documents: Document[]
   activeDocumentId: string
@@ -625,13 +563,15 @@ function DocumentSidebar({
   onDeleteDocument: (id: string) => void
   onToggleFavorite: (id: string) => void
   onOpenExtensionModal: () => void
+  onOpenFeedback: () => void
 }) {
   const [isProjectTreeOpen, setIsProjectTreeOpen] = useState(true)
   const [isMoreOpen, setIsMoreOpen] = useState(false)
   const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(
     () => new Set(documents.filter((document) => document.type === 'folder').map((document) => document.id)),
   )
-  const fileDocuments = documents.filter((document) => document.type === 'file')
+  const visibleDocuments = documents.filter((document) => !document.isTrashed)
+  const fileDocuments = visibleDocuments.filter((document) => document.type === 'file')
   const favoriteDocuments = fileDocuments.filter((document) => document.isFavorite)
 
   function toggleFolder(folderId: string) {
@@ -644,7 +584,7 @@ function DocumentSidebar({
   }
 
   function getChildren(parentId: string | null) {
-    return documents
+    return visibleDocuments
       .filter((document) => document.parentId === parentId)
       .sort((left, right) => {
         if (left.type !== right.type) return left.type === 'folder' ? -1 : 1
@@ -705,6 +645,14 @@ function DocumentSidebar({
           className={TOOLBAR_ICON_BTN}
         >
           🧩
+        </button>
+        <button
+          type="button"
+          title="垃圾桶"
+          onClick={() => onChangeView('trash')}
+          className={TOOLBAR_ICON_BTN}
+        >
+          🗑️
         </button>
       </aside>
     )
@@ -866,6 +814,18 @@ function DocumentSidebar({
           <span className="w-5 text-center">🧩</span>
           安裝擴充套件
         </button>
+        <button
+          type="button"
+          onClick={() => onChangeView('trash')}
+          className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm font-medium transition ${
+            currentView === 'trash'
+              ? 'border border-zinc-200/50 bg-white font-medium text-zinc-900 shadow-sm dark:border-zinc-700/70 dark:bg-zinc-900 dark:text-zinc-100'
+              : 'text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
+          }`}
+        >
+          <span className="w-5 text-center">🗑️</span>
+          垃圾桶
+        </button>
       </nav>
 
       <div className={`min-h-0 flex-1 overflow-auto px-3 py-3 ${SCROLLBAR_HIDE}`}>
@@ -927,15 +887,32 @@ function DocumentSidebar({
         </button>
         {isMoreOpen && (
           <div className="absolute bottom-14 left-3 right-3 rounded-xl border border-zinc-200/60 bg-white p-2 shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
-            {['🗑️ 垃圾桶', '💡 意見回饋', '⚙️ 設定'].map((item) => (
-              <button
-                key={item}
-                type="button"
-                className="w-full rounded-lg px-3 py-2 text-left text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
-              >
-                {item}
-              </button>
-            ))}
+            <button
+              type="button"
+              onClick={() => {
+                setIsMoreOpen(false)
+                onChangeView('trash')
+              }}
+              className="w-full rounded-lg px-3 py-2 text-left text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            >
+              🗑️ 垃圾桶
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setIsMoreOpen(false)
+                onOpenFeedback()
+              }}
+              className="w-full rounded-lg px-3 py-2 text-left text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            >
+              💡 意見回饋
+            </button>
+            <button
+              type="button"
+              className="w-full rounded-lg px-3 py-2 text-left text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            >
+              ⚙️ 設定
+            </button>
           </div>
         )}
       </div>
@@ -958,16 +935,35 @@ function formatDocumentTime(value?: string) {
   }
 }
 
+function getDocumentPreview(document: Document): string {
+  const content = document.content.trim()
+  if (!content) return ''
+
+  const heading = content.match(/^#{1,6}\s+(.+)$/m)?.[1]?.trim()
+  if (heading) return heading.slice(0, 100)
+
+  return content
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/!\[[^\]]*]\([^)]*\)/g, '')
+    .replace(/\[[^\]]+]\([^)]*\)/g, '$1')
+    .replace(/[#*_`>|-]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 100)
+}
+
 function DashboardView({
   documents,
   onOpenDocument,
   onCreateDocument,
+  onToggleFavorite,
 }: {
   documents: Document[]
   onOpenDocument: (id: string) => void
   onCreateDocument: () => void
+  onToggleFavorite: (id: string) => void
 }) {
-  const fileDocuments = documents.filter((document) => document.type === 'file')
+  const fileDocuments = documents.filter((document) => document.type === 'file' && !document.isTrashed)
   const recentDocuments = [...fileDocuments].sort((left, right) => {
     const leftTime = new Date(left.updatedAt ?? left.createdAt).getTime()
     const rightTime = new Date(right.updatedAt ?? right.createdAt).getTime()
@@ -1002,55 +998,197 @@ function DashboardView({
             </h2>
             <span className="text-sm text-zinc-400">{fileDocuments.length} 份文件</span>
           </div>
-          <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
-            {recentDocuments.map((document) => (
+          {recentDocuments.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-zinc-200 bg-white px-8 py-16 text-center shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-zinc-100 text-2xl dark:bg-zinc-800">
+                📄
+              </div>
+              <h3 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">目前沒有報告</h3>
+              <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+                點擊右上角建立第一份報告吧！
+              </p>
               <button
-                key={document.id}
                 type="button"
-                onClick={() => onOpenDocument(document.id)}
-                className="group relative flex h-80 cursor-pointer flex-col overflow-hidden rounded-2xl border border-zinc-200/60 bg-white text-left shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-zinc-300 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
+                onClick={onCreateDocument}
+                className="mt-6 rounded-xl bg-zinc-950 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
               >
-                <div className="flex flex-[2] items-center justify-center bg-zinc-50 px-8 py-8 dark:bg-zinc-900/60">
-                  <div className="w-full max-w-44 rounded-xl border border-zinc-200/60 bg-white p-5 shadow-[0_10px_30px_rgba(0,0,0,0.04)] dark:border-zinc-800 dark:bg-zinc-950">
-                    <div className="mb-4 flex items-center gap-2">
-                      <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-100 text-xl dark:bg-zinc-800">
-                        📄
-                      </div>
-                      <div className="h-3 w-20 rounded-full bg-zinc-200/80 dark:bg-zinc-700" />
-                    </div>
-                    <div className="space-y-2.5">
-                      <div className="h-2.5 rounded-full bg-zinc-200/70 dark:bg-zinc-700" />
-                      <div className="h-2.5 w-11/12 rounded-full bg-zinc-200/60 dark:bg-zinc-700" />
-                      <div className="h-2.5 w-9/12 rounded-full bg-zinc-200/60 dark:bg-zinc-700" />
-                      <div className="mt-4 h-14 rounded-lg bg-zinc-100 dark:bg-zinc-800" />
-                    </div>
-                  </div>
-                </div>
+                建立第一份報告
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
+              {recentDocuments.map((document) => {
+                const previewText = getDocumentPreview(document)
 
-                <div className="relative flex flex-1 items-start gap-3 border-t border-zinc-100 bg-white p-5 dark:border-zinc-800 dark:bg-zinc-900">
+                return (
+                  <article
+                    key={document.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => onOpenDocument(document.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault()
+                        onOpenDocument(document.id)
+                      }
+                    }}
+                    className="group relative flex min-h-80 cursor-pointer flex-col overflow-hidden rounded-2xl border border-zinc-200/60 bg-white text-left shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-zinc-300 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
+                  >
+                    <button
+                      type="button"
+                      title={document.isFavorite ? '取消收藏' : '收藏'}
+                      aria-label={document.isFavorite ? '取消收藏' : '收藏'}
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        onToggleFavorite(document.id)
+                      }}
+                      className="absolute right-4 top-4 z-10 rounded-full bg-white/90 p-2 text-zinc-400 shadow-sm ring-1 ring-zinc-200/70 transition hover:scale-105 hover:text-amber-500 dark:bg-zinc-900/90 dark:ring-zinc-700"
+                    >
+                      <Star
+                        className={`h-4 w-4 ${
+                          document.isFavorite ? 'fill-amber-400 text-amber-400' : ''
+                        }`}
+                        strokeWidth={2}
+                      />
+                    </button>
+
+                    <div className="flex min-h-52 shrink-0 items-center justify-center bg-zinc-50 px-8 py-8 dark:bg-zinc-900/60">
+                      <div className="h-36 w-full max-w-48 overflow-hidden rounded-xl border border-zinc-200/60 bg-white p-5 shadow-[0_10px_30px_rgba(0,0,0,0.04)] dark:border-zinc-800 dark:bg-zinc-950">
+                        {previewText ? (
+                          <div className="h-full rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900">
+                            <p className="line-clamp-6 text-xs leading-5 text-zinc-400 dark:text-zinc-500">
+                              {previewText}
+                            </p>
+                          </div>
+                        ) : (
+                          <div className="space-y-2.5">
+                            <div className="mb-4 flex items-center gap-2">
+                              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-100 text-xl dark:bg-zinc-800">
+                                📄
+                              </div>
+                              <div className="h-3 w-20 rounded-full bg-zinc-200/80 dark:bg-zinc-700" />
+                            </div>
+                            <div className="h-2.5 rounded-full bg-zinc-200/70 dark:bg-zinc-700" />
+                            <div className="h-2.5 w-11/12 rounded-full bg-zinc-200/60 dark:bg-zinc-700" />
+                            <div className="h-2.5 w-9/12 rounded-full bg-zinc-200/60 dark:bg-zinc-700" />
+                            <div className="mt-4 h-10 rounded-lg bg-zinc-100 dark:bg-zinc-800" />
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="relative min-h-28 shrink-0 border-t border-zinc-100 bg-white p-5 pb-10 pr-12 dark:border-zinc-800 dark:bg-zinc-900">
+                    <div className="flex min-w-0 items-start gap-3">
+                      <div className="min-w-0 flex-1">
+                        <h3 className="mb-2 truncate text-lg font-semibold leading-snug text-zinc-800 dark:text-zinc-50">
+                          {document.title}
+                        </h3>
+                        <p className="text-sm leading-relaxed text-zinc-500 dark:text-zinc-400">
+                          最後修改：{formatDocumentTime(document.updatedAt ?? document.createdAt)}
+                        </p>
+                      </div>
+                    </div>
+                    <span
+                      className="absolute bottom-4 right-4 rounded-full px-2 py-1 text-lg leading-none text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                      onClick={(event) => event.stopPropagation()}
+                      title="更多操作"
+                    >
+                      ⋯
+                    </span>
+                  </div>
+                  </article>
+                )
+              })}
+            </div>
+          )}
+        </section>
+      </div>
+    </main>
+  )
+}
+
+function TrashView({
+  documents,
+  onRestoreDocument,
+  onHardDeleteDocument,
+}: {
+  documents: Document[]
+  onRestoreDocument: (id: string) => void
+  onHardDeleteDocument: (id: string) => void
+}) {
+  const trashedDocuments = documents
+    .filter((document) => document.type === 'file' && document.isTrashed)
+    .sort((left, right) => {
+      const leftTime = new Date(left.updatedAt ?? left.createdAt).getTime()
+      const rightTime = new Date(right.updatedAt ?? right.createdAt).getTime()
+      return rightTime - leftTime
+    })
+
+  return (
+    <main className={`min-h-0 flex-1 overflow-auto bg-zinc-50 transition-colors duration-300 dark:bg-zinc-950 ${SCROLLBAR_HIDE}`}>
+      <div className="mx-auto max-w-6xl px-8 py-12">
+        <p className="mb-2 text-sm font-medium text-zinc-500 dark:text-zinc-400">Trash</p>
+        <h1 className="mb-3 text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
+          垃圾桶
+        </h1>
+        <p className="mb-8 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+          軟刪除的報告會先放在這裡。你可以復原文件，或永久刪除不再保留。
+        </p>
+
+        {trashedDocuments.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-zinc-200 bg-white px-8 py-16 text-center shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-zinc-100 text-2xl dark:bg-zinc-800">
+              🗑️
+            </div>
+            <h3 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">垃圾桶是空的</h3>
+            <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+              被刪除的報告會出現在這裡，方便你復原或永久清除。
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            {trashedDocuments.map((document) => (
+              <article
+                key={document.id}
+                className="rounded-2xl border border-zinc-200/60 bg-white p-5 shadow-sm transition-all hover:border-zinc-300 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
+              >
+                <div className="flex items-start justify-between gap-4">
                   <div className="min-w-0">
-                    <h3 className="mb-2 truncate text-lg font-semibold text-zinc-800 dark:text-zinc-50">
+                    <h2 className="truncate text-lg font-semibold text-zinc-900 dark:text-zinc-50">
                       {document.title}
-                    </h3>
-                    <p className="text-sm text-zinc-500 dark:text-zinc-400">
-                      最後修改：{formatDocumentTime(document.updatedAt ?? document.createdAt)}
+                    </h2>
+                    <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+                      刪除時間：{formatDocumentTime(document.updatedAt ?? document.createdAt)}
+                    </p>
+                    <p className="mt-3 line-clamp-2 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+                      {getDocumentPreview(document) || '這份報告沒有可顯示的內容預覽。'}
                     </p>
                   </div>
                   {document.isFavorite && (
-                    <Star className="h-4 w-4 shrink-0 fill-amber-400 text-amber-400" />
+                    <Star className="h-4 w-4 shrink-0 fill-amber-400 text-amber-400" strokeWidth={2} />
                   )}
-                  <span
-                    className="absolute bottom-4 right-4 rounded-full px-2 py-1 text-lg leading-none text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
-                    onClick={(event) => event.stopPropagation()}
-                    title="更多操作"
-                  >
-                    ⋯
-                  </span>
                 </div>
-              </button>
+
+                <div className="mt-5 flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onRestoreDocument(document.id)}
+                    className="rounded-lg bg-zinc-900 px-3.5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+                  >
+                    復原
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onHardDeleteDocument(document.id)}
+                    className="rounded-lg border border-red-200 px-3.5 py-2 text-sm font-semibold text-red-600 transition hover:bg-red-50 dark:border-red-900/70 dark:text-red-300 dark:hover:bg-red-950/40"
+                  >
+                    永久刪除
+                  </button>
+                </div>
+              </article>
             ))}
           </div>
-        </section>
+        )}
       </div>
     </main>
   )
@@ -1223,19 +1361,14 @@ function WorkspaceApp() {
   const [currentView, setCurrentView] = useState<AppView>('dashboard')
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
   const activeDocument =
-    documents.find((document) => document.id === activeDocumentId && document.type === 'file') ??
-    documents.find((document) => document.type === 'file')
+    documents.find((document) => document.id === activeDocumentId && document.type === 'file' && !document.isTrashed) ??
+    documents.find((document) => document.type === 'file' && !document.isTrashed)
   const [markdown, setMarkdown] = useState(activeDocument?.content ?? '')
   const [preview, setPreview] = useState('')
-  const [theme, setTheme] = useState<'light' | 'dark'>(getInitialTheme)
+  const [theme] = useState<'light' | 'dark'>(getInitialTheme)
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('synced')
   const [renderError, setRenderError] = useState<string | null>(null)
-  const [healthMessage, setHealthMessage] = useState<string | null>(null)
-  const [healthLoading, setHealthLoading] = useState(false)
   const [, setExporting] = useState(false)
-  const [isTablePickerOpen, setIsTablePickerOpen] = useState(false)
-  const [tableRows, setTableRows] = useState(2)
-  const [tableCols, setTableCols] = useState(3)
   const [isOutlineModalOpen, setIsOutlineModalOpen] = useState(false)
   const [isExtensionModalOpen, setIsExtensionModalOpen] = useState(false)
   const [isAdvancedMenuOpen, setIsAdvancedMenuOpen] = useState(false)
@@ -1244,6 +1377,7 @@ function WorkspaceApp() {
   const [outlineExampleText, setOutlineExampleText] = useState('')
   const [outlineLoading, setOutlineLoading] = useState(false)
   const [bridgeToast, setBridgeToast] = useState<string | null>(null)
+  const [shareCopied, setShareCopied] = useState(false)
   const [aiSelectionMenu, setAiSelectionMenu] = useState<AiSelectionMenuState>({
     visible: false,
     top: 0,
@@ -1257,7 +1391,6 @@ function WorkspaceApp() {
   const editorContentDisposableRef = useRef<{ dispose: () => void } | null>(null)
   const editorSelectionDisposableRef = useRef<{ dispose: () => void } | null>(null)
   const editorPasteCleanupRef = useRef<(() => void) | null>(null)
-  const imageInputRef = useRef<HTMLInputElement | null>(null)
   const previewRef = useRef<HTMLDivElement | null>(null)
   const advancedMenuRef = useRef<HTMLDivElement | null>(null)
   const documentsRef = useRef<Document[]>(documents)
@@ -1267,6 +1400,8 @@ function WorkspaceApp() {
   const isApplyingRemoteRef = useRef(false)
   const activeAiSelectionRef = useRef<PendingAiSelection | null>(null)
   const pendingAiSelectionRef = useRef<PendingAiSelection | null>(null)
+  const shareResetTimerRef = useRef<number | null>(null)
+  const hasOpenedSharedDocRef = useRef(false)
 
   const isEditorEmpty = !markdown.trim()
   const isDarkMode = theme === 'dark'
@@ -1324,6 +1459,9 @@ function WorkspaceApp() {
       editorContentDisposableRef.current?.dispose()
       editorSelectionDisposableRef.current?.dispose()
       editorPasteCleanupRef.current?.()
+      if (shareResetTimerRef.current !== null) {
+        window.clearTimeout(shareResetTimerRef.current)
+      }
       ytextObserverCleanupRef.current?.()
       providerRef.current?.destroy()
     }
@@ -1331,6 +1469,30 @@ function WorkspaceApp() {
 
   useEffect(() => {
     documentsRef.current = documents
+  }, [documents])
+
+  useEffect(() => {
+    if (hasOpenedSharedDocRef.current) return
+
+    const sharedDocId = new URLSearchParams(window.location.search).get('docId')
+    if (!sharedDocId) return
+
+    const sharedDocument = documents.find(
+      (document) => document.id === sharedDocId && document.type === 'file' && !document.isTrashed,
+    )
+    if (!sharedDocument) return
+
+    hasOpenedSharedDocRef.current = true
+    const openTimer = window.setTimeout(() => {
+      setActiveDocumentId(sharedDocument.id)
+      isApplyingRemoteRef.current = true
+      updateMarkdownValue(sharedDocument.content)
+      editorRef.current?.setValue(sharedDocument.content)
+      isApplyingRemoteRef.current = false
+      setCurrentView('editor')
+    }, 0)
+
+    return () => window.clearTimeout(openTimer)
   }, [documents])
 
   useEffect(() => {
@@ -1684,131 +1846,8 @@ function WorkspaceApp() {
     insertAtCursor(table)
   }
 
-  function wrapInlineMarkdown(marker: string, placeholder: string) {
-    const ed = editorRef.current
-    if (!ed) return
-
-    const selection = ed.getSelection()
-    const model = ed.getModel()
-    if (!selection || !model) return
-
-    const selected = model.getValueInRange(selection)
-    if (selected) {
-      applyEditorEdit(`${marker}${selected}${marker}`)
-      return
-    }
-    applyEditorEdit(`${marker}${placeholder}${marker}`, marker.length)
-  }
-
-  function insertBold() {
-    wrapInlineMarkdown('**', '粗體文字')
-  }
-
-  function insertItalic() {
-    wrapInlineMarkdown('*', '斜體文字')
-  }
-
-  function handleUndo() {
-    const ed = editorRef.current
-    if (ed) {
-      ed.trigger('keyboard', 'undo', null)
-      updateMarkdownValue(ed.getValue())
-      ed.focus()
-      return
-    }
-
-    document.execCommand('undo')
-  }
-
-  function handleRedo() {
-    const ed = editorRef.current
-    if (ed) {
-      ed.trigger('keyboard', 'redo', null)
-      updateMarkdownValue(ed.getValue())
-      ed.focus()
-      return
-    }
-
-    document.execCommand('redo')
-  }
-
-  function wrapSelectionWithAlign(align: 'left' | 'center' | 'right') {
-    const ed = editorRef.current
-    if (!ed) return
-
-    const selection = ed.getSelection()
-    const model = ed.getModel()
-    if (!selection || !model) return
-
-    const selected = model.getValueInRange(selection) || '請輸入文字'
-    applyEditorEdit(`<div align="${align}">\n${selected}\n</div>`)
-  }
-
-  function buildMarkdownTable(rows: number, cols: number) {
-    const safeRows = Number.isFinite(rows) ? Math.max(1, Math.min(rows, 20)) : 1
-    const safeCols = Number.isFinite(cols) ? Math.max(1, Math.min(cols, 10)) : 1
-    const headers = Array.from({ length: safeCols }, (_, index) => `Col ${index + 1}`)
-    const separator = Array.from({ length: safeCols }, () => '---')
-    const bodyRows = Array.from({ length: safeRows }, () =>
-      Array.from({ length: safeCols }, () => ' ').join(' | '),
-    )
-
-    return [
-      `| ${headers.join(' | ')} |`,
-      `|${separator.join('|')}|`,
-      ...bodyRows.map((row) => `| ${row} |`),
-    ].join('\n')
-  }
-
-  function insertTable() {
-    const ed = editorRef.current
-    if (!ed) return
-
-    const selection = ed.getSelection()
-    if (!selection) return
-
-    const prefix = selection.isEmpty() ? '' : '\n'
-    applyEditorEdit(`${prefix}${buildMarkdownTable(tableRows, tableCols)}`)
-    setIsTablePickerOpen(false)
-    ed.focus()
-  }
-
-  function insertImage() {
-    imageInputRef.current?.click()
-  }
-
-  function insertPythonCodeBlock() {
-    insertAtCursor('```python\n# 請在此輸入 Python 程式碼，系統將自動繪圖\n```')
-  }
-
-  function insertLatexSnippet(value: string) {
-    if (!value) return
-
-    const snippet = value.startsWith('$$') ? `\n${value}\n` : value
-    insertAtCursor(snippet)
-  }
-
-  function handleImageUpload(event: ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0]
-    event.target.value = ''
-
-    if (!file) return
-
-    const reader = new FileReader()
-    reader.onload = () => {
-      if (typeof reader.result !== 'string') return
-      insertAtCursor(`![上傳圖片](${reader.result})`)
-    }
-    reader.readAsDataURL(file)
-  }
-
   function handleSmartFormat() {
     syncEditorValue(smartFormat(markdown))
-    editorRef.current?.focus()
-  }
-
-  function cleanLlmIntro() {
-    syncEditorValue(cleanLlmFluff(markdown))
     editorRef.current?.focus()
   }
 
@@ -1847,12 +1886,8 @@ function WorkspaceApp() {
     }
   }
 
-  function toggleTheme() {
-    setTheme((current) => (current === 'dark' ? 'light' : 'dark'))
-  }
-
   function loadDocument(document: Document) {
-    if (document.type !== 'file') return
+    if (document.type !== 'file' || document.isTrashed) return
 
     setActiveDocumentId(document.id)
     isApplyingRemoteRef.current = true
@@ -1862,7 +1897,7 @@ function WorkspaceApp() {
   }
 
   function createDocumentForParent(parentId: string | null) {
-    const fileCount = documents.filter((document) => document.type === 'file').length
+    const fileCount = documents.filter((document) => document.type === 'file' && !document.isTrashed).length
     const nextDocument = createDocument(`未命名報告 ${fileCount + 1}`, '', parentId)
     setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
     loadDocument(nextDocument)
@@ -1898,7 +1933,7 @@ function WorkspaceApp() {
 
   function selectDocument(id: string) {
     const nextDocument = documents.find((document) => document.id === id)
-    if (!nextDocument || nextDocument.type !== 'file') return
+    if (!nextDocument || nextDocument.type !== 'file' || nextDocument.isTrashed) return
 
     loadDocument(nextDocument)
     setCurrentView('editor')
@@ -1941,7 +1976,7 @@ function WorkspaceApp() {
     const targetDocument = documents.find((document) => document.id === id)
     if (!targetDocument) return
     const deleteLabel = targetDocument.type === 'folder' ? '資料夾與其中所有項目' : '檔案'
-    if (!window.confirm(`刪除${deleteLabel}「${targetDocument.title}」？此操作無法復原。`)) return
+    if (!window.confirm(`將${deleteLabel}「${targetDocument.title}」移至垃圾桶？`)) return
 
     const idsToDelete = new Set<string>([id])
     let previousSize = 0
@@ -1954,29 +1989,80 @@ function WorkspaceApp() {
       })
     }
 
-    const remainingDocuments = documents.filter((document) => !idsToDelete.has(document.id))
-    const remainingFiles = remainingDocuments.filter((document) => document.type === 'file')
-    if (!remainingFiles.length) {
-      const replacementDocument = createDocument()
-      setDocuments([...remainingDocuments.filter((document) => document.type === 'folder'), replacementDocument])
-      loadDocument(replacementDocument)
-      return
+    const now = new Date().toISOString()
+    const nextDocuments = documents.map((document) =>
+      idsToDelete.has(document.id) ? { ...document, isTrashed: true, updatedAt: now } : document,
+    )
+    const remainingFiles = nextDocuments.filter((document) => document.type === 'file' && !document.isTrashed)
+
+    setDocuments(nextDocuments)
+    if (idsToDelete.has(activeDocumentId)) {
+      const nextDocument = remainingFiles[0]
+      if (nextDocument) {
+        loadDocument(nextDocument)
+      } else {
+        setActiveDocumentId('')
+        isApplyingRemoteRef.current = true
+        updateMarkdownValue('')
+        editorRef.current?.setValue('')
+        isApplyingRemoteRef.current = false
+        setCurrentView('dashboard')
+      }
+    }
+  }
+
+  function restoreDocument(id: string) {
+    const targetDocument = documents.find((document) => document.id === id)
+    if (!targetDocument) return
+
+    const idsToRestore = new Set<string>([id])
+    let parentId = targetDocument.parentId
+    while (parentId) {
+      const parentDocument = documents.find((document) => document.id === parentId)
+      if (!parentDocument) break
+      idsToRestore.add(parentDocument.id)
+      parentId = parentDocument.parentId
     }
 
-    setDocuments(remainingDocuments)
-    if (idsToDelete.has(activeDocumentId)) {
-      loadDocument(remainingFiles[0])
+    const now = new Date().toISOString()
+    setDocuments((currentDocuments) =>
+      currentDocuments.map((document) =>
+        idsToRestore.has(document.id) ? { ...document, isTrashed: false, updatedAt: now } : document,
+      ),
+    )
+  }
+
+  function hardDeleteDocument(id: string) {
+    const targetDocument = documents.find((document) => document.id === id)
+    if (!targetDocument) return
+    if (!window.confirm(`永久刪除「${targetDocument.title}」？此操作無法復原。`)) return
+
+    const idsToDelete = new Set<string>([id])
+    let previousSize = 0
+    while (idsToDelete.size !== previousSize) {
+      previousSize = idsToDelete.size
+      documents.forEach((document) => {
+        if (document.parentId && idsToDelete.has(document.parentId)) {
+          idsToDelete.add(document.id)
+        }
+      })
     }
+
+    setDocuments((currentDocuments) => currentDocuments.filter((document) => !idsToDelete.has(document.id)))
   }
 
   function toggleDocumentFavorite(id: string) {
     setDocuments((currentDocuments) =>
       currentDocuments.map((document) =>
-        document.id === id && document.type === 'file'
+        document.id === id && document.type === 'file' && !document.isTrashed
           ? { ...document, isFavorite: !document.isFavorite, updatedAt: new Date().toISOString() }
           : document,
       ),
     )
+  }
+
+  function openFeedback() {
+    window.location.href = 'mailto:?subject=AutoLabReport%20%E5%8F%8D%E9%A5%8B'
   }
 
   async function downloadExportFile(endpoint: string, filename: string, status: SyncStatus) {
@@ -2103,8 +2189,30 @@ function WorkspaceApp() {
     setIsAdvancedMenuOpen(false)
   }
 
-  function shareCurrentDocument() {
-    setBridgeToast('分享連結功能準備中')
+  async function shareCurrentDocument() {
+    if (!activeDocument) {
+      setBridgeToast('請先開啟一份報告再分享')
+      return
+    }
+
+    const shareUrl = `${window.location.origin}/?docId=${activeDocument.id}`
+
+    try {
+      await navigator.clipboard.writeText(shareUrl)
+      setShareCopied(true)
+      setBridgeToast('分享連結已複製')
+
+      if (shareResetTimerRef.current !== null) {
+        window.clearTimeout(shareResetTimerRef.current)
+      }
+      shareResetTimerRef.current = window.setTimeout(() => {
+        setShareCopied(false)
+        shareResetTimerRef.current = null
+      }, 2000)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '剪貼簿寫入失敗'
+      setBridgeToast(`分享連結複製失敗：${message}`)
+    }
   }
 
   function deleteActiveDocument() {
@@ -2112,24 +2220,6 @@ function WorkspaceApp() {
 
     setIsAdvancedMenuOpen(false)
     deleteDocument(activeDocument.id)
-  }
-
-  async function checkBackendHealth() {
-    setHealthLoading(true)
-    setHealthMessage(null)
-    try {
-      const res = await fetch(`${API_BASE_URL}/api/health`)
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`)
-      }
-      const data = (await res.json()) as { status: string; service: string }
-      setHealthMessage(`${data.service}: ${data.status}`)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : '連線失敗'
-      setHealthMessage(`後端連線失敗 — ${message}`)
-    } finally {
-      setHealthLoading(false)
-    }
   }
 
   const isGenerating = syncStatus === 'pending' || syncStatus === 'rendering'
@@ -2151,11 +2241,12 @@ function WorkspaceApp() {
         onDeleteDocument={deleteDocument}
         onToggleFavorite={toggleDocumentFavorite}
         onOpenExtensionModal={() => setIsExtensionModalOpen(true)}
+        onOpenFeedback={openFeedback}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
       {currentView === 'editor' ? (
-        <header className="sticky top-0 z-40 flex h-14 shrink-0 items-center justify-between gap-3 border-b border-zinc-200 bg-white px-4 transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950">
+        <header className="sticky top-0 z-40 flex h-14 shrink-0 items-center justify-between gap-3 bg-white px-4 shadow-sm transition-colors duration-300 dark:bg-zinc-950">
           <div className="min-w-0 flex-1">
             {isTitleEditing ? (
               <input
@@ -2211,7 +2302,7 @@ function WorkspaceApp() {
               onClick={shareCurrentDocument}
               className="rounded-lg bg-zinc-900 px-3.5 py-1.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
             >
-              ✨ 分享
+              {shareCopied ? '✅ 已複製連結' : '✨ 分享'}
             </button>
 
             <div ref={advancedMenuRef} className="relative">
@@ -2224,11 +2315,11 @@ function WorkspaceApp() {
                 ⋯
               </button>
               {isAdvancedMenuOpen && (
-                <div className="absolute right-0 top-full z-50 mt-2 w-60 overflow-hidden rounded-xl border border-zinc-200 bg-white py-2 text-sm shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
+                <div className="absolute right-0 top-full z-50 mt-2 w-72 overflow-hidden rounded-xl border border-zinc-700 bg-[#1e1e1e] py-2 text-sm text-zinc-300 shadow-2xl">
                   <button
                     type="button"
                     onClick={downloadMarkdownReport}
-                    className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-white/10 hover:text-white"
                   >
                     <span>📥</span>
                     下載為 Markdown
@@ -2239,7 +2330,7 @@ function WorkspaceApp() {
                       setIsAdvancedMenuOpen(false)
                       exportWordReport()
                     }}
-                    className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-white/10 hover:text-white"
                   >
                     <span>📄</span>
                     匯出為 Word (.docx)
@@ -2250,7 +2341,7 @@ function WorkspaceApp() {
                       setIsAdvancedMenuOpen(false)
                       exportPdfReport()
                     }}
-                    className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-white/10 hover:text-white"
                   >
                     <span>🖨️</span>
                     匯出為 PDF
@@ -2258,16 +2349,16 @@ function WorkspaceApp() {
                   <button
                     type="button"
                     onClick={syncWithGithub}
-                    className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-white/10 hover:text-white"
                   >
                     <span>🔄</span>
                     與 GitHub 同步
                   </button>
-                  <div className="my-2 h-px bg-zinc-100 dark:bg-zinc-800" />
+                  <div className="my-2 h-px bg-zinc-700" />
                   <button
                     type="button"
                     onClick={deleteActiveDocument}
-                    className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/40"
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium text-red-300 transition-colors hover:bg-white/10 hover:text-red-200"
                   >
                     <span>🗑️</span>
                     刪除此報告
@@ -2304,23 +2395,6 @@ function WorkspaceApp() {
             <span className="text-xs font-medium text-blue-600 dark:text-blue-300">
               {collaborationStatus} · {onlineCount} 人在線
             </span>
-            {healthMessage && (
-              <span
-                className={`max-w-xs truncate text-xs ${
-                  healthMessage.includes('失敗') ? 'text-red-400' : 'text-zinc-500 dark:text-zinc-400'
-                }`}
-              >
-                {healthMessage}
-              </span>
-            )}
-            <button
-              type="button"
-              onClick={checkBackendHealth}
-              disabled={healthLoading}
-              className={SUBTLE_BUTTON}
-            >
-              {healthLoading ? '檢查中…' : '測試後端連線'}
-            </button>
           </div>
         </header>
       )}
@@ -2330,150 +2404,40 @@ function WorkspaceApp() {
           documents={documents}
           onOpenDocument={selectDocument}
           onCreateDocument={createNewDocument}
+          onToggleFavorite={toggleDocumentFavorite}
+        />
+      ) : currentView === 'trash' ? (
+        <TrashView
+          documents={documents}
+          onRestoreDocument={restoreDocument}
+          onHardDeleteDocument={hardDeleteDocument}
         />
       ) : currentView === 'templates' ? (
         <TemplatesView onUseTemplate={createDocumentFromTemplate} />
       ) : (
       <main className="grid min-h-0 flex-1 grid-cols-1 bg-white lg:grid-cols-2 dark:bg-zinc-950">
         <section className="flex min-h-0 flex-grow flex-col border-b border-zinc-200 transition-colors duration-300 dark:border-zinc-800 lg:border-b-0 lg:border-r">
-          <input
-            ref={imageInputRef}
-            type="file"
-            accept="image/*"
-            className="hidden"
-            onChange={handleImageUpload}
-          />
-
           <div className="border-b border-zinc-200/60 px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-zinc-500 transition-colors duration-300 dark:border-zinc-800 dark:text-zinc-400">
             編輯區 — 貼上 LLM 報告
           </div>
 
           <div
-            className="sticky top-0 z-30 flex flex-wrap items-center justify-between gap-y-2 border-b border-zinc-200 bg-zinc-50/80 px-6 py-3 shadow-sm backdrop-blur-md transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950/80"
+            className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-zinc-800 bg-[#111111]/95 px-4 py-2.5 shadow-sm backdrop-blur-md"
             role="toolbar"
-            aria-label="排版與匯出工具列"
+            aria-label="AI 編輯工具列"
           >
-            <div className="flex flex-wrap items-center gap-1">
-              <div className="flex items-center gap-1">
-                <ToolbarIconButton title="撤回 (Undo)" onClick={handleUndo}>
-                  <Undo2 className="h-[18px] w-[18px]" strokeWidth={2} />
-                </ToolbarIconButton>
-                <ToolbarIconButton title="重做 (Redo)" onClick={handleRedo}>
-                  <Redo2 className="h-[18px] w-[18px]" strokeWidth={2} />
-                </ToolbarIconButton>
-              </div>
-
-              <ToolbarDivider />
-
-              <div className="flex items-center gap-1">
-                <ToolbarIconButton title="大標題 (Heading 1)" onClick={() => insertAtCursor('# ')}>
-                  <Heading1 className="h-[18px] w-[18px]" strokeWidth={2} />
-                </ToolbarIconButton>
-                <ToolbarIconButton title="小標題 (Heading 2)" onClick={() => insertAtCursor('## ')}>
-                  <Heading2 className="h-[18px] w-[18px]" strokeWidth={2} />
-                </ToolbarIconButton>
-              </div>
-
-              <ToolbarDivider />
-
-              <div className="flex items-center gap-1">
-                <ToolbarIconButton title="粗體 (Bold)" onClick={insertBold}>
-                  <Bold className="h-[18px] w-[18px]" strokeWidth={2} />
-                </ToolbarIconButton>
-                <ToolbarIconButton title="斜體 (Italic)" onClick={insertItalic}>
-                  <Italic className="h-[18px] w-[18px]" strokeWidth={2} />
-                </ToolbarIconButton>
-                <ToolbarIconButton title="靠左對齊" onClick={() => wrapSelectionWithAlign('left')}>
-                  <AlignLeft className="h-[18px] w-[18px]" strokeWidth={2} />
-                </ToolbarIconButton>
-                <ToolbarIconButton title="置中對齊" onClick={() => wrapSelectionWithAlign('center')}>
-                  <AlignCenter className="h-[18px] w-[18px]" strokeWidth={2} />
-                </ToolbarIconButton>
-                <ToolbarIconButton title="靠右對齊" onClick={() => wrapSelectionWithAlign('right')}>
-                  <AlignRight className="h-[18px] w-[18px]" strokeWidth={2} />
-                </ToolbarIconButton>
-              </div>
-
-              <ToolbarDivider />
-
-              <div className="flex items-center gap-1">
-                <ToolbarIconButton title="插入圖片" onClick={insertImage}>
-                  <Image className="h-[18px] w-[18px]" strokeWidth={2} />
-                </ToolbarIconButton>
-                <ToolbarIconButton title="插入 Python 程式碼區塊" onClick={insertPythonCodeBlock}>
-                  <Code className="h-[18px] w-[18px]" strokeWidth={2} />
-                </ToolbarIconButton>
-                <select
-                  title="插入常用 LaTeX 公式"
-                  aria-label="插入常用 LaTeX 公式"
-                  value=""
-                  onChange={(event) => {
-                    insertLatexSnippet(event.target.value)
-                    event.target.value = ''
-                  }}
-                  className="h-9 max-w-[150px] rounded-md border border-zinc-200 bg-white px-2 text-sm font-medium text-zinc-600 outline-none transition hover:bg-zinc-100 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-800"
-                >
-                  <option value="">∑ 公式</option>
-                  {LATEX_SNIPPETS.map((snippet) => (
-                    <option key={snippet.label} value={snippet.value}>
-                      {snippet.label}
-                    </option>
-                  ))}
-                </select>
-                <div className="relative">
-                  <ToolbarIconButton
-                    title="插入表格"
-                    onClick={() => setIsTablePickerOpen((current) => !current)}
-                  >
-                    <Table className="h-[18px] w-[18px]" strokeWidth={2} />
-                  </ToolbarIconButton>
-
-                  {isTablePickerOpen && (
-                    <div className="absolute left-0 top-full z-10 mt-2 w-56 rounded-lg border border-zinc-200/60 bg-white p-3 shadow-lg dark:border-zinc-700 dark:bg-zinc-900">
-                      <div className="grid grid-cols-2 gap-3">
-                        <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300">
-                          行數
-                          <input
-                            type="number"
-                            min={1}
-                            max={20}
-                            value={tableRows}
-                            onChange={(event) => setTableRows(Number(event.target.value))}
-                            className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-sm text-zinc-900 outline-none transition focus:border-blue-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                          />
-                        </label>
-                        <label className="text-xs font-medium text-zinc-600 dark:text-zinc-300">
-                          列數
-                          <input
-                            type="number"
-                            min={1}
-                            max={10}
-                            value={tableCols}
-                            onChange={(event) => setTableCols(Number(event.target.value))}
-                            className="mt-1 w-full rounded-md border border-zinc-200 bg-white px-2 py-1.5 text-sm text-zinc-900 outline-none transition focus:border-blue-500 dark:border-zinc-700 dark:bg-zinc-950 dark:text-zinc-100"
-                          />
-                        </label>
-                      </div>
-
-                      <button
-                        type="button"
-                        onClick={insertTable}
-                        className="mt-3 w-full rounded-md bg-blue-600 px-3 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 active:scale-[0.98]"
-                      >
-                        插入
-                      </button>
-                    </div>
-                  )}
-                </div>
-              </div>
+            <div className="min-w-0">
+              <span className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-500">
+                Markdown AI Console
+              </span>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2">
               <button
                 type="button"
                 title="生成報告大綱"
                 onClick={() => setIsOutlineModalOpen(true)}
-                className="flex items-center gap-1.5 rounded-lg border border-blue-400/50 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800 shadow-sm transition-all hover:bg-blue-100 active:scale-[0.98] dark:border-blue-500/35 dark:bg-blue-500/15 dark:text-blue-200 dark:hover:bg-blue-500/25"
+                className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-medium text-zinc-200 transition-all hover:bg-white/10 hover:text-white active:scale-[0.98]"
               >
                 <Sparkles className="h-4 w-4" strokeWidth={2} />
                 <span className="hidden sm:inline">生成報告大綱</span>
@@ -2484,32 +2448,11 @@ function WorkspaceApp() {
                 title="智慧排版修復 — 清理標點空白與連續重複段落"
                 onClick={handleSmartFormat}
                 disabled={isEditorEmpty}
-                className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-purple-100 to-blue-100 px-3 py-2 text-sm font-semibold text-purple-800 shadow-sm transition-all hover:from-purple-200 hover:to-blue-200 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50 dark:from-purple-900 dark:to-blue-900 dark:text-purple-100 dark:hover:from-purple-800 dark:hover:to-blue-800"
+                className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-violet-500/90 to-blue-500/90 px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition-all hover:from-violet-400 hover:to-blue-400 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Wand2 className="h-4 w-4" strokeWidth={2} />
                 <span className="hidden sm:inline">智慧排版修復</span>
               </button>
-
-              <button
-                type="button"
-                title="清理 LLM 廢話 — 刪除第一個標題前的開場白"
-                onClick={cleanLlmIntro}
-                className="flex items-center gap-1.5 rounded-lg border border-amber-400/60 bg-amber-100 px-3 py-2 text-sm font-semibold text-amber-800 shadow-sm transition-all hover:bg-amber-200 active:scale-[0.98] dark:border-amber-500/35 dark:bg-amber-500/15 dark:text-amber-200 dark:hover:bg-amber-500/25 dark:hover:text-amber-100"
-              >
-                <Sparkles className="h-4 w-4" strokeWidth={2} />
-                <span className="hidden sm:inline">清理 LLM 廢話</span>
-              </button>
-
-              <ToolbarIconButton
-                title={isDarkMode ? '切換至淺色模式' : '切換至深色模式'}
-                onClick={toggleTheme}
-              >
-                {isDarkMode ? (
-                  <Sun className="h-[18px] w-[18px]" strokeWidth={2} />
-                ) : (
-                  <Moon className="h-[18px] w-[18px]" strokeWidth={2} />
-                )}
-              </ToolbarIconButton>
             </div>
           </div>
 
@@ -2586,27 +2529,27 @@ function WorkspaceApp() {
           </div>
         </section>
 
-        <section className="flex min-h-0 flex-grow flex-col bg-white transition-colors duration-300 dark:bg-zinc-950">
+        <section className="flex min-h-0 flex-grow flex-col bg-zinc-100 transition-colors duration-300 dark:bg-zinc-900">
           <div className="border-b border-zinc-200/60 px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-zinc-500 transition-colors duration-300 dark:border-zinc-800 dark:text-zinc-400">
             預覽區 — 所見即所得
           </div>
           <div
             ref={previewRef}
-            className={`preview-pane flex-1 overflow-auto bg-white px-12 py-16 transition-colors duration-300 dark:bg-zinc-950 ${SCROLLBAR_HIDE}`}
+            className={`preview-pane flex-1 overflow-auto bg-zinc-100 px-8 py-12 transition-colors duration-300 dark:bg-zinc-900 lg:px-14 lg:py-16 ${SCROLLBAR_HIDE}`}
           >
             {renderError ? (
               <p className="text-sm text-red-400">預覽錯誤：{renderError}</p>
             ) : isEditorEmpty ? (
-              <div className="flex h-full min-h-[320px] flex-col items-center justify-center rounded-lg border border-dashed border-zinc-200/60 bg-white px-8 py-12 text-center transition-colors duration-300 dark:border-zinc-700 dark:bg-zinc-950/40">
+              <div className="mx-auto flex h-full min-h-[420px] max-w-4xl flex-col items-center justify-center rounded-2xl border border-dashed border-zinc-200/80 bg-white px-12 py-16 text-center shadow-[0_24px_80px_rgba(0,0,0,0.08)] transition-colors duration-300 dark:border-zinc-700 dark:bg-white">
                 <div className="mb-4 text-5xl">🤖</div>
-                <p className="max-w-md text-base leading-relaxed text-zinc-600 dark:text-zinc-300">
+                <p className="max-w-md text-base leading-relaxed text-zinc-600">
                   歡迎使用 AutoLabReport！請將 LLM 生成的實驗報告貼在左側，或使用上方工具列排版，我們將自動為您生成精美排版與數據圖表。
                 </p>
               </div>
             ) : preview ? (
               <div
                 id="pdf-preview-content"
-                className="pdf-export-surface markdown-preview prose prose-zinc max-w-none prose-headings:font-semibold prose-p:leading-loose rounded-lg bg-white text-zinc-900 transition-colors duration-300 dark:prose-invert dark:bg-zinc-950 dark:text-zinc-100"
+                className="pdf-export-surface markdown-preview prose prose-zinc mx-auto min-h-[calc(100vh-12rem)] max-w-4xl rounded-2xl bg-white px-14 py-16 text-zinc-900 shadow-[0_24px_80px_rgba(0,0,0,0.10)] transition-colors duration-300 prose-headings:font-semibold prose-p:leading-loose lg:px-20 lg:py-20"
               >
                 <ReactMarkdown
                   remarkPlugins={REMARK_PLUGINS}
