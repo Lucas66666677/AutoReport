@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type FormEvent,
@@ -37,6 +38,7 @@ const THEME_STORAGE_KEY = 'autolabreport-theme'
 const CONTENT_STORAGE_KEY = 'autoLabReport_content'
 const DOCUMENTS_STORAGE_KEY = 'autoLabReport_documents'
 const ACTIVE_DOCUMENT_ID_STORAGE_KEY = 'autoLabReport_activeDocumentId'
+const ANONYMOUS_IDENTITY_STORAGE_KEY = 'autoLabReport_anonymousIdentity'
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
 const supabase =
@@ -236,6 +238,10 @@ type SyncStatus =
   | 'exporting'
   | 'exportingPdf'
 
+type ShareSetting = 'private' | 'view' | 'edit'
+type CollaboratorRole = 'view' | 'edit'
+type DocumentPermission = 'owner' | 'edit' | 'view' | 'none'
+
 type Document = {
   id: string
   title: string
@@ -244,6 +250,8 @@ type Document = {
   updatedAt?: string
   isFavorite: boolean
   isTrashed: boolean
+  userId: string | null
+  shareSetting: ShareSetting
   type: 'file' | 'folder'
   parentId: string | null
 }
@@ -256,8 +264,29 @@ type SupabaseDocumentRow = {
   updated_at?: string | null
   is_favorite?: boolean | null
   is_trashed?: boolean | null
+  user_id?: string | null
+  share_setting?: ShareSetting | null
   type?: 'file' | 'folder' | null
   parent_id?: string | null
+}
+
+type DocumentCollaboratorRow = {
+  document_id: string
+  user_email: string | null
+  role: CollaboratorRole | null
+}
+
+type DocumentCollaborator = {
+  documentId: string
+  userEmail: string
+  role: CollaboratorRole
+}
+
+type AnonymousIdentity = {
+  name: string
+  avatar: string
+  emoji: string
+  color: string
 }
 
 type AppView = 'dashboard' | 'editor' | 'favorites' | 'templates' | 'trash'
@@ -283,12 +312,41 @@ type PendingAiSelection = {
   text: string
 }
 
+type CollaboratorPresence = {
+  clientId: number
+  name: string
+  avatar: string
+  emoji?: string
+  color: string
+  isLocal: boolean
+}
+
 const TOOLBAR_ICON_BTN =
   'rounded-md p-2 text-zinc-500 transition-all hover:bg-zinc-200/50 hover:text-zinc-800 active:scale-95 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100'
 const SUBTLE_BUTTON =
   'rounded-md border border-zinc-200 px-3 py-1.5 text-sm font-medium text-zinc-600 transition-all hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800'
 const SCROLLBAR_HIDE =
   'scrollbar-hide [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden'
+const COLLABORATOR_COLORS = [
+  '#2563eb',
+  '#7c3aed',
+  '#db2777',
+  '#ea580c',
+  '#16a34a',
+  '#0891b2',
+  '#4f46e5',
+  '#be123c',
+]
+const ANONYMOUS_ANIMALS = [
+  { name: '匿名水豚', emoji: '🦫' },
+  { name: '匿名羊駝', emoji: '🦙' },
+  { name: '匿名貓頭鷹', emoji: '🦉' },
+  { name: '匿名企鵝', emoji: '🐧' },
+  { name: '匿名柯基', emoji: '🐶' },
+  { name: '匿名狐狸', emoji: '🦊' },
+  { name: '匿名海獺', emoji: '🦦' },
+  { name: '匿名熊貓', emoji: '🐼' },
+]
 
 function MermaidBlock({ chart }: { chart: string }) {
   const [svg, setSvg] = useState('')
@@ -467,6 +525,8 @@ function createDocument(title = '未命名報告', content = '', parentId: strin
     updatedAt: now,
     isFavorite: false,
     isTrashed: false,
+    userId: null,
+    shareSetting: 'private',
     type: 'file',
     parentId,
   }
@@ -482,6 +542,8 @@ function createFolder(title = '新資料夾', parentId: string | null = null): D
     updatedAt: now,
     isFavorite: false,
     isTrashed: false,
+    userId: null,
+    shareSetting: 'private',
     type: 'folder',
     parentId,
   }
@@ -493,6 +555,8 @@ function normalizeDocument(document: Document): Document {
     content: document.content ?? '',
     isFavorite: document.isFavorite ?? false,
     isTrashed: document.isTrashed ?? false,
+    userId: document.userId ?? null,
+    shareSetting: document.shareSetting ?? 'private',
     type: document.type ?? 'file',
     parentId: document.parentId ?? null,
   }
@@ -508,8 +572,21 @@ function mapSupabaseDocument(row: SupabaseDocumentRow): Document {
     updatedAt: row.updated_at ?? createdAt,
     isFavorite: row.is_favorite ?? false,
     isTrashed: row.is_trashed ?? false,
+    userId: row.user_id ?? null,
+    shareSetting: row.share_setting ?? 'private',
     type: row.type ?? 'file',
     parentId: row.parent_id ?? null,
+  }
+}
+
+function mapDocumentCollaborator(row: DocumentCollaboratorRow): DocumentCollaborator | null {
+  const userEmail = row.user_email?.trim().toLowerCase()
+  if (!row.document_id || !userEmail) return null
+
+  return {
+    documentId: row.document_id,
+    userEmail,
+    role: row.role === 'edit' ? 'edit' : 'view',
   }
 }
 
@@ -579,7 +656,6 @@ function DocumentSidebar({
   onOpenExtensionModal,
   onOpenFeedback,
   user,
-  isGuest,
   onSignOut,
 }: {
   documents: Document[]
@@ -598,7 +674,6 @@ function DocumentSidebar({
   onOpenExtensionModal: () => void
   onOpenFeedback: () => void
   user: User | null
-  isGuest: boolean
   onSignOut: () => void
 }) {
   const [isProjectTreeOpen, setIsProjectTreeOpen] = useState(true)
@@ -609,9 +684,9 @@ function DocumentSidebar({
   const visibleDocuments = documents.filter((document) => !document.isTrashed)
   const fileDocuments = visibleDocuments.filter((document) => document.type === 'file')
   const favoriteDocuments = fileDocuments.filter((document) => document.isFavorite)
-  const userName = getUserDisplayName(user, isGuest)
+  const userName = getUserDisplayName(user)
   const avatarUrl = getUserAvatarUrl(user)
-  const userInitial = getUserInitial(user, isGuest)
+  const userInitial = getUserInitial(user)
 
   function toggleFolder(folderId: string) {
     setExpandedFolderIds((current) => {
@@ -973,7 +1048,7 @@ function DocumentSidebar({
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">{userName}</p>
             <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">
-              {isGuest ? '訪客模式' : user?.email ?? '已登入'}
+              {user?.email ?? '已登入'}
             </p>
           </div>
           <button
@@ -1022,9 +1097,7 @@ function getDocumentPreview(document: Document): string {
     .slice(0, 100)
 }
 
-function getUserDisplayName(user: User | null, isGuest = false): string {
-  if (isGuest) return '訪客使用者'
-
+function getUserDisplayName(user: User | null): string {
   const fullName = user?.user_metadata?.full_name
   if (typeof fullName === 'string' && fullName.trim()) return fullName.trim()
 
@@ -1039,9 +1112,190 @@ function getUserAvatarUrl(user: User | null): string {
   return typeof avatarUrl === 'string' ? avatarUrl : ''
 }
 
-function getUserInitial(user: User | null, isGuest = false): string {
-  const displayName = getUserDisplayName(user, isGuest)
+function getUserInitial(user: User | null): string {
+  const displayName = getUserDisplayName(user)
   return displayName.trim().charAt(0).toUpperCase() || 'A'
+}
+
+function getPresenceColor(seed: string): string {
+  const hash = Array.from(seed).reduce((total, char) => total + char.charCodeAt(0), 0)
+  return COLLABORATOR_COLORS[hash % COLLABORATOR_COLORS.length]
+}
+
+function getRandomHexColor(): string {
+  const value = Math.floor(Math.random() * 0xffffff)
+  return `#${value.toString(16).padStart(6, '0')}`
+}
+
+function createAnonymousIdentity(): AnonymousIdentity {
+  const animal = ANONYMOUS_ANIMALS[Math.floor(Math.random() * ANONYMOUS_ANIMALS.length)]
+  return {
+    name: animal.name,
+    emoji: animal.emoji,
+    avatar: '',
+    color: getRandomHexColor(),
+  }
+}
+
+function getInitialAnonymousIdentity(): AnonymousIdentity {
+  if (typeof window === 'undefined') return createAnonymousIdentity()
+
+  const savedIdentity = window.localStorage.getItem(ANONYMOUS_IDENTITY_STORAGE_KEY)
+  if (savedIdentity) {
+    try {
+      const parsed = JSON.parse(savedIdentity) as Partial<AnonymousIdentity>
+      if (parsed.name && parsed.emoji && parsed.color) {
+        return {
+          name: parsed.name,
+          emoji: parsed.emoji,
+          avatar: typeof parsed.avatar === 'string' ? parsed.avatar : '',
+          color: parsed.color,
+        }
+      }
+    } catch {
+      /* ignore corrupt anonymous identity */
+    }
+  }
+
+  const identity = createAnonymousIdentity()
+  window.localStorage.setItem(ANONYMOUS_IDENTITY_STORAGE_KEY, JSON.stringify(identity))
+  return identity
+}
+
+function getCollaboratorInitial(name: string): string {
+  return name.trim().charAt(0).toUpperCase() || 'A'
+}
+
+function getDocumentPermission(
+  document: Document | undefined,
+  user: User | null,
+  collaborators: DocumentCollaborator[] = [],
+): DocumentPermission {
+  if (!document || document.type !== 'file' || document.isTrashed) return 'none'
+  if (!user) {
+    if (document.shareSetting === 'edit') return 'edit'
+    if (document.shareSetting === 'view') return 'view'
+    return 'none'
+  }
+
+  if (!document.userId || document.userId === user.id) return 'owner'
+
+  const currentUserEmail = user.email?.trim().toLowerCase()
+  const invitedCollaborator = currentUserEmail
+    ? collaborators.find(
+        (collaborator) =>
+          collaborator.documentId === document.id && collaborator.userEmail === currentUserEmail,
+      )
+    : undefined
+
+  if (invitedCollaborator) return invitedCollaborator.role
+  if (document.shareSetting === 'edit') return 'edit'
+  if (document.shareSetting === 'view') return 'view'
+  return 'none'
+}
+
+function getSharedDocumentIdFromLocation(): string | null {
+  const editorMatch = window.location.pathname.match(/^\/editor\/([^/]+)/)
+  if (editorMatch?.[1]) return decodeURIComponent(editorMatch[1])
+  return new URLSearchParams(window.location.search).get('docId')
+}
+
+function getAuthenticatedAwarenessUser(user: User) {
+  const name = getUserDisplayName(user)
+  const avatar = getUserAvatarUrl(user)
+  const color = getPresenceColor(user.id || user.email || name)
+
+  return { name, avatar, color, emoji: '' }
+}
+
+function getCursorAwarenessState(
+  ed: editor.IStandaloneCodeEditor,
+  awarenessUser: AnonymousIdentity | ReturnType<typeof getAuthenticatedAwarenessUser>,
+) {
+  const model = ed.getModel()
+  const selection = ed.getSelection()
+  if (!model || !selection) return null
+
+  const position = selection.getPosition()
+  return {
+    anchor: model.getOffsetAt(selection.getStartPosition()),
+    head: model.getOffsetAt(selection.getEndPosition()),
+    lineNumber: position.lineNumber,
+    column: position.column,
+    color: awarenessUser.color,
+    name: awarenessUser.name,
+  }
+}
+
+function getCollaboratorFromAwarenessState(
+  clientId: number,
+  state: unknown,
+  localClientId: number,
+): CollaboratorPresence | null {
+  if (!state || typeof state !== 'object' || !('user' in state)) return null
+
+  const awarenessUser = (state as { user?: unknown }).user
+  if (!awarenessUser || typeof awarenessUser !== 'object') return null
+
+  const { name, avatar, color } = awarenessUser as {
+    name?: unknown
+    avatar?: unknown
+    emoji?: unknown
+    color?: unknown
+  }
+  const { emoji } = awarenessUser as { emoji?: unknown }
+
+  if (typeof name !== 'string' || !name.trim()) return null
+
+  return {
+    clientId,
+    name: name.trim(),
+    avatar: typeof avatar === 'string' ? avatar : '',
+    emoji: typeof emoji === 'string' ? emoji : undefined,
+    color: typeof color === 'string' && color.trim() ? color : getPresenceColor(name),
+    isLocal: clientId === localClientId,
+  }
+}
+
+function CollaboratorAvatarGroup({ collaborators }: { collaborators: CollaboratorPresence[] }) {
+  if (collaborators.length === 0) return null
+
+  const visibleCollaborators = collaborators.slice(0, 5)
+  const hiddenCount = Math.max(collaborators.length - visibleCollaborators.length, 0)
+
+  return (
+    <div className="flex items-center -space-x-2 pl-1" aria-label="線上協作者">
+      {visibleCollaborators.map((collaborator) => (
+        <div
+          key={collaborator.clientId}
+          title={`${collaborator.name}${collaborator.isLocal ? '（你）' : ''}`}
+          className="relative flex h-8 w-8 items-center justify-center overflow-hidden rounded-full border-2 border-white bg-zinc-100 text-xs font-semibold text-white shadow-sm ring-1 ring-zinc-200/80 transition-transform hover:z-10 hover:-translate-y-0.5 dark:border-zinc-950 dark:ring-zinc-700"
+          style={{ backgroundColor: collaborator.avatar ? undefined : collaborator.color }}
+        >
+          {collaborator.avatar ? (
+            <img
+              src={collaborator.avatar}
+              alt={collaborator.name}
+              className="h-full w-full object-cover"
+              referrerPolicy="no-referrer"
+            />
+          ) : collaborator.emoji ? (
+            <span className="text-base leading-none">{collaborator.emoji}</span>
+          ) : (
+            getCollaboratorInitial(collaborator.name)
+          )}
+        </div>
+      ))}
+      {hiddenCount > 0 && (
+        <div
+          title={`另有 ${hiddenCount} 位協作者在線`}
+          className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-white bg-zinc-900 text-[11px] font-semibold text-white shadow-sm ring-1 ring-zinc-200/80 dark:border-zinc-950 dark:ring-zinc-700"
+        >
+          +{hiddenCount}
+        </div>
+      )}
+    </div>
+  )
 }
 
 function DashboardView({
@@ -1469,12 +1723,10 @@ function TemplatesView({
 function LandingPage({
   onOAuthLogin,
   onSendMagicLink,
-  onContinueAsGuest,
   authLoading,
 }: {
   onOAuthLogin: (provider: Provider) => void
   onSendMagicLink: (email: string) => Promise<boolean>
-  onContinueAsGuest: () => void
   authLoading: boolean
 }) {
   const [email, setEmail] = useState('')
@@ -1575,15 +1827,6 @@ function LandingPage({
               </button>
             </div>
 
-            <button
-              type="button"
-              onClick={onContinueAsGuest}
-              disabled={authLoading}
-              className="mx-auto mt-5 flex items-center justify-center gap-2 px-3 py-2 text-sm font-semibold text-zinc-500 transition-colors hover:text-zinc-900 disabled:cursor-not-allowed disabled:opacity-60"
-            >
-              <span>🏃‍♂️</span>
-              以訪客身份繼續
-            </button>
           </div>
 
           <div className="mx-auto mt-16 max-w-5xl overflow-hidden rounded-2xl border border-zinc-200/70 bg-white shadow-xl shadow-zinc-200/60">
@@ -1649,17 +1892,27 @@ function LandingPage({
 
 function WorkspaceApp({
   user,
-  isGuest,
   onSignOut,
+  onRequestAuth,
+  initialSharedDocument,
 }: {
   user: User | null
-  isGuest: boolean
   onSignOut: () => void
+  onRequestAuth: () => void
+  initialSharedDocument?: Document | null
 }) {
-  const [initialWorkspace] = useState(getInitialWorkspace)
+  const [initialWorkspace] = useState(() => {
+    if (initialSharedDocument) {
+      return {
+        documents: [initialSharedDocument],
+        activeDocumentId: initialSharedDocument.id,
+      }
+    }
+    return getInitialWorkspace()
+  })
   const [documents, setDocuments] = useState<Document[]>(initialWorkspace.documents)
   const [activeDocumentId, setActiveDocumentId] = useState(initialWorkspace.activeDocumentId)
-  const [currentView, setCurrentView] = useState<AppView>('dashboard')
+  const [currentView, setCurrentView] = useState<AppView>(initialSharedDocument ? 'editor' : 'dashboard')
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
   const activeDocument =
     documents.find((document) => document.id === activeDocumentId && document.type === 'file' && !document.isTrashed) ??
@@ -1672,14 +1925,21 @@ function WorkspaceApp({
   const [, setExporting] = useState(false)
   const [databaseLoading, setDatabaseLoading] = useState(false)
   const [isOutlineModalOpen, setIsOutlineModalOpen] = useState(false)
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false)
   const [isExtensionModalOpen, setIsExtensionModalOpen] = useState(false)
   const [isAdvancedMenuOpen, setIsAdvancedMenuOpen] = useState(false)
+  const [collaboratorEmail, setCollaboratorEmail] = useState('')
+  const [documentCollaborators, setDocumentCollaborators] = useState<DocumentCollaborator[]>([])
+  const [documentCollaboratorsLoading, setDocumentCollaboratorsLoading] = useState(false)
+  const [shareSettingLoading, setShareSettingLoading] = useState(false)
   const [isTitleEditing, setIsTitleEditing] = useState(false)
   const [titleDraft, setTitleDraft] = useState(activeDocument?.title ?? '')
   const [outlineExampleText, setOutlineExampleText] = useState('')
   const [outlineLoading, setOutlineLoading] = useState(false)
   const [bridgeToast, setBridgeToast] = useState<string | null>(null)
   const [shareCopied, setShareCopied] = useState(false)
+  const [collaborators, setCollaborators] = useState<CollaboratorPresence[]>([])
+  const [anonymousIdentity] = useState(getInitialAnonymousIdentity)
   const [aiSelectionMenu, setAiSelectionMenu] = useState<AiSelectionMenuState>({
     visible: false,
     top: 0,
@@ -1698,6 +1958,7 @@ function WorkspaceApp({
   const ytextRef = useRef<Y.Text | null>(null)
   const ytextObserverCleanupRef = useRef<(() => void) | null>(null)
   const isApplyingRemoteRef = useRef(false)
+  const canEditActiveDocumentRef = useRef(true)
   const activeAiSelectionRef = useRef<PendingAiSelection | null>(null)
   const pendingAiSelectionRef = useRef<PendingAiSelection | null>(null)
   const shareResetTimerRef = useRef<number | null>(null)
@@ -1705,7 +1966,16 @@ function WorkspaceApp({
 
   const isEditorEmpty = !markdown.trim()
   const isDarkMode = theme === 'dark'
-  const shouldUseSupabaseDocuments = Boolean(supabase && user && !isGuest)
+  const shouldUseSupabaseDocuments = Boolean(supabase && user)
+  const awarenessUser = useMemo(
+    () => (user ? getAuthenticatedAwarenessUser(user) : anonymousIdentity),
+    [anonymousIdentity, user],
+  )
+  const activeDocumentPermission = getDocumentPermission(activeDocument, user, documentCollaborators)
+  const isActiveDocumentOwner = activeDocumentPermission === 'owner'
+  const canEditActiveDocument =
+    activeDocumentPermission === 'owner' || activeDocumentPermission === 'edit'
+  const isReadOnlyMode = activeDocumentPermission === 'view'
 
   const applyLoadedDocument = useCallback((document: Document) => {
     setActiveDocumentId(document.id)
@@ -1714,6 +1984,46 @@ function WorkspaceApp({
     editorRef.current?.setValue(document.content)
     isApplyingRemoteRef.current = false
   }, [])
+
+  const readDocumentCollaborators = useCallback(async (documentId: string): Promise<DocumentCollaborator[]> => {
+    if (!supabase || !shouldUseSupabaseDocuments) return []
+
+    const { data, error } = await supabase
+      .from('document_collaborators')
+      .select('*')
+      .eq('document_id', documentId)
+      .order('user_email', { ascending: true })
+
+    if (error) throw error
+
+    return ((data ?? []) as DocumentCollaboratorRow[])
+      .map(mapDocumentCollaborator)
+      .filter((collaborator): collaborator is DocumentCollaborator => Boolean(collaborator))
+  }, [shouldUseSupabaseDocuments])
+
+  const refreshDocumentCollaborators = useCallback(
+    async (documentId: string) => {
+      if (!supabase || !shouldUseSupabaseDocuments) {
+        setDocumentCollaborators([])
+        return [] as DocumentCollaborator[]
+      }
+
+      setDocumentCollaboratorsLoading(true)
+      try {
+        const nextCollaborators = await readDocumentCollaborators(documentId)
+        setDocumentCollaborators(nextCollaborators)
+        return nextCollaborators
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '協作者讀取失敗'
+        setBridgeToast(`協作者讀取失敗：${message}`)
+        setDocumentCollaborators([])
+        return [] as DocumentCollaborator[]
+      } finally {
+        setDocumentCollaboratorsLoading(false)
+      }
+    },
+    [readDocumentCollaborators, shouldUseSupabaseDocuments],
+  )
 
   const refreshSupabaseDocuments = useCallback(
     async (openDocumentId?: string) => {
@@ -1729,7 +2039,9 @@ function WorkspaceApp({
 
         if (error) throw error
 
-        const nextDocuments = ((data ?? []) as SupabaseDocumentRow[]).map(mapSupabaseDocument)
+        const nextDocuments = ((data ?? []) as SupabaseDocumentRow[])
+          .map(mapSupabaseDocument)
+          .filter((document) => getDocumentPermission(document, user) !== 'none')
         setDocuments(nextDocuments)
 
         const documentToOpen = openDocumentId
@@ -1749,7 +2061,7 @@ function WorkspaceApp({
         setDatabaseLoading(false)
       }
     },
-    [applyLoadedDocument, shouldUseSupabaseDocuments],
+    [applyLoadedDocument, shouldUseSupabaseDocuments, user],
   )
 
   useEffect(() => {
@@ -1793,6 +2105,8 @@ function WorkspaceApp({
   }, [])
 
   useEffect(() => {
+    if (!canEditActiveDocument) return
+
     const timer = window.setTimeout(() => {
       window.localStorage.setItem(CONTENT_STORAGE_KEY, markdown)
       setDocuments((currentDocuments) =>
@@ -1802,7 +2116,7 @@ function WorkspaceApp({
             : document,
         ),
       )
-      if (supabase && shouldUseSupabaseDocuments && activeDocumentId) {
+      if (supabase && activeDocumentId) {
         void supabase
           .from('documents')
           .update({ content: markdown })
@@ -1813,7 +2127,7 @@ function WorkspaceApp({
     return () => {
       clearTimeout(timer)
     }
-  }, [activeDocumentId, markdown, shouldUseSupabaseDocuments])
+  }, [activeDocumentId, canEditActiveDocument, markdown])
 
   useEffect(() => {
     return () => {
@@ -1834,31 +2148,124 @@ function WorkspaceApp({
   }, [documents])
 
   useEffect(() => {
-    if (hasOpenedSharedDocRef.current) return
+    if (!activeDocumentId) {
+      const clearTimer = window.setTimeout(() => setDocumentCollaborators([]), 0)
+      return () => window.clearTimeout(clearTimer)
+    }
 
-    const sharedDocId = new URLSearchParams(window.location.search).get('docId')
-    if (!sharedDocId) return
-
-    const sharedDocument = documents.find(
-      (document) => document.id === sharedDocId && document.type === 'file' && !document.isTrashed,
-    )
-    if (!sharedDocument) return
-
-    hasOpenedSharedDocRef.current = true
-    const openTimer = window.setTimeout(() => {
-      setActiveDocumentId(sharedDocument.id)
-      isApplyingRemoteRef.current = true
-      updateMarkdownValue(sharedDocument.content)
-      editorRef.current?.setValue(sharedDocument.content)
-      isApplyingRemoteRef.current = false
-      setCurrentView('editor')
+    const fetchTimer = window.setTimeout(() => {
+      void refreshDocumentCollaborators(activeDocumentId)
     }, 0)
 
-    return () => window.clearTimeout(openTimer)
-  }, [documents])
+    return () => window.clearTimeout(fetchTimer)
+  }, [activeDocumentId, refreshDocumentCollaborators])
+
+  useEffect(() => {
+    canEditActiveDocumentRef.current = canEditActiveDocument
+  }, [canEditActiveDocument])
+
+  useEffect(() => {
+    if (!activeDocument || documentCollaboratorsLoading || activeDocumentPermission !== 'none') return
+
+    const redirectTimer = window.setTimeout(() => {
+      setBridgeToast('您沒有權限存取此文件')
+      setCurrentView('dashboard')
+      window.history.replaceState(null, '', '/dashboard')
+    }, 0)
+
+    return () => {
+      window.clearTimeout(redirectTimer)
+    }
+  }, [activeDocument, activeDocumentPermission, documentCollaboratorsLoading])
+
+  useEffect(() => {
+    if (hasOpenedSharedDocRef.current) return
+
+    const sharedDocId = getSharedDocumentIdFromLocation()
+    if (!sharedDocId) return
+
+    let isCancelled = false
+
+    async function openSharedDocument() {
+      let sharedDocument = documents.find(
+        (document) => document.id === sharedDocId && document.type === 'file' && !document.isTrashed,
+      )
+
+      if (!sharedDocument && supabase && shouldUseSupabaseDocuments) {
+        const { data, error } = await supabase
+          .from('documents')
+          .select('*')
+          .eq('id', sharedDocId)
+          .eq('is_trashed', false)
+          .maybeSingle()
+
+        if (error) {
+          setBridgeToast(`文件載入失敗：${error.message}`)
+        }
+
+        if (data) {
+          sharedDocument = mapSupabaseDocument(data as SupabaseDocumentRow)
+        }
+      }
+
+      if (isCancelled) return
+
+      if (!sharedDocument) {
+        hasOpenedSharedDocRef.current = true
+        setBridgeToast('您沒有權限存取此文件')
+        setCurrentView('dashboard')
+        window.history.replaceState(null, '', '/dashboard')
+        return
+      }
+
+      let sharedCollaborators: DocumentCollaborator[] = []
+      try {
+        sharedCollaborators = await readDocumentCollaborators(sharedDocument.id)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '協作者讀取失敗'
+        setBridgeToast(`協作者讀取失敗：${message}`)
+      }
+
+      if (isCancelled) return
+
+      const permission = getDocumentPermission(sharedDocument, user, sharedCollaborators)
+      if (permission === 'none') {
+        hasOpenedSharedDocRef.current = true
+        setBridgeToast('您沒有權限存取此文件')
+        setCurrentView('dashboard')
+        window.history.replaceState(null, '', '/dashboard')
+        return
+      }
+
+      hasOpenedSharedDocRef.current = true
+      setDocumentCollaborators(sharedCollaborators)
+      setDocuments((currentDocuments) => {
+        if (currentDocuments.some((document) => document.id === sharedDocument.id)) {
+          return currentDocuments.map((document) =>
+            document.id === sharedDocument.id ? sharedDocument : document,
+          )
+        }
+        return [sharedDocument, ...currentDocuments]
+      })
+      applyLoadedDocument(sharedDocument)
+      setCurrentView('editor')
+      window.history.replaceState(null, '', `/editor/${encodeURIComponent(sharedDocument.id)}`)
+    }
+
+    void openSharedDocument()
+
+    return () => {
+      isCancelled = true
+    }
+  }, [applyLoadedDocument, documents, readDocumentCollaborators, shouldUseSupabaseDocuments, user])
 
   useEffect(() => {
     function handleAutoLabReportInsert(event: Event) {
+      if (!canEditActiveDocumentRef.current) {
+        setBridgeToast('此文件目前為唯讀模式，無法插入內容')
+        return
+      }
+
       const customEvent = event as CustomEvent<{ text?: string }>
       const incomingText = customEvent.detail?.text?.trim()
       if (!incomingText) return
@@ -1954,9 +2361,27 @@ function WorkspaceApp({
 
     const provider = new WebrtcProvider(activeDocumentId, roomDoc)
     providerRef.current = provider
-    provider.awareness.setLocalStateField('user', {
-      name: `User-${Math.random().toString(36).slice(2, 6)}`,
-    })
+    provider.awareness.setLocalStateField('user', awarenessUser)
+    if (editorRef.current) {
+      const cursorState = getCursorAwarenessState(editorRef.current, awarenessUser)
+      if (cursorState) {
+        provider.awareness.setLocalStateField('cursor', cursorState)
+      }
+    }
+
+    const syncCollaborators = () => {
+      const nextCollaborators = Array.from(provider.awareness.getStates().entries())
+        .map(([clientId, state]) =>
+          getCollaboratorFromAwarenessState(clientId, state, roomDoc.clientID),
+        )
+        .filter((collaborator): collaborator is CollaboratorPresence => Boolean(collaborator))
+        .sort((left, right) => Number(right.isLocal) - Number(left.isLocal) || left.name.localeCompare(right.name))
+
+      setCollaborators(nextCollaborators)
+    }
+
+    provider.awareness.on('change', syncCollaborators)
+    syncCollaborators()
 
     const handleYTextChange = () => {
       const remoteValue = ytext.toString()
@@ -1975,12 +2400,14 @@ function WorkspaceApp({
 
     return () => {
       ytext.unobserve(handleYTextChange)
+      provider.awareness.off('change', syncCollaborators)
+      setCollaborators([])
       provider.destroy()
       if (providerRef.current === provider) {
         providerRef.current = null
       }
     }
-  }, [activeDocumentId])
+  }, [activeDocumentId, awarenessUser])
 
   useEffect(() => {
     if (isEditorEmpty) {
@@ -2035,6 +2462,11 @@ function WorkspaceApp({
   }
 
   function syncEditorValue(value: string) {
+    if (!canEditActiveDocumentRef.current) {
+      setBridgeToast('此文件目前為唯讀模式，無法修改內容')
+      return
+    }
+
     updateMarkdownValue(value)
     if (editorRef.current) {
       editorRef.current.setValue(value)
@@ -2052,6 +2484,14 @@ function WorkspaceApp({
 
   function applyMonacoChangesToYText(event: editor.IModelContentChangedEvent) {
     if (isApplyingRemoteRef.current) return
+    if (!canEditActiveDocumentRef.current) {
+      const ytextValue = ytextRef.current?.toString() ?? markdown
+      isApplyingRemoteRef.current = true
+      editorRef.current?.setValue(ytextValue)
+      updateMarkdownValue(ytextValue)
+      isApplyingRemoteRef.current = false
+      return
+    }
 
     const ytext = ytextRef.current
     if (!ytext) {
@@ -2087,7 +2527,20 @@ function WorkspaceApp({
     preview.scrollTop = scrollRatio * Math.max(previewMaxScroll, 0)
   }
 
+  function updateLocalCursorAwareness(ed: editor.IStandaloneCodeEditor) {
+    const provider = providerRef.current
+    const cursorState = getCursorAwarenessState(ed, awarenessUser)
+    if (!provider || !cursorState) return
+
+    provider.awareness.setLocalStateField('cursor', cursorState)
+  }
+
   function updateAiSelectionMenu(ed: editor.IStandaloneCodeEditor) {
+    if (!canEditActiveDocumentRef.current) {
+      setAiSelectionMenu((current) => (current.visible ? { ...current, visible: false } : current))
+      return
+    }
+
     const selection = ed.getSelection()
     const model = ed.getModel()
     if (!selection || !model || selection.isEmpty()) {
@@ -2137,6 +2590,11 @@ function WorkspaceApp({
   }
 
   function requestAiEdit(action: 'rewrite' | 'expand') {
+    if (!canEditActiveDocumentRef.current) {
+      setBridgeToast('此文件目前為唯讀模式，無法發送重寫請求')
+      return
+    }
+
     const activeSelection = activeAiSelectionRef.current
     if (!activeSelection) return
 
@@ -2154,6 +2612,11 @@ function WorkspaceApp({
   }
 
   function applyEditorEdit(text: string, cursorOffset?: number) {
+    if (!canEditActiveDocumentRef.current) {
+      setBridgeToast('此文件目前為唯讀模式，無法修改內容')
+      return
+    }
+
     const ed = editorRef.current
     if (!ed) return
 
@@ -2178,6 +2641,8 @@ function WorkspaceApp({
   }
 
   function handleEditorPaste(event: ClipboardEvent) {
+    if (!canEditActiveDocumentRef.current) return
+
     const pastedText = event.clipboardData?.getData('text/plain') ?? ''
     if (!pastedText.includes('\t') || !/\r?\n/.test(pastedText)) return
 
@@ -2190,11 +2655,21 @@ function WorkspaceApp({
   }
 
   function handleSmartFormat() {
+    if (!canEditActiveDocument) {
+      setBridgeToast('此文件目前為唯讀模式，無法修改內容')
+      return
+    }
+
     syncEditorValue(smartFormat(markdown))
     editorRef.current?.focus()
   }
 
   async function generateOutline() {
+    if (!canEditActiveDocument) {
+      setBridgeToast('此文件目前為唯讀模式，無法插入大綱')
+      return
+    }
+
     setOutlineLoading(true)
     try {
       const res = await fetch(`${API_BASE_URL}/api/generate-outline`, {
@@ -2232,6 +2707,9 @@ function WorkspaceApp({
   function loadDocument(document: Document) {
     if (document.type !== 'file' || document.isTrashed) return
 
+    if (supabase && shouldUseSupabaseDocuments) {
+      setDocumentCollaboratorsLoading(true)
+    }
     setActiveDocumentId(document.id)
     isApplyingRemoteRef.current = true
     updateMarkdownValue(document.content)
@@ -2247,7 +2725,7 @@ function WorkspaceApp({
       try {
         const { data, error } = await supabase
           .from('documents')
-          .insert([{ title: '未命名報告', content: '' }])
+          .insert([{ title: '未命名報告', content: '', share_setting: 'private' }])
           .select('*')
           .single()
 
@@ -2283,7 +2761,7 @@ function WorkspaceApp({
       try {
         const { data, error } = await supabase
           .from('documents')
-          .insert([{ title: template.title, content: template.content }])
+          .insert([{ title: template.title, content: template.content, share_setting: 'private' }])
           .select('*')
           .single()
 
@@ -2329,6 +2807,12 @@ function WorkspaceApp({
   function selectDocument(id: string) {
     const nextDocument = documents.find((document) => document.id === id)
     if (!nextDocument || nextDocument.type !== 'file' || nextDocument.isTrashed) return
+    if (getDocumentPermission(nextDocument, user) === 'none') {
+      setBridgeToast('您沒有權限存取此文件')
+      setCurrentView('dashboard')
+      window.history.replaceState(null, '', '/dashboard')
+      return
+    }
 
     loadDocument(nextDocument)
     setCurrentView('editor')
@@ -2339,6 +2823,10 @@ function WorkspaceApp({
 
     const targetDocument = documents.find((document) => document.id === id)
     if (!targetDocument) return
+    if (getDocumentPermission(targetDocument, user) !== 'owner') {
+      setBridgeToast('只有文件擁有者可以重新命名')
+      return
+    }
 
     const nextTitle = window.prompt('重新命名檔案', targetDocument.title)?.trim()
     if (!nextTitle) return
@@ -2368,6 +2856,12 @@ function WorkspaceApp({
 
   async function updateActiveDocumentTitle(nextTitle: string) {
     if (databaseLoading) return
+    if (!isActiveDocumentOwner) {
+      setBridgeToast('只有文件擁有者可以重新命名')
+      setTitleDraft(activeDocument?.title ?? '')
+      setIsTitleEditing(false)
+      return
+    }
 
     const trimmedTitle = nextTitle.trim()
     if (!activeDocument || !trimmedTitle) {
@@ -2412,6 +2906,11 @@ function WorkspaceApp({
 
     const targetDocument = documents.find((document) => document.id === id)
     if (!targetDocument) return
+    if (getDocumentPermission(targetDocument, user) !== 'owner') {
+      setBridgeToast('只有文件擁有者可以刪除文件')
+      return
+    }
+
     const deleteLabel = targetDocument.type === 'folder' ? '資料夾與其中所有項目' : '檔案'
     if (!window.confirm(`將${deleteLabel}「${targetDocument.title}」移至垃圾桶？`)) return
 
@@ -2691,7 +3190,8 @@ function WorkspaceApp({
       return
     }
 
-    await shareDocument(activeDocument.id, true)
+    void refreshDocumentCollaborators(activeDocument.id)
+    setIsShareModalOpen(true)
   }
 
   async function shareDocument(documentId: string, updateShareButton = false) {
@@ -2703,7 +3203,7 @@ function WorkspaceApp({
       return
     }
 
-    const shareUrl = `${window.location.origin}/?docId=${targetDocument.id}`
+    const shareUrl = `${window.location.origin}/editor/${encodeURIComponent(targetDocument.id)}`
 
     try {
       await navigator.clipboard.writeText(shareUrl)
@@ -2725,6 +3225,147 @@ function WorkspaceApp({
     }
   }
 
+  async function updateShareSetting(nextShareSetting: ShareSetting) {
+    if (!activeDocument) return
+    if (!isActiveDocumentOwner) {
+      setBridgeToast('只有文件擁有者可以修改分享權限')
+      return
+    }
+
+    setShareSettingLoading(true)
+    try {
+      if (supabase && shouldUseSupabaseDocuments) {
+        const { error } = await supabase
+          .from('documents')
+          .update({ share_setting: nextShareSetting })
+          .eq('id', activeDocument.id)
+        if (error) throw error
+      }
+
+      const now = new Date().toISOString()
+      setDocuments((currentDocuments) =>
+        currentDocuments.map((document) =>
+          document.id === activeDocument.id
+            ? { ...document, shareSetting: nextShareSetting, updatedAt: now }
+            : document,
+        ),
+      )
+      setBridgeToast('分享權限已更新')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '分享權限更新失敗'
+      setBridgeToast(`分享權限更新失敗：${message}`)
+    } finally {
+      setShareSettingLoading(false)
+    }
+  }
+
+  async function inviteDocumentCollaborator() {
+    if (!activeDocument || !isActiveDocumentOwner || !user) {
+      setBridgeToast('只有文件擁有者可以邀請協作者')
+      return
+    }
+
+    const normalizedEmail = collaboratorEmail.trim().toLowerCase()
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail)) {
+      setBridgeToast('請輸入有效的 Email')
+      return
+    }
+    if (normalizedEmail === user.email?.trim().toLowerCase()) {
+      setBridgeToast('擁有者不需要加入協作者名單')
+      return
+    }
+    if (documentCollaborators.some((collaborator) => collaborator.userEmail === normalizedEmail)) {
+      setBridgeToast('此使用者已在協作者名單中')
+      return
+    }
+
+    setShareSettingLoading(true)
+    try {
+      if (supabase && shouldUseSupabaseDocuments) {
+        const { error } = await supabase.from('document_collaborators').insert([
+          {
+            document_id: activeDocument.id,
+            user_email: normalizedEmail,
+            role: 'edit',
+          },
+        ])
+        if (error) throw error
+      }
+
+      setDocumentCollaborators((currentCollaborators) => [
+        ...currentCollaborators,
+        { documentId: activeDocument.id, userEmail: normalizedEmail, role: 'edit' },
+      ])
+      setCollaboratorEmail('')
+      setBridgeToast('協作者已邀請')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '邀請協作者失敗'
+      setBridgeToast(`邀請協作者失敗：${message}`)
+    } finally {
+      setShareSettingLoading(false)
+    }
+  }
+
+  async function updateDocumentCollaboratorRole(userEmail: string, nextRole: CollaboratorRole) {
+    if (!activeDocument || !isActiveDocumentOwner) {
+      setBridgeToast('只有文件擁有者可以修改協作者權限')
+      return
+    }
+
+    setShareSettingLoading(true)
+    try {
+      if (supabase && shouldUseSupabaseDocuments) {
+        const { error } = await supabase
+          .from('document_collaborators')
+          .update({ role: nextRole })
+          .eq('document_id', activeDocument.id)
+          .eq('user_email', userEmail)
+        if (error) throw error
+      }
+
+      setDocumentCollaborators((currentCollaborators) =>
+        currentCollaborators.map((collaborator) =>
+          collaborator.userEmail === userEmail ? { ...collaborator, role: nextRole } : collaborator,
+        ),
+      )
+      setBridgeToast('協作者權限已更新')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '協作者權限更新失敗'
+      setBridgeToast(`協作者權限更新失敗：${message}`)
+    } finally {
+      setShareSettingLoading(false)
+    }
+  }
+
+  async function removeDocumentCollaborator(userEmail: string) {
+    if (!activeDocument || !isActiveDocumentOwner) {
+      setBridgeToast('只有文件擁有者可以移除協作者')
+      return
+    }
+
+    setShareSettingLoading(true)
+    try {
+      if (supabase && shouldUseSupabaseDocuments) {
+        const { error } = await supabase
+          .from('document_collaborators')
+          .delete()
+          .eq('document_id', activeDocument.id)
+          .eq('user_email', userEmail)
+        if (error) throw error
+      }
+
+      setDocumentCollaborators((currentCollaborators) =>
+        currentCollaborators.filter((collaborator) => collaborator.userEmail !== userEmail),
+      )
+      setBridgeToast('協作者已移除')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : '移除協作者失敗'
+      setBridgeToast(`移除協作者失敗：${message}`)
+    } finally {
+      setShareSettingLoading(false)
+    }
+  }
+
   function deleteActiveDocument() {
     if (!activeDocument) return
 
@@ -2736,26 +3377,27 @@ function WorkspaceApp({
 
   return (
     <div className="flex h-full min-h-screen bg-zinc-50 font-sans text-zinc-800 transition-colors duration-300 dark:bg-zinc-950 dark:text-zinc-100">
-      <DocumentSidebar
-        documents={documents}
-        activeDocumentId={activeDocumentId}
-        currentView={currentView}
-        isCollapsed={isSidebarCollapsed}
-        onToggleCollapsed={() => setIsSidebarCollapsed((current) => !current)}
-        onChangeView={setCurrentView}
-        onCreateDocument={createNewDocument}
-        onCreateFolder={createNewFolder}
-        onCreateDocumentInFolder={createDocumentInFolder}
-        onSelectDocument={selectDocument}
-        onRenameDocument={renameDocument}
-        onDeleteDocument={deleteDocument}
-        onToggleFavorite={toggleDocumentFavorite}
-        onOpenExtensionModal={() => setIsExtensionModalOpen(true)}
-        onOpenFeedback={openFeedback}
-        user={user}
-        isGuest={isGuest}
-        onSignOut={onSignOut}
-      />
+      {user && (
+        <DocumentSidebar
+          documents={documents}
+          activeDocumentId={activeDocumentId}
+          currentView={currentView}
+          isCollapsed={isSidebarCollapsed}
+          onToggleCollapsed={() => setIsSidebarCollapsed((current) => !current)}
+          onChangeView={setCurrentView}
+          onCreateDocument={createNewDocument}
+          onCreateFolder={createNewFolder}
+          onCreateDocumentInFolder={createDocumentInFolder}
+          onSelectDocument={selectDocument}
+          onRenameDocument={renameDocument}
+          onDeleteDocument={deleteDocument}
+          onToggleFavorite={toggleDocumentFavorite}
+          onOpenExtensionModal={() => setIsExtensionModalOpen(true)}
+          onOpenFeedback={openFeedback}
+          user={user}
+          onSignOut={onSignOut}
+        />
+      )}
 
       <div className="flex min-w-0 flex-1 flex-col">
       {currentView === 'editor' ? (
@@ -2782,11 +3424,16 @@ function WorkspaceApp({
               <button
                 type="button"
                 onClick={() => {
+                  if (!isActiveDocumentOwner) return
                   setTitleDraft(activeDocument?.title ?? '')
                   setIsTitleEditing(true)
                 }}
-                className="max-w-md truncate rounded-lg px-2 py-1 text-left text-sm font-semibold text-zinc-900 transition-colors hover:bg-zinc-100 dark:text-zinc-100 dark:hover:bg-zinc-900"
-                title="點擊重新命名"
+                className={`max-w-md truncate rounded-lg px-2 py-1 text-left text-sm font-semibold text-zinc-900 transition-colors dark:text-zinc-100 ${
+                  isActiveDocumentOwner
+                    ? 'hover:bg-zinc-100 dark:hover:bg-zinc-900'
+                    : 'cursor-default'
+                }`}
+                title={isActiveDocumentOwner ? '點擊重新命名' : '只有擁有者可以重新命名'}
               >
                 {activeDocument?.title ?? '未命名報告'}
               </button>
@@ -2794,6 +3441,12 @@ function WorkspaceApp({
           </div>
 
           <div className="flex items-center gap-2">
+            <CollaboratorAvatarGroup collaborators={collaborators} />
+            {isReadOnlyMode && (
+              <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+                唯讀模式
+              </span>
+            )}
             {syncStatus === 'exporting' && (
               <span className="text-xs font-medium text-amber-500">正在打包 Word</span>
             )}
@@ -2807,13 +3460,23 @@ function WorkspaceApp({
             {syncStatus === 'error' && (
               <span className="text-xs font-medium text-red-500">同步失敗</span>
             )}
-            <button
-              type="button"
-              onClick={shareCurrentDocument}
-              className="rounded-lg bg-zinc-900 px-3.5 py-1.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
-            >
-              {shareCopied ? '✅ 已複製連結' : '✨ 分享'}
-            </button>
+            {user ? (
+              <button
+                type="button"
+                onClick={shareCurrentDocument}
+                className="rounded-lg bg-zinc-900 px-3.5 py-1.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+              >
+                ✨ 分享
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={onRequestAuth}
+                className="rounded-lg bg-white px-3.5 py-1.5 text-sm font-semibold text-zinc-900 shadow-sm ring-1 ring-zinc-200 transition-colors hover:bg-zinc-50 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+              >
+                註冊 / 登入
+              </button>
+            )}
 
             <div ref={advancedMenuRef} className="relative">
               <button
@@ -2868,7 +3531,8 @@ function WorkspaceApp({
                   <button
                     type="button"
                     onClick={deleteActiveDocument}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium text-red-300 transition-colors hover:bg-white/10 hover:text-red-200"
+                    disabled={!isActiveDocumentOwner}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium text-red-300 transition-colors hover:bg-white/10 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
                   >
                     <span>🗑️</span>
                     刪除此報告
@@ -2941,11 +3605,13 @@ function WorkspaceApp({
       <main className="grid min-h-0 flex-1 grid-cols-1 bg-white lg:grid-cols-2 dark:bg-zinc-950">
         <section className="flex min-h-0 flex-grow flex-col border-b border-zinc-200 transition-colors duration-300 dark:border-zinc-800 lg:border-b-0 lg:border-r">
           <div className="border-b border-zinc-200/60 px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-zinc-500 transition-colors duration-300 dark:border-zinc-800 dark:text-zinc-400">
-            編輯區 — 貼上 LLM 報告
+            {isReadOnlyMode ? '唯讀區 — 可檢視但不可編輯' : '編輯區 — 貼上 LLM 報告'}
           </div>
 
           <div
-            className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-zinc-800 bg-[#111111]/95 px-4 py-2.5 shadow-sm backdrop-blur-md"
+            className={`sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-zinc-800 bg-[#111111]/95 px-4 py-2.5 shadow-sm backdrop-blur-md ${
+              isReadOnlyMode ? 'opacity-80' : ''
+            }`}
             role="toolbar"
             aria-label="AI 編輯工具列"
           >
@@ -2960,7 +3626,8 @@ function WorkspaceApp({
                 type="button"
                 title="生成報告大綱"
                 onClick={() => setIsOutlineModalOpen(true)}
-                className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-medium text-zinc-200 transition-all hover:bg-white/10 hover:text-white active:scale-[0.98]"
+                disabled={!canEditActiveDocument}
+                className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-medium text-zinc-200 transition-all hover:bg-white/10 hover:text-white active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Sparkles className="h-4 w-4" strokeWidth={2} />
                 <span className="hidden sm:inline">生成報告大綱</span>
@@ -2970,7 +3637,7 @@ function WorkspaceApp({
                 type="button"
                 title="智慧排版修復 — 清理標點空白與連續重複段落"
                 onClick={handleSmartFormat}
-                disabled={isEditorEmpty}
+                disabled={isEditorEmpty || !canEditActiveDocument}
                 className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-violet-500/90 to-blue-500/90 px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition-all hover:from-violet-400 hover:to-blue-400 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Wand2 className="h-4 w-4" strokeWidth={2} />
@@ -3028,6 +3695,7 @@ function WorkspaceApp({
                 )
                 editorSelectionDisposableRef.current?.dispose()
                 editorSelectionDisposableRef.current = ed.onDidChangeCursorSelection(() => {
+                  updateLocalCursorAwareness(ed)
                   updateAiSelectionMenu(ed)
                 })
 
@@ -3037,8 +3705,12 @@ function WorkspaceApp({
                 editorPasteCleanupRef.current = () => {
                   editorDomNode?.removeEventListener('paste', handleEditorPaste)
                 }
+                updateLocalCursorAwareness(ed)
               }}
               options={{
+                readOnly: !canEditActiveDocument,
+                domReadOnly: !canEditActiveDocument,
+                readOnlyMessage: { value: '此文件目前為唯讀模式' },
                 minimap: { enabled: false },
                 wordWrap: 'on',
                 fontSize: 14,
@@ -3135,6 +3807,179 @@ function WorkspaceApp({
         </div>
       )}
 
+      {isShareModalOpen && activeDocument && user && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/30 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-2xl rounded-3xl border border-zinc-100 bg-white p-7 shadow-2xl transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
+                  分享「{activeDocument.title}」
+                </h2>
+                <p className="mt-1.5 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+                  邀請特定使用者，或設定知道連結的人可以如何存取這份報告。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsShareModalOpen(false)}
+                className="rounded-full p-2 text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-900 dark:hover:text-zinc-100"
+                title="關閉"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="mt-7 space-y-7">
+              <section>
+                <div className="mb-3 flex items-center justify-between">
+                  <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">特定協作者</h3>
+                  {documentCollaboratorsLoading && (
+                    <span className="text-xs font-medium text-zinc-400">載入中...</span>
+                  )}
+                </div>
+
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    void inviteDocumentCollaborator()
+                  }}
+                  className="flex flex-col gap-2 sm:flex-row"
+                >
+                  <input
+                    type="email"
+                    value={collaboratorEmail}
+                    onChange={(event) => setCollaboratorEmail(event.target.value)}
+                    placeholder="新增使用者 Email"
+                    disabled={!isActiveDocumentOwner || shareSettingLoading}
+                    className="min-w-0 flex-1 rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:bg-zinc-950"
+                  />
+                  <button
+                    type="submit"
+                    disabled={!isActiveDocumentOwner || shareSettingLoading || !collaboratorEmail.trim()}
+                    className="rounded-xl bg-zinc-900 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+                  >
+                    邀請
+                  </button>
+                </form>
+
+                <div className="mt-4 overflow-hidden rounded-2xl border border-zinc-200/70 bg-zinc-50/60 dark:border-zinc-800 dark:bg-zinc-900/60">
+                  <div className="flex items-center gap-3 border-b border-zinc-200/70 px-4 py-3 dark:border-zinc-800">
+                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-zinc-900 text-sm font-semibold text-white dark:bg-zinc-100 dark:text-zinc-950">
+                      {getUserInitial(isActiveDocumentOwner ? user : null)}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                        {isActiveDocumentOwner ? getUserDisplayName(user) : '文件擁有者'}
+                      </p>
+                      <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">
+                        {isActiveDocumentOwner ? user.email : 'Owner'}
+                      </p>
+                    </div>
+                    <span className="rounded-full bg-zinc-200/70 px-3 py-1 text-xs font-semibold text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
+                      擁有者
+                    </span>
+                  </div>
+
+                  {documentCollaborators.length > 0 ? (
+                    documentCollaborators.map((collaborator) => (
+                      <div
+                        key={collaborator.userEmail}
+                        className="flex items-center gap-3 border-b border-zinc-200/70 px-4 py-3 last:border-b-0 dark:border-zinc-800"
+                      >
+                        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-sm font-semibold text-zinc-700 ring-1 ring-zinc-200 dark:bg-zinc-950 dark:text-zinc-200 dark:ring-zinc-800">
+                          {getCollaboratorInitial(collaborator.userEmail)}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                            {collaborator.userEmail}
+                          </p>
+                          <p className="text-xs text-zinc-500 dark:text-zinc-400">已邀請協作者</p>
+                        </div>
+                        <select
+                          value={collaborator.role}
+                          onChange={(event) =>
+                            void updateDocumentCollaboratorRole(
+                              collaborator.userEmail,
+                              event.target.value as CollaboratorRole,
+                            )
+                          }
+                          disabled={!isActiveDocumentOwner || shareSettingLoading}
+                          className="rounded-lg border border-zinc-200 bg-white px-2.5 py-2 text-xs font-semibold text-zinc-700 outline-none transition focus:border-zinc-400 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200"
+                        >
+                          <option value="view">可檢視</option>
+                          <option value="edit">可編輯</option>
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => void removeDocumentCollaborator(collaborator.userEmail)}
+                          disabled={!isActiveDocumentOwner || shareSettingLoading}
+                          className="rounded-lg px-2.5 py-2 text-xs font-semibold text-zinc-400 transition hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-red-500/10 dark:hover:text-red-300"
+                        >
+                          移除
+                        </button>
+                      </div>
+                    ))
+                  ) : (
+                    <div className="px-4 py-5 text-sm text-zinc-500 dark:text-zinc-400">
+                      尚未邀請任何協作者。
+                    </div>
+                  )}
+                </div>
+              </section>
+
+              <section className="border-t border-zinc-200 pt-6 dark:border-zinc-800">
+                <div className="mb-3">
+                  <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">一般存取權</h3>
+                  <p className="mt-1 text-xs leading-5 text-zinc-500 dark:text-zinc-400">
+                    不在特定協作者名單內的人，會依照此連結權限存取文件。
+                  </p>
+                </div>
+
+                <select
+                  value={activeDocument.shareSetting}
+                  onChange={(event) => void updateShareSetting(event.target.value as ShareSetting)}
+                  disabled={!isActiveDocumentOwner || shareSettingLoading}
+                  className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm font-medium text-zinc-900 outline-none transition focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:bg-zinc-950"
+                >
+                  <option value="private">🔒 私密（僅限擁有者與受邀協作者）</option>
+                  <option value="view">👁️ 知道連結的人可以檢視</option>
+                  <option value="edit">✏️ 知道連結的人可以編輯</option>
+                </select>
+
+                {!isActiveDocumentOwner && (
+                  <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
+                    你不是此文件擁有者，因此只能複製連結，無法修改分享與協作者權限。
+                  </div>
+                )}
+              </section>
+
+              <div className="rounded-xl border border-zinc-200/70 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900">
+                <div className="truncate font-mono text-xs text-zinc-500 dark:text-zinc-400">
+                  {`${window.location.origin}/editor/${activeDocument.id}`}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-7 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setIsShareModalOpen(false)}
+                className={SUBTLE_BUTTON}
+              >
+                完成
+              </button>
+              <button
+                type="button"
+                onClick={() => void shareDocument(activeDocument.id, true)}
+                className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+              >
+                {shareCopied ? '✅ 已複製' : '複製連結'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isExtensionModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/30 px-4 backdrop-blur-sm">
           <div className="w-full max-w-lg rounded-2xl border border-zinc-100 bg-white p-8 shadow-2xl transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950">
@@ -3181,8 +4026,9 @@ function WorkspaceApp({
 
 function App() {
   const [user, setUser] = useState<User | null>(null)
-  const [isGuest, setIsGuest] = useState(false)
   const [authLoading, setAuthLoading] = useState(Boolean(supabase))
+  const [publicRouteLoading, setPublicRouteLoading] = useState(false)
+  const [publicSharedDocument, setPublicSharedDocument] = useState<Document | null>(null)
 
   useEffect(() => {
     if (!supabase) return
@@ -3200,7 +4046,6 @@ function App() {
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null)
       setAuthLoading(false)
-      if (session?.user) setIsGuest(false)
     })
 
     return () => {
@@ -3208,6 +4053,72 @@ function App() {
       subscription.unsubscribe()
     }
   }, [])
+
+  useEffect(() => {
+    if (authLoading) return
+
+    if (user) {
+      const clearTimer = window.setTimeout(() => {
+        setPublicSharedDocument(null)
+        setPublicRouteLoading(false)
+      }, 0)
+      return () => window.clearTimeout(clearTimer)
+    }
+
+    const sharedDocId = getSharedDocumentIdFromLocation()
+    if (!sharedDocId) {
+      if (window.location.pathname !== '/') {
+        window.history.replaceState(null, '', '/')
+      }
+      return
+    }
+
+    if (!supabase) {
+      window.history.replaceState(null, '', '/')
+      return
+    }
+
+    let isCancelled = false
+    const loadTimer = window.setTimeout(async () => {
+      setPublicRouteLoading(true)
+      try {
+        const { data, error } = await supabase
+          .from('documents')
+          .select('*')
+          .eq('id', sharedDocId)
+          .eq('is_trashed', false)
+          .maybeSingle()
+
+        if (error) throw error
+
+        const sharedDocument = data ? mapSupabaseDocument(data as SupabaseDocumentRow) : null
+        if (!sharedDocument || sharedDocument.shareSetting === 'private') {
+          if (!isCancelled) {
+            setPublicSharedDocument(null)
+            window.history.replaceState(null, '', '/')
+          }
+          return
+        }
+
+        if (!isCancelled) {
+          setPublicSharedDocument(sharedDocument)
+          window.history.replaceState(null, '', `/editor/${encodeURIComponent(sharedDocument.id)}`)
+        }
+      } catch {
+        if (!isCancelled) {
+          setPublicSharedDocument(null)
+          window.history.replaceState(null, '', '/')
+        }
+      } finally {
+        if (!isCancelled) setPublicRouteLoading(false)
+      }
+    }, 0)
+
+    return () => {
+      isCancelled = true
+      window.clearTimeout(loadTimer)
+    }
+  }, [authLoading, user])
 
   async function signInWithOAuth(provider: Provider) {
     if (!supabase) {
@@ -3251,33 +4162,54 @@ function App() {
   }
 
   async function signOut() {
-    setIsGuest(false)
     setUser(null)
     if (supabase) {
       await supabase.auth.signOut()
     }
   }
 
-  if (authLoading) {
+  if (authLoading || publicRouteLoading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-[#FAFAFC] text-sm font-medium text-zinc-500">
-        正在確認登入狀態...
+        {authLoading ? '正在確認登入狀態...' : '正在開啟共享文件...'}
       </div>
     )
   }
 
-  if (!user && !isGuest) {
+  if (!user && publicSharedDocument) {
+    return (
+      <WorkspaceApp
+        user={null}
+        initialSharedDocument={publicSharedDocument}
+        onRequestAuth={() => {
+          window.location.href = '/'
+        }}
+        onSignOut={() => {
+          window.location.href = '/'
+        }}
+      />
+    )
+  }
+
+  if (!user) {
     return (
       <LandingPage
         onOAuthLogin={signInWithOAuth}
         onSendMagicLink={sendMagicLink}
-        onContinueAsGuest={() => setIsGuest(true)}
         authLoading={authLoading}
       />
     )
   }
 
-  return <WorkspaceApp user={user} isGuest={isGuest} onSignOut={signOut} />
+  return (
+    <WorkspaceApp
+      user={user}
+      onRequestAuth={() => {
+        window.location.href = '/'
+      }}
+      onSignOut={signOut}
+    />
+  )
 }
 
 export default App
