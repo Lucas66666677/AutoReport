@@ -18,10 +18,8 @@ import {
   PanelLeftOpen,
   Pencil,
   Plus,
-  Sparkles,
   Star,
   Trash2,
-  Wand2,
 } from 'lucide-react'
 import type { editor } from 'monaco-editor'
 import ReactMarkdown from 'react-markdown'
@@ -3618,6 +3616,112 @@ function WorkspaceApp({
     applyEditorEdit(snippet, cursorOffset)
   }
 
+  function getSelectedEditorText() {
+    const ed = editorRef.current
+    const selection = ed?.getSelection()
+    const model = ed?.getModel()
+    if (!ed || !selection || !model) return ''
+
+    return model.getValueInRange(selection)
+  }
+
+  function wrapSelection(prefix: string, suffix = prefix, placeholder = '文字') {
+    const selectedText = getSelectedEditorText()
+    const nextText = `${prefix}${selectedText || placeholder}${suffix}`
+    const cursorOffset = selectedText ? nextText.length : prefix.length
+    applyEditorEdit(nextText, cursorOffset)
+  }
+
+  function prefixSelectionLines(prefix: string, placeholder = '文字') {
+    const selectedText = getSelectedEditorText()
+    const sourceText = selectedText || placeholder
+    const nextText = sourceText
+      .split(/\r?\n/)
+      .map((line) => `${prefix}${line}`)
+      .join('\n')
+    applyEditorEdit(nextText, selectedText ? undefined : prefix.length)
+  }
+
+  function runEditorCommand(command: string) {
+    const ed = editorRef.current
+    if (!ed) return
+    ed.trigger('markdown-toolbar', command, null)
+    ed.focus()
+  }
+
+  function insertMarkdownSnippet(kind: string) {
+    if (!canEditActiveDocumentRef.current) {
+      setBridgeToast('此文件目前為唯讀模式，無法修改內容')
+      return
+    }
+
+    if (kind === 'undo') {
+      runEditorCommand('undo')
+      return
+    }
+    if (kind === 'redo') {
+      runEditorCommand('redo')
+      return
+    }
+    if (kind === 'bold') {
+      wrapSelection('**', '**', '粗體文字')
+      return
+    }
+    if (kind === 'italic') {
+      wrapSelection('*', '*', '斜體文字')
+      return
+    }
+    if (kind === 'strike') {
+      wrapSelection('~~', '~~', '刪除線文字')
+      return
+    }
+    if (kind === 'heading') {
+      prefixSelectionLines('## ', '標題')
+      return
+    }
+    if (kind === 'code') {
+      wrapSelection('`', '`', 'code')
+      return
+    }
+    if (kind === 'quote') {
+      prefixSelectionLines('> ', '引用文字')
+      return
+    }
+    if (kind === 'bullet') {
+      prefixSelectionLines('- ', '清單項目')
+      return
+    }
+    if (kind === 'ordered') {
+      const selectedText = getSelectedEditorText()
+      const lines = (selectedText || '清單項目').split(/\r?\n/)
+      applyEditorEdit(lines.map((line, index) => `${index + 1}. ${line}`).join('\n'), selectedText ? undefined : 3)
+      return
+    }
+    if (kind === 'check') {
+      prefixSelectionLines('- [ ] ', '待辦事項')
+      return
+    }
+    if (kind === 'link') {
+      insertAtCursor('[連結文字](https://example.com)', 1)
+      return
+    }
+    if (kind === 'image') {
+      insertAtCursor('![圖片說明](https://example.com/image.png)', 2)
+      return
+    }
+    if (kind === 'table') {
+      insertAtCursor('| 欄位 A | 欄位 B |\n|---|---|\n|  |  |')
+      return
+    }
+    if (kind === 'hr') {
+      insertAtCursor('\n---\n')
+      return
+    }
+    if (kind === 'comment') {
+      insertAtCursor('<!-- 註解 -->', 5)
+    }
+  }
+
   function handleEditorPaste(event: ClipboardEvent) {
     if (!canEditActiveDocumentRef.current) return
 
@@ -4656,6 +4760,79 @@ function WorkspaceApp({
         </header>
       )}
 
+      {currentView === 'editor' && (
+        <div
+          className={`z-30 flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-zinc-800 bg-[#303138] px-3 text-zinc-300 ${SCROLLBAR_HIDE}`}
+          role="toolbar"
+          aria-label="Markdown 格式工具列"
+        >
+          {[
+            ['undo', '↶', '復原'],
+            ['redo', '↷', '重做'],
+            ['divider-1', '', ''],
+            ['bold', 'B', '粗體'],
+            ['italic', 'I', '斜體'],
+            ['strike', 'S', '刪除線'],
+            ['heading', 'H', '標題'],
+            ['code', '</>', '程式碼'],
+            ['quote', '”', '引用'],
+            ['bullet', '•', '項目清單'],
+            ['ordered', '1.', '編號清單'],
+            ['check', '☑', '待辦清單'],
+            ['divider-2', '', ''],
+            ['link', '🔗', '連結'],
+            ['image', '▧', '圖片'],
+            ['table', '▦', '表格'],
+            ['hr', '—', '分隔線'],
+            ['comment', '○', '註解'],
+          ].map(([kind, label, title]) =>
+            kind.startsWith('divider') ? (
+              <span key={kind} className="mx-1 h-5 w-px shrink-0 bg-zinc-600" />
+            ) : (
+              <button
+                key={kind}
+                type="button"
+                title={title}
+                aria-label={title}
+                disabled={!canEditActiveDocument}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => insertMarkdownSnippet(kind)}
+                className="flex h-8 min-w-8 shrink-0 items-center justify-center rounded-md px-2 text-sm font-semibold text-zinc-300 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-35"
+              >
+                {label}
+              </button>
+            ),
+          )}
+          <span className="min-w-3 flex-1" />
+          <button
+            type="button"
+            title="切換 AI 模式、插件橋接或自備 API Key"
+            onClick={() => setCurrentView('settings')}
+            className="hidden h-8 shrink-0 items-center rounded-md border border-white/10 bg-white/5 px-3 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white md:inline-flex"
+          >
+            AI 設定
+          </button>
+          <button
+            type="button"
+            title="生成報告大綱"
+            onClick={() => setIsOutlineModalOpen(true)}
+            disabled={!canEditActiveDocument || Boolean(aiTaskLoading)}
+            className="hidden h-8 shrink-0 items-center rounded-md border border-white/10 bg-white/5 px-3 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-35 sm:inline-flex"
+          >
+            生成大綱
+          </button>
+          <button
+            type="button"
+            title="智慧排版修復"
+            onClick={handleSmartFormat}
+            disabled={isEditorEmpty || !canEditActiveDocument || Boolean(aiTaskLoading)}
+            className="hidden h-8 shrink-0 items-center rounded-md bg-violet-600 px-3 text-sm font-semibold text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40 sm:inline-flex"
+          >
+            智慧排版
+          </button>
+        </div>
+      )}
+
       {currentView === 'dashboard' ? (
         <DashboardView
           documents={documents}
@@ -4742,59 +4919,6 @@ function WorkspaceApp({
             mobileEditorPane === 'edit' ? 'flex' : 'hidden'
           }`}
         >
-          <div className="border-b border-zinc-800 bg-[#2b2c31] px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-zinc-400">
-            {isReadOnlyMode ? '唯讀區 — 可檢視但不可編輯' : '編輯區 — 貼上 LLM 報告'}
-          </div>
-
-          <div
-            className={`sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-zinc-800 bg-[#111111]/95 px-4 py-2.5 shadow-sm backdrop-blur-md ${
-              isReadOnlyMode ? 'opacity-80' : ''
-            }`}
-            role="toolbar"
-            aria-label="AI 編輯工具列"
-          >
-            <div className="min-w-0">
-              <span className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-500">
-                Markdown AI Console
-              </span>
-              <span className="ml-3 hidden text-xs text-zinc-600 sm:inline">
-                反白文字可用潤飾 / 擴寫
-              </span>
-            </div>
-
-            <div className="flex shrink-0 items-center gap-2">
-              <button
-                type="button"
-                title="切換 AI 模式、插件橋接或自備 API Key"
-                onClick={() => setCurrentView('settings')}
-                className="hidden items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-medium text-zinc-200 transition-all hover:bg-white/10 hover:text-white active:scale-[0.98] sm:flex"
-              >
-                AI 設定
-              </button>
-              <button
-                type="button"
-                title="生成報告大綱"
-                onClick={() => setIsOutlineModalOpen(true)}
-                disabled={!canEditActiveDocument || Boolean(aiTaskLoading)}
-                className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-medium text-zinc-200 transition-all hover:bg-white/10 hover:text-white active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                <Sparkles className="h-4 w-4" strokeWidth={2} />
-                <span className="hidden sm:inline">生成報告大綱</span>
-              </button>
-
-              <button
-                type="button"
-                title="智慧排版修復 — 清理標點空白與連續重複段落"
-                onClick={handleSmartFormat}
-                disabled={isEditorEmpty || !canEditActiveDocument || Boolean(aiTaskLoading)}
-                className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-violet-500/90 to-blue-500/90 px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition-all hover:from-violet-400 hover:to-blue-400 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
-              >
-                <Wand2 className="h-4 w-4" strokeWidth={2} />
-                <span className="hidden sm:inline">智慧排版修復</span>
-              </button>
-            </div>
-          </div>
-
           <div className="relative min-h-[280px] flex-1 flex-grow bg-[#1f2023] font-mono leading-relaxed lg:min-h-0">
             {aiSelectionMenu.visible && (
               <div
