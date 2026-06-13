@@ -18,6 +18,11 @@ type SpectrumRay = {
   width: number
 }
 
+type CursorObstacle = {
+  scale: number
+  tip: Point
+}
+
 const VIEWBOX_WIDTH = 1000
 const VIEWBOX_HEIGHT = 620
 const PRISM_CENTER: Point = { x: 500, y: 302 }
@@ -28,8 +33,16 @@ const PRISM_POINTS: Point[] = [
   { x: -PRISM_SIDE / 2, y: PRISM_HEIGHT / 3 },
   { x: PRISM_SIDE / 2, y: PRISM_HEIGHT / 3 },
 ]
-const OBSTACLE_RADIUS = 16
-const MIN_RAY_DISTANCE = 6
+const CURSOR_SAFETY_PIXELS = 0.2
+const CURSOR_OBSTACLE_OFFSETS: Point[] = [
+  { x: 0, y: 0 },
+  { x: 0.2, y: 18 },
+  { x: 4.8, y: 13.2 },
+  { x: 8.2, y: 21.2 },
+  { x: 11.2, y: 19.9 },
+  { x: 7.7, y: 12 },
+  { x: 15.4, y: 12.2 },
+]
 
 const SPECTRUM: SpectrumRay[] = [
   { color: '#ff6b7a', glow: '#ff9aa4', offset: -30, width: 3.2 },
@@ -71,12 +84,82 @@ function pointDistance(a: Point, b: Point) {
   return Math.hypot(a.x - b.x, a.y - b.y)
 }
 
+function add(a: Point, b: Point): Point {
+  return { x: a.x + b.x, y: a.y + b.y }
+}
+
+function cross(a: Point, b: Point) {
+  return a.x * b.y - a.y * b.x
+}
+
+function length(vector: Point) {
+  return Math.hypot(vector.x, vector.y)
+}
+
+function normalize(vector: Point): Point {
+  const size = length(vector)
+  return size < 0.00001 ? { x: 0, y: 0 } : { x: vector.x / size, y: vector.y / size }
+}
+
+function scale(vector: Point, scalar: number): Point {
+  return { x: vector.x * scalar, y: vector.y * scalar }
+}
+
+function subtract(a: Point, b: Point): Point {
+  return { x: a.x - b.x, y: a.y - b.y }
+}
+
 function angleFromCenter(point: Point) {
   return (Math.atan2(point.y - PRISM_CENTER.y, point.x - PRISM_CENTER.x) * 180) / Math.PI
 }
 
-function clipSegmentByObstacle(start: Point, end: Point, obstacle: Point | null, radius = OBSTACLE_RADIUS) {
-  if (!obstacle) {
+function getCursorPolygon(cursor: CursorObstacle | null) {
+  if (!cursor) return null
+
+  return CURSOR_OBSTACLE_OFFSETS.map((offset) => ({
+    x: cursor.tip.x + offset.x * cursor.scale,
+    y: cursor.tip.y + offset.y * cursor.scale,
+  }))
+}
+
+function intersectRayWithSegment(origin: Point, direction: Point, a: Point, b: Point) {
+  const segment = subtract(b, a)
+  const denominator = cross(direction, segment)
+
+  if (Math.abs(denominator) < 0.00001) return null
+
+  const diff = subtract(a, origin)
+  const t = cross(diff, segment) / denominator
+  const u = cross(diff, direction) / denominator
+
+  if (t < 0 || u < -0.0001 || u > 1.0001) return null
+
+  return {
+    point: add(origin, scale(direction, t)),
+    t,
+    u,
+  }
+}
+
+function pointInPolygon(point: Point, polygon: Point[]) {
+  let inside = false
+
+  for (let index = 0, previous = polygon.length - 1; index < polygon.length; previous = index, index += 1) {
+    const a = polygon[index]
+    const b = polygon[previous]
+    const intersects =
+      a.y > point.y !== b.y > point.y && point.x < ((b.x - a.x) * (point.y - a.y)) / (b.y - a.y) + a.x
+
+    if (intersects) inside = !inside
+  }
+
+  return inside
+}
+
+function clipSegmentByCursor(start: Point, end: Point, cursor: CursorObstacle | null) {
+  const polygon = getCursorPolygon(cursor)
+
+  if (!polygon) {
     return {
       blocked: false,
       end,
@@ -84,12 +167,10 @@ function clipSegmentByObstacle(start: Point, end: Point, obstacle: Point | null,
     }
   }
 
-  const dx = end.x - start.x
-  const dy = end.y - start.y
-  const lengthSquared = dx * dx + dy * dy
-  const length = Math.sqrt(lengthSquared)
+  const segment = subtract(end, start)
+  const segmentLength = length(segment)
 
-  if (length < 1) {
+  if (segmentLength < 0.00001) {
     return {
       blocked: false,
       end,
@@ -97,9 +178,26 @@ function clipSegmentByObstacle(start: Point, end: Point, obstacle: Point | null,
     }
   }
 
-  const projection = ((obstacle.x - start.x) * dx + (obstacle.y - start.y) * dy) / lengthSquared
+  if (pointInPolygon(start, polygon)) {
+    return {
+      blocked: true,
+      end: start,
+      t: 0,
+    }
+  }
 
-  if (projection <= 0 || projection >= 1) {
+  let firstT = Number.POSITIVE_INFINITY
+
+  for (let index = 0; index < polygon.length; index += 1) {
+    const a = polygon[index]
+    const b = polygon[(index + 1) % polygon.length]
+    const hit = intersectRayWithSegment(start, normalize(segment), a, b)
+
+    if (!hit || hit.t > segmentLength) continue
+    firstT = Math.min(firstT, hit.t / segmentLength)
+  }
+
+  if (!Number.isFinite(firstT)) {
     return {
       blocked: false,
       end,
@@ -107,28 +205,11 @@ function clipSegmentByObstacle(start: Point, end: Point, obstacle: Point | null,
     }
   }
 
-  const nearest = {
-    x: start.x + dx * projection,
-    y: start.y + dy * projection,
-  }
-  const distance = pointDistance(nearest, obstacle)
-
-  if (distance > radius) {
-    return {
-      blocked: false,
-      end,
-      t: 1,
-    }
-  }
-
-  const safeT = clamp(projection - (radius + MIN_RAY_DISTANCE) / length, 0, 1)
+  const safeT = clamp(firstT - (cursor?.scale ?? 1) * CURSOR_SAFETY_PIXELS / segmentLength, 0, 1)
 
   return {
     blocked: true,
-    end: {
-      x: start.x + dx * safeT,
-      y: start.y + dy * safeT,
-    },
+    end: add(start, scale(segment, safeT)),
     t: safeT,
   }
 }
@@ -160,7 +241,7 @@ function shortestAngleDelta(nextAngle: number, previousAngle: number) {
 }
 
 export default function PrismLandingScene({ activationKey = 0 }: { activationKey?: number }) {
-  const [pointer, setPointer] = useState<Point | null>(null)
+  const [pointer, setPointer] = useState<CursorObstacle | null>(null)
   const [rotation, setRotation] = useState(-3)
   const [isDragging, setIsDragging] = useState(false)
   const [isIgnited, setIsIgnited] = useState(false)
@@ -184,7 +265,7 @@ export default function PrismLandingScene({ activationKey = 0 }: { activationKey
       setPointer(nextPointer)
 
       if (nextPointer && isDragging) {
-        updateDragRotation(nextPointer)
+        updateDragRotation(nextPointer.tip)
       }
     }
 
@@ -217,7 +298,7 @@ export default function PrismLandingScene({ activationKey = 0 }: { activationKey
     const entry = midpoint(prismPoints[0], prismPoints[1])
     const exit = midpoint(prismPoints[0], prismPoints[2])
     const whiteStart = { x: -28, y: entry.y + rotation * 0.16 }
-    const whiteClip = clipSegmentByObstacle(whiteStart, entry, pointer, OBSTACLE_RADIUS)
+    const whiteClip = clipSegmentByCursor(whiteStart, entry, pointer)
     const prismReceivesLight = !whiteClip.blocked
     const baseExitAngle = rotation * 0.82 + 2.5
     const internalStart = {
@@ -231,7 +312,7 @@ export default function PrismLandingScene({ activationKey = 0 }: { activationKey
     const spectrum = SPECTRUM.map((ray) => {
       const end = vectorPoint(exit, baseExitAngle + ray.offset * 0.18, 640)
       const clip = prismReceivesLight
-        ? clipSegmentByObstacle(exit, end, pointer, OBSTACLE_RADIUS)
+        ? clipSegmentByCursor(exit, end, pointer)
         : { blocked: false, end: exit, t: 0 }
 
       return {
@@ -260,7 +341,7 @@ export default function PrismLandingScene({ activationKey = 0 }: { activationKey
   const energized = geometry.prismReceivesLight
   const intensity = isIgnited ? 1 : isDragging ? 0.86 : pointer ? 0.72 : 0.48
 
-  function clientPointToViewBox(clientX: number, clientY: number) {
+  function clientPointToViewBox(clientX: number, clientY: number): CursorObstacle | null {
     const rect = sceneRef.current?.getBoundingClientRect()
     if (!rect) return null
 
@@ -275,8 +356,11 @@ export default function PrismLandingScene({ activationKey = 0 }: { activationKey
     const offsetY = (rect.height - renderedHeight) / 2
 
     return {
-      x: (clientX - rect.left - offsetX) / scale,
-      y: (clientY - rect.top - offsetY) / scale,
+      scale: 1 / scale,
+      tip: {
+        x: (clientX - rect.left - offsetX) / scale,
+        y: (clientY - rect.top - offsetY) / scale,
+      },
     }
   }
 
@@ -298,7 +382,7 @@ export default function PrismLandingScene({ activationKey = 0 }: { activationKey
     setPointer(nextPointer)
 
     if (nextPointer && isDragging) {
-      updateDragRotation(nextPointer)
+      updateDragRotation(nextPointer.tip)
     }
   }
 
@@ -308,7 +392,7 @@ export default function PrismLandingScene({ activationKey = 0 }: { activationKey
     const nextPointer = clientPointToViewBox(event.clientX, event.clientY)
     if (!nextPointer) return
 
-    const nearPrism = pointDistance(nextPointer, PRISM_CENTER) < 168
+    const nearPrism = pointDistance(nextPointer.tip, PRISM_CENTER) < 168
 
     setPointer(nextPointer)
     if (!nearPrism) return
@@ -316,7 +400,7 @@ export default function PrismLandingScene({ activationKey = 0 }: { activationKey
     event.currentTarget.setPointerCapture(event.pointerId)
     setIsDragging(true)
     dragStateRef.current = {
-      lastAngle: angleFromCenter(nextPointer),
+      lastAngle: angleFromCenter(nextPointer.tip),
       rotation,
     }
   }
@@ -383,8 +467,8 @@ export default function PrismLandingScene({ activationKey = 0 }: { activationKey
             data-ray="white-glow"
             x1={geometry.whiteStart.x}
             y1={geometry.whiteStart.y}
-            x2={geometry.entry.x}
-            y2={geometry.entry.y}
+            x2={geometry.whiteEnd.x}
+            y2={geometry.whiteEnd.y}
             stroke="#ffffff"
             strokeLinecap="round"
             strokeOpacity={energized ? 0.08 + intensity * 0.18 : 0.03}
