@@ -70,10 +70,6 @@ body,
   animation: landing-login-flash 1.9s cubic-bezier(0.2, 0.8, 0.22, 1);
 }
 
-.landing-obstacle {
-  mix-blend-mode: normal;
-}
-
 .landing-optics-vignette {
   background:
     linear-gradient(90deg, rgba(5, 5, 7, 0.04), transparent 24%, transparent 72%, rgba(5, 5, 7, 0.38)),
