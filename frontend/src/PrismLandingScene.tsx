@@ -28,9 +28,8 @@ const PRISM_POINTS: Point[] = [
   { x: -PRISM_SIDE / 2, y: PRISM_HEIGHT / 3 },
   { x: PRISM_SIDE / 2, y: PRISM_HEIGHT / 3 },
 ]
-const OBSTACLE_RADIUS = 34
-const MIN_RAY_DISTANCE = 26
-const ROTATION_LIMIT = 24
+const OBSTACLE_RADIUS = 16
+const MIN_RAY_DISTANCE = 6
 
 const SPECTRUM: SpectrumRay[] = [
   { color: '#ff6b7a', glow: '#ff9aa4', offset: -30, width: 3.2 },
@@ -156,13 +155,17 @@ function isInteractiveElement(target: EventTarget | null) {
   return target instanceof Element && Boolean(target.closest('button, input, a, form'))
 }
 
+function shortestAngleDelta(nextAngle: number, previousAngle: number) {
+  return ((nextAngle - previousAngle + 540) % 360) - 180
+}
+
 export default function PrismLandingScene({ activationKey = 0 }: { activationKey?: number }) {
   const [pointer, setPointer] = useState<Point | null>(null)
   const [rotation, setRotation] = useState(-3)
   const [isDragging, setIsDragging] = useState(false)
   const [isIgnited, setIsIgnited] = useState(false)
   const sceneRef = useRef<HTMLDivElement | null>(null)
-  const dragOffsetRef = useRef(0)
+  const dragStateRef = useRef<{ lastAngle: number; rotation: number } | null>(null)
 
   useEffect(() => {
     if (activationKey <= 0) return
@@ -181,12 +184,13 @@ export default function PrismLandingScene({ activationKey = 0 }: { activationKey
       setPointer(nextPointer)
 
       if (nextPointer && isDragging) {
-        setRotation(clamp(angleFromCenter(nextPointer) - dragOffsetRef.current, -ROTATION_LIMIT, ROTATION_LIMIT))
+        updateDragRotation(nextPointer)
       }
     }
 
     function handleWindowPointerUp() {
       setIsDragging(false)
+      dragStateRef.current = null
     }
 
     window.addEventListener('pointermove', handleWindowPointerMove)
@@ -264,10 +268,29 @@ export default function PrismLandingScene({ activationKey = 0 }: { activationKey
       return null
     }
 
+    const scale = Math.max(rect.width / VIEWBOX_WIDTH, rect.height / VIEWBOX_HEIGHT)
+    const renderedWidth = VIEWBOX_WIDTH * scale
+    const renderedHeight = VIEWBOX_HEIGHT * scale
+    const offsetX = (rect.width - renderedWidth) / 2
+    const offsetY = (rect.height - renderedHeight) / 2
+
     return {
-      x: ((clientX - rect.left) / rect.width) * VIEWBOX_WIDTH,
-      y: ((clientY - rect.top) / rect.height) * VIEWBOX_HEIGHT,
+      x: (clientX - rect.left - offsetX) / scale,
+      y: (clientY - rect.top - offsetY) / scale,
     }
+  }
+
+  function updateDragRotation(nextPointer: Point) {
+    if (!dragStateRef.current) return
+
+    const nextAngle = angleFromCenter(nextPointer)
+    const delta = shortestAngleDelta(nextAngle, dragStateRef.current.lastAngle)
+    const nextRotation = dragStateRef.current.rotation + delta
+    dragStateRef.current = {
+      lastAngle: nextAngle,
+      rotation: nextRotation,
+    }
+    setRotation(nextRotation)
   }
 
   function handlePointerMove(event: ReactPointerEvent<HTMLDivElement>) {
@@ -275,7 +298,7 @@ export default function PrismLandingScene({ activationKey = 0 }: { activationKey
     setPointer(nextPointer)
 
     if (nextPointer && isDragging) {
-      setRotation(clamp(angleFromCenter(nextPointer) - dragOffsetRef.current, -ROTATION_LIMIT, ROTATION_LIMIT))
+      updateDragRotation(nextPointer)
     }
   }
 
@@ -292,7 +315,10 @@ export default function PrismLandingScene({ activationKey = 0 }: { activationKey
 
     event.currentTarget.setPointerCapture(event.pointerId)
     setIsDragging(true)
-    dragOffsetRef.current = angleFromCenter(nextPointer) - rotation
+    dragStateRef.current = {
+      lastAngle: angleFromCenter(nextPointer),
+      rotation,
+    }
   }
 
   function handlePointerUp(event: ReactPointerEvent<HTMLDivElement>) {
@@ -300,6 +326,7 @@ export default function PrismLandingScene({ activationKey = 0 }: { activationKey
       event.currentTarget.releasePointerCapture(event.pointerId)
     }
     setIsDragging(false)
+    dragStateRef.current = null
   }
 
   return (
@@ -319,7 +346,7 @@ export default function PrismLandingScene({ activationKey = 0 }: { activationKey
       <svg
         className="absolute inset-0 h-full w-full"
         viewBox={`0 0 ${VIEWBOX_WIDTH} ${VIEWBOX_HEIGHT}`}
-        preserveAspectRatio="none"
+        preserveAspectRatio="xMidYMid slice"
       >
         <defs>
           <linearGradient id="whiteBeamCore" x1="0%" x2="100%" y1="0%" y2="0%">

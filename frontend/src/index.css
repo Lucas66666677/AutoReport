@@ -46,7 +46,7 @@ body,
 }
 
 .landing-optics-scene {
-  cursor: crosshair;
+  cursor: default;
   touch-action: none;
 }
 
@@ -64,10 +64,6 @@ body,
 
 .landing-optics-dust {
   animation: landing-dust-drift 22s ease-in-out infinite alternate;
-}
-
-.landing-prism-dragging {
-  cursor: grabbing;
 }
 
 .landing-login-flash {
@@ -111,13 +107,6 @@ body,
   100% {
     opacity: 0.82;
     transform: translateX(0);
-  }
-}
-
-@media (max-width: 900px) {
-  .landing-optics-scene svg {
-    transform: scale(1.22) translateX(-7%);
-    transform-origin: center;
   }
 }
 
