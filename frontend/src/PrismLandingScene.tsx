@@ -28,54 +28,42 @@ type Hit = {
   t: number
 }
 
-type SpectralBand = {
-  color: string
-  glow: string
-  ior: number
-  label: string
-  width: number
-}
-
 type SegmentClip = {
   blocked: boolean
   end: Point
   t: number
 }
 
+type SpectralBand = {
+  color: string
+  ior: number
+  label: string
+}
+
 type Trace = SpectralBand & {
+  displayEnd: Point
+  displayFullEnd: Point
+  displayStart: Point
   entry: Point
   exit: Point
   inputBlocked: boolean
-  internalBlocked: boolean
-  internalEnd: Point
-  internalFullEnd: Point
+  internalDirection: Point
   outputBlocked: boolean
-  outputEnd: Point
-  outputFullEnd: Point
-  sampleIntensity: number
-  sampleOffset: number
-  source: Point
+  outputDirection: Point
+  polygon: string
 }
 
-type WhiteSegment = {
-  blocked: boolean
-  end: Point
-  fullEnd: Point
-  sampleIntensity: number
-  sampleOffset: number
-  source: Point
-}
-
-const VIEWBOX_WIDTH = 1000
-const VIEWBOX_HEIGHT = 620
+const VIEWBOX_WIDTH = 1200
+const VIEWBOX_HEIGHT = 640
 const AIR_IOR = 1
-const PRISM_CENTER: Point = { x: 500, y: 302 }
-const PRISM_SIDE = 282
+const PRISM_CENTER: Point = { x: 612, y: 336 }
+const PRISM_SIDE = 300
 const PRISM_HEIGHT = (Math.sqrt(3) / 2) * PRISM_SIDE
-const LIGHT_SOURCE: Point = { x: -96, y: 302 }
-const INCIDENT_DIRECTION = normalize({ x: 1, y: -0.08 })
-const CURSOR_SAFETY_PIXELS = 0.15
-const BEAM_SAMPLE_OFFSETS = [-9, -6, -3, 0, 3, 6, 9]
+const LIGHT_SOURCE: Point = { x: -145, y: 488 }
+const INCIDENT_DIRECTION = normalize({ x: 1, y: -0.255 })
+const CURSOR_SAFETY_PIXELS = 0.08
+const SPECTRUM_BAND_WIDTH = 21
+const SPECTRUM_SPACING = 17
 
 const PRISM_POINTS: Point[] = [
   { x: 0, y: -(2 / 3) * PRISM_HEIGHT },
@@ -84,13 +72,13 @@ const PRISM_POINTS: Point[] = [
 ]
 
 const SPECTRUM: SpectralBand[] = [
-  { color: '#ff6f77', glow: '#ffb2b8', ior: 1.510, label: 'red', width: 1.8 },
-  { color: '#ff9d4d', glow: '#ffd2a3', ior: 1.512, label: 'orange', width: 1.7 },
-  { color: '#ffe66d', glow: '#fff4b0', ior: 1.514, label: 'yellow', width: 1.65 },
-  { color: '#8ff0a4', glow: '#c4ffd3', ior: 1.517, label: 'green', width: 1.65 },
-  { color: '#6ee7f9', glow: '#c0f8ff', ior: 1.520, label: 'cyan', width: 1.7 },
-  { color: '#8fa8ff', glow: '#c3ceff', ior: 1.524, label: 'blue', width: 1.75 },
-  { color: '#c084fc', glow: '#dec4ff', ior: 1.528, label: 'violet', width: 1.85 },
+  { color: '#ff1200', ior: 1.502, label: 'red' },
+  { color: '#ff7a00', ior: 1.508, label: 'orange' },
+  { color: '#fff200', ior: 1.514, label: 'yellow' },
+  { color: '#42d900', ior: 1.520, label: 'green' },
+  { color: '#00b7ff', ior: 1.527, label: 'cyan' },
+  { color: '#2436ff', ior: 1.535, label: 'blue' },
+  { color: '#9220b8', ior: 1.544, label: 'violet' },
 ]
 
 const CURSOR_OBSTACLE_OFFSETS: Point[] = [
@@ -122,6 +110,11 @@ function length(vector: Point) {
 function normalize(vector: Point): Point {
   const size = length(vector)
   return size < 0.00001 ? { x: 0, y: 0 } : { x: vector.x / size, y: vector.y / size }
+}
+
+function perpendicular(vector: Point): Point {
+  const unit = normalize(vector)
+  return { x: -unit.y, y: unit.x }
 }
 
 function scale(vector: Point, scalar: number): Point {
@@ -157,11 +150,6 @@ function angleFromCenter(point: Point) {
 
 function pointToString(point: Point) {
   return `${point.x.toFixed(1)},${point.y.toFixed(1)}`
-}
-
-function seededUnit(seed: number) {
-  const value = Math.sin(seed * 34.321) * 38271.512
-  return value - Math.floor(value)
 }
 
 function isInteractiveElement(target: EventTarget | null) {
@@ -238,22 +226,6 @@ function refract(incidentDirection: Point, normal: Point, fromIor: number, toIor
   if (discriminant < 0) return null
 
   return normalize(add(scale(incident, ratio), scale(surfaceNormal, ratio * cosIncident - Math.sqrt(discriminant))))
-}
-
-function extendToBounds(start: Point, direction: Point) {
-  const candidates: number[] = []
-
-  if (Math.abs(direction.x) > 0.00001) {
-    candidates.push((0 - start.x) / direction.x)
-    candidates.push((VIEWBOX_WIDTH - start.x) / direction.x)
-  }
-  if (Math.abs(direction.y) > 0.00001) {
-    candidates.push((0 - start.y) / direction.y)
-    candidates.push((VIEWBOX_HEIGHT - start.y) / direction.y)
-  }
-
-  const t = Math.min(...candidates.filter((candidate) => candidate > 0))
-  return Number.isFinite(t) ? add(start, scale(direction, t)) : add(start, scale(direction, 700))
 }
 
 function getCursorPolygon(cursor: CursorObstacle | null) {
@@ -338,19 +310,25 @@ function clipSegmentByCursor(start: Point, end: Point, cursor: CursorObstacle | 
   }
 }
 
-function traceBand(
-  band: SpectralBand,
-  edges: Edge[],
-  source: Point,
-  incidentDirection: Point,
-  sampleOffset: number,
-  sampleIntensity: number,
-) {
-  const entryHit = intersectRayWithPolygon(source, incidentDirection, edges)
+function makeBandPolygon(start: Point, end: Point, width: number) {
+  const normal = perpendicular(subtract(end, start))
+  const halfWidth = width / 2
+  const points = [
+    add(start, scale(normal, -halfWidth)),
+    add(start, scale(normal, halfWidth)),
+    add(end, scale(normal, halfWidth)),
+    add(end, scale(normal, -halfWidth)),
+  ]
+
+  return points.map(pointToString).join(' ')
+}
+
+function traceBand(band: SpectralBand, edges: Edge[]) {
+  const entryHit = intersectRayWithPolygon(LIGHT_SOURCE, INCIDENT_DIRECTION, edges)
   if (!entryHit) return null
 
-  const entryNormal = normalAgainstIncident(entryHit.edge, incidentDirection)
-  const internalDirection = refract(incidentDirection, entryNormal, AIR_IOR, band.ior)
+  const entryNormal = normalAgainstIncident(entryHit.edge, INCIDENT_DIRECTION)
+  const internalDirection = refract(INCIDENT_DIRECTION, entryNormal, AIR_IOR, band.ior)
   if (!internalDirection) return null
 
   const internalOrigin = add(entryHit.point, scale(internalDirection, 0.5))
@@ -367,9 +345,6 @@ function traceBand(
     exit: exitHit.point,
     internalDirection,
     outputDirection,
-    sampleIntensity,
-    sampleOffset,
-    source,
   }
 }
 
@@ -415,101 +390,57 @@ export default function PrismLandingScene({ activationKey = 0 }: { activationKey
     }
   }, [isDragging])
 
-  const dust = useMemo(
-    () =>
-      Array.from({ length: 64 }, (_, index) => ({
-        cx: 28 + seededUnit(index + 1) * 944,
-        cy: 26 + seededUnit(index + 2) * 568,
-        opacity: 0.06 + seededUnit(index + 3) * 0.16,
-        r: 0.4 + seededUnit(index + 4) * 0.72,
-      })),
-    [],
-  )
-
   const geometry = useMemo(() => {
     const prismPoints = PRISM_POINTS.map((point) => rotatePoint(point, rotation))
     const edges = getTriangleEdges(prismPoints)
-    const beamNormal = normalize({ x: -INCIDENT_DIRECTION.y, y: INCIDENT_DIRECTION.x })
-    const sampledRays = BEAM_SAMPLE_OFFSETS.map((offset) => ({
-      direction: INCIDENT_DIRECTION,
-      intensity: 1 - (Math.abs(offset) / 9) * 0.46,
-      offset,
-      source: add(LIGHT_SOURCE, scale(beamNormal, offset)),
-    }))
-    const sampledOptics = sampledRays.map((ray) => {
-      const rawTraces = SPECTRUM.map((band) =>
-        traceBand(band, edges, ray.source, ray.direction, ray.offset, ray.intensity),
-      ).filter((trace): trace is NonNullable<typeof trace> => Boolean(trace))
-      const referenceTrace = rawTraces[Math.floor(rawTraces.length / 2)] ?? null
-      const whiteTarget = referenceTrace?.entry ?? extendToBounds(ray.source, ray.direction)
-      const whiteClip = clipSegmentByCursor(ray.source, whiteTarget, cursor)
-
-      return {
-        rawTraces,
-        whiteSegment: {
-          blocked: whiteClip.blocked,
-          end: whiteClip.end,
-          fullEnd: whiteTarget,
-          sampleIntensity: ray.intensity,
-          sampleOffset: ray.offset,
-          source: ray.source,
-        } satisfies WhiteSegment,
-      }
-    })
-    const whiteSegments = sampledOptics.map((sample) => sample.whiteSegment)
-    const rawTraces = sampledOptics.flatMap((sample) =>
-      sample.rawTraces.map((trace) => ({
-        ...trace,
-        inputBlocked: sample.whiteSegment.blocked,
-      })),
+    const rawTraces = SPECTRUM.map((band) => traceBand(band, edges)).filter((trace): trace is NonNullable<typeof trace> =>
+      Boolean(trace),
     )
-    const traces: Trace[] = rawTraces.map((trace) => {
-      const outputFullEnd = extendToBounds(trace.exit, trace.outputDirection)
-      const outputClip = !trace.inputBlocked
-        ? clipSegmentByCursor(trace.exit, outputFullEnd, cursor)
-        : { blocked: false, end: trace.exit, t: 0 }
-      const internalClip = !trace.inputBlocked
-        ? clipSegmentByCursor(trace.entry, trace.exit, cursor)
-        : { blocked: false, end: trace.entry, t: 0 }
+    const coreTrace = rawTraces[Math.floor(rawTraces.length / 2)] ?? null
+    const whiteTarget = coreTrace?.entry ?? add(LIGHT_SOURCE, scale(INCIDENT_DIRECTION, 900))
+    const whiteClip = clipSegmentByCursor(LIGHT_SOURCE, whiteTarget, cursor)
+    const prismReceivesLight = Boolean(coreTrace && !whiteClip.blocked)
+    const centerOffset = (rawTraces.length - 1) / 2
+    const traces: Trace[] = rawTraces.map((trace, index) => {
+      const outputNormal = perpendicular(trace.outputDirection)
+      const visualOffset = (index - centerOffset) * SPECTRUM_SPACING
+      const displayStart = add(trace.exit, scale(outputNormal, visualOffset * 0.16))
+      const displayFullEnd = add(displayStart, scale(trace.outputDirection, 820))
+      const displayClip = prismReceivesLight
+        ? clipSegmentByCursor(displayStart, displayFullEnd, cursor)
+        : { blocked: false, end: displayStart, t: 0 }
 
       return {
         ...trace,
-        internalBlocked: !trace.inputBlocked && internalClip.blocked,
-        internalEnd: internalClip.end,
-        internalFullEnd: trace.exit,
-        outputBlocked: !trace.inputBlocked && outputClip.blocked,
-        outputEnd: outputClip.end,
-        outputFullEnd,
+        displayEnd: displayClip.end,
+        displayFullEnd,
+        displayStart,
+        inputBlocked: whiteClip.blocked,
+        outputBlocked: prismReceivesLight && displayClip.blocked,
+        polygon: makeBandPolygon(displayStart, displayClip.end, SPECTRUM_BAND_WIDTH),
       }
     })
-    const coreTraces = traces.filter((trace) => trace.sampleOffset === 0)
-    const referenceTrace = coreTraces[Math.floor(coreTraces.length / 2)] ?? traces[Math.floor(traces.length / 2)] ?? null
-    const primaryWhiteSegment =
-      whiteSegments.find((segment) => segment.sampleOffset === 0) ??
-      whiteSegments[Math.floor(whiteSegments.length / 2)] ?? {
-        blocked: false,
-        end: extendToBounds(LIGHT_SOURCE, INCIDENT_DIRECTION),
-        fullEnd: extendToBounds(LIGHT_SOURCE, INCIDENT_DIRECTION),
-        sampleIntensity: 1,
-        sampleOffset: 0,
-        source: LIGHT_SOURCE,
-      }
-    const prismReceivesLight = Boolean(referenceTrace && whiteSegments.some((segment) => !segment.blocked))
+    const innerPolygon =
+      prismReceivesLight && traces.length > 0
+        ? [coreTrace.entry, traces[0].displayStart, traces[traces.length - 1].displayStart].map(pointToString).join(' ')
+        : ''
 
     return {
-      coreTraces,
-      entry: referenceTrace?.entry ?? null,
+      coreTrace,
+      innerPolygon,
       polygon: prismPoints.map(pointToString).join(' '),
-      primaryWhiteSegment,
       prismPoints,
       prismReceivesLight,
       traces,
-      whiteSegments,
+      whiteBlocked: whiteClip.blocked,
+      whiteEnd: whiteClip.end,
+      whiteFullEnd: whiteTarget,
+      whiteStart: LIGHT_SOURCE,
     }
   }, [cursor, rotation])
 
   const energized = geometry.prismReceivesLight
-  const intensity = isIgnited ? 1 : isDragging ? 0.86 : cursor ? 0.72 : 0.5
+  const intensity = isIgnited ? 1 : isDragging ? 0.9 : cursor ? 0.78 : 0.62
 
   function clientPointToViewBox(clientX: number, clientY: number): CursorObstacle | null {
     const rect = sceneRef.current?.getBoundingClientRect()
@@ -562,7 +493,7 @@ export default function PrismLandingScene({ activationKey = 0 }: { activationKey
     const nextCursor = clientPointToViewBox(event.clientX, event.clientY)
     if (!nextCursor) return
 
-    const nearPrism = pointDistance(nextCursor.tip, PRISM_CENTER) < 168
+    const nearPrism = pointDistance(nextCursor.tip, PRISM_CENTER) < PRISM_SIDE * 0.7
 
     setCursor(nextCursor)
     if (!nearPrism) return
@@ -599,204 +530,92 @@ export default function PrismLandingScene({ activationKey = 0 }: { activationKey
       <div className="landing-optics-background absolute inset-0" />
       <svg
         className="absolute inset-0 h-full w-full"
-        viewBox={`0 0 ${VIEWBOX_WIDTH} ${VIEWBOX_HEIGHT}`}
         preserveAspectRatio="xMidYMid slice"
+        viewBox={`0 0 ${VIEWBOX_WIDTH} ${VIEWBOX_HEIGHT}`}
       >
         <defs>
           <linearGradient
-            id="whiteBeamCore"
             gradientUnits="userSpaceOnUse"
-            x1={geometry.primaryWhiteSegment.source.x}
-            x2={geometry.primaryWhiteSegment.fullEnd.x}
-            y1={geometry.primaryWhiteSegment.source.y}
-            y2={geometry.primaryWhiteSegment.fullEnd.y}
+            id="whiteBeamCore"
+            x1={geometry.whiteStart.x}
+            x2={geometry.whiteFullEnd.x}
+            y1={geometry.whiteStart.y}
+            y2={geometry.whiteFullEnd.y}
           >
-            <stop offset="0%" stopColor="#ffffff" stopOpacity="0" />
-            <stop offset="42%" stopColor="#ffffff" stopOpacity={0.2 + intensity * 0.28} />
-            <stop offset="100%" stopColor="#ffffff" stopOpacity={0.72 + intensity * 0.2} />
+            <stop offset="0%" stopColor="#ffffff" stopOpacity="0.92" />
+            <stop offset="68%" stopColor="#ffffff" stopOpacity="1" />
+            <stop offset="100%" stopColor="#ffffff" stopOpacity="0.96" />
           </linearGradient>
-          <linearGradient id="prismGlass" x1="34%" x2="72%" y1="12%" y2="92%">
-            <stop offset="0%" stopColor="#ffffff" stopOpacity={0.045 + intensity * 0.06} />
-            <stop offset="56%" stopColor="#d9fbff" stopOpacity={0.025 + intensity * 0.045} />
-            <stop offset="100%" stopColor="#ffffff" stopOpacity="0.012" />
+          <linearGradient
+            gradientUnits="userSpaceOnUse"
+            id="insideWhite"
+            x1={geometry.coreTrace?.entry.x ?? 0}
+            x2={geometry.coreTrace?.exit.x ?? 1}
+            y1={geometry.coreTrace?.entry.y ?? 0}
+            y2={geometry.coreTrace?.exit.y ?? 1}
+          >
+            <stop offset="0%" stopColor="#ffffff" stopOpacity={0.92 * intensity} />
+            <stop offset="42%" stopColor="#ffffff" stopOpacity={0.56 * intensity} />
+            <stop offset="100%" stopColor="#000000" stopOpacity="0" />
           </linearGradient>
-          {geometry.coreTraces.map((trace) => (
-            <linearGradient
-              key={`gradient-${trace.label}`}
-              gradientUnits="userSpaceOnUse"
-              id={`spectrum-${trace.label}`}
-              x1={trace.exit.x}
-              x2={trace.outputFullEnd.x}
-              y1={trace.exit.y}
-              y2={trace.outputFullEnd.y}
-            >
-              <stop offset="0%" stopColor={trace.color} stopOpacity={0.72 + intensity * 0.16} />
-              <stop offset="100%" stopColor={trace.color} stopOpacity="0.06" />
-            </linearGradient>
-          ))}
+          <radialGradient id="prismInterior" cx="50%" cy="58%" r="58%">
+            <stop offset="0%" stopColor="#000000" stopOpacity="0.98" />
+            <stop offset="58%" stopColor="#000000" stopOpacity="0.92" />
+            <stop offset="82%" stopColor="#071014" stopOpacity="0.72" />
+            <stop offset="100%" stopColor="#d7efff" stopOpacity={0.42 + intensity * 0.18} />
+          </radialGradient>
         </defs>
 
-        <rect width={VIEWBOX_WIDTH} height={VIEWBOX_HEIGHT} fill="#050507" />
-        <g className="landing-optics-dust">
-          {dust.map((dot) => (
-            <circle key={`${dot.cx}-${dot.cy}`} cx={dot.cx} cy={dot.cy} fill="#ffffff" opacity={dot.opacity} r={dot.r} />
-          ))}
-        </g>
+        <rect fill="#000000" height={VIEWBOX_HEIGHT} width={VIEWBOX_WIDTH} />
+
+        <polygon fill="url(#prismInterior)" points={geometry.polygon} />
 
         <g className={isIgnited ? 'landing-login-flash' : undefined}>
           <line
-            data-ray="white-halo-wide"
-            stroke="#ffffff"
-            strokeLinecap="round"
-            strokeOpacity={energized ? 0.045 + intensity * 0.045 : 0.018}
-            strokeWidth={energized ? 15 : 8}
-            x1={geometry.primaryWhiteSegment.source.x}
-            x2={geometry.primaryWhiteSegment.end.x}
-            y1={geometry.primaryWhiteSegment.source.y}
-            y2={geometry.primaryWhiteSegment.end.y}
+            data-ray="white-core"
+            stroke="url(#whiteBeamCore)"
+            strokeLinecap="butt"
+            strokeWidth={geometry.whiteBlocked ? 4.6 : 6.2}
+            x1={geometry.whiteStart.x}
+            x2={geometry.whiteEnd.x}
+            y1={geometry.whiteStart.y}
+            y2={geometry.whiteEnd.y}
           />
-          <line
-            data-ray="white-halo"
-            stroke="#ffffff"
-            strokeLinecap="round"
-            strokeOpacity={energized ? 0.1 + intensity * 0.08 : 0.03}
-            strokeWidth={energized ? 6.6 : 3.5}
-            x1={geometry.primaryWhiteSegment.source.x}
-            x2={geometry.primaryWhiteSegment.end.x}
-            y1={geometry.primaryWhiteSegment.source.y}
-            y2={geometry.primaryWhiteSegment.end.y}
-          />
-          {geometry.whiteSegments.map((segment, index) => (
-            <line
-              data-ray={segment.sampleOffset === 0 ? 'white-core' : `white-sample-${index}`}
-              key={`white-${segment.sampleOffset}`}
-              stroke={segment.sampleOffset === 0 ? 'url(#whiteBeamCore)' : '#ffffff'}
-              strokeLinecap="round"
-              strokeOpacity={
-                segment.sampleOffset === 0
-                  ? undefined
-                  : segment.blocked
-                    ? 0.2
-                    : (energized ? 0.075 + intensity * 0.055 : 0.025) * segment.sampleIntensity
-              }
-              strokeWidth={segment.sampleOffset === 0 ? (energized ? 1.9 : 1.15) : 0.62 + segment.sampleIntensity * 0.42}
-              x1={segment.source.x}
-              x2={segment.end.x}
-              y1={segment.source.y}
-              y2={segment.end.y}
-            />
-          ))}
 
-          {energized && (
-            <g>
-              {geometry.traces.map((trace) => (
-                <line
-                  data-ray={`internal-${trace.label}-${trace.sampleOffset}`}
-                  key={`internal-${trace.label}-${trace.sampleOffset}`}
-                  stroke={trace.color}
-                  strokeLinecap="round"
-                  strokeOpacity={
-                    trace.inputBlocked
-                      ? 0
-                      : trace.internalBlocked
-                        ? 0.18
-                        : trace.sampleOffset === 0
-                          ? 0.13 + intensity * 0.08
-                          : (0.032 + intensity * 0.045) * trace.sampleIntensity
-                  }
-                  strokeWidth={trace.sampleOffset === 0 ? 0.9 : 0.42 + trace.sampleIntensity * 0.14}
-                  x1={trace.entry.x}
-                  x2={trace.internalEnd.x}
-                  y1={trace.entry.y}
-                  y2={trace.internalEnd.y}
-                />
-              ))}
+          {energized &&
+            geometry.traces.map((trace, index) => (
+              <polygon
+                data-ray={`spectrum-band-${index}`}
+                fill={trace.color}
+                key={`band-${trace.label}`}
+                opacity={trace.outputBlocked ? 0.82 : 1}
+                points={trace.polygon}
+              />
+            ))}
 
-              {geometry.entry && (
-                <circle
-                  cx={geometry.entry.x}
-                  cy={geometry.entry.y}
-                  fill="#ffffff"
-                  opacity={0.32 + intensity * 0.22}
-                  r={1.4 + intensity * 0.6}
-                />
-              )}
-
-              {geometry.coreTraces.map((trace) => (
-                <circle
-                  cx={trace.exit.x}
-                  cy={trace.exit.y}
-                  fill={trace.color}
-                  key={`exit-${trace.label}`}
-                  opacity={0.22 + intensity * 0.18}
-                  r={0.9 + intensity * 0.35}
-                />
-              ))}
-            </g>
+          {energized && geometry.innerPolygon && (
+            <polygon data-ray="internal-wedge" fill="url(#insideWhite)" points={geometry.innerPolygon} />
           )}
 
-          {geometry.traces.map((trace) => (
+          {geometry.traces.map((trace, index) => (
             <line
-              data-ray={`spectrum-sample-${trace.label}-${trace.sampleOffset}`}
-              key={`spectrum-sample-${trace.label}-${trace.sampleOffset}`}
+              data-ray={`spectrum-core-${index}`}
+              key={`core-${trace.label}`}
+              opacity="0"
               stroke={trace.color}
-              strokeLinecap="round"
-              strokeOpacity={
-                trace.inputBlocked ? 0 : trace.outputBlocked ? 0.16 : (0.035 + intensity * 0.055) * trace.sampleIntensity
-              }
-              strokeWidth={trace.width * (trace.sampleOffset === 0 ? 1.25 : 0.95)}
-              x1={trace.exit.x}
-              x2={trace.outputEnd.x}
-              y1={trace.exit.y}
-              y2={trace.outputEnd.y}
+              strokeWidth="1"
+              x1={trace.displayStart.x}
+              x2={trace.displayEnd.x}
+              y1={trace.displayStart.y}
+              y2={trace.displayEnd.y}
             />
-          ))}
-
-          {geometry.coreTraces.map((trace, index) => (
-            <g key={`spectrum-core-${trace.label}`} opacity={trace.inputBlocked ? 0 : energized ? 0.58 + intensity * 0.34 : 0.025}>
-              <line
-                data-ray={`spectrum-halo-${index}`}
-                stroke={trace.glow}
-                strokeLinecap="round"
-                strokeOpacity={trace.outputBlocked ? 0.12 : 0.08 + intensity * 0.08}
-                strokeWidth={trace.width * 2.5}
-                x1={trace.exit.x}
-                x2={trace.outputEnd.x}
-                y1={trace.exit.y}
-                y2={trace.outputEnd.y}
-              />
-              <line
-                data-ray={`spectrum-core-${index}`}
-                stroke={`url(#spectrum-${trace.label})`}
-                strokeLinecap="round"
-                strokeOpacity={trace.outputBlocked ? 0.84 : 0.74 + intensity * 0.14}
-                strokeWidth={trace.width}
-                x1={trace.exit.x}
-                x2={trace.outputEnd.x}
-                y1={trace.exit.y}
-                y2={trace.outputEnd.y}
-              />
-            </g>
           ))}
         </g>
 
-        <polygon
-          className={isDragging ? 'landing-prism-dragging' : undefined}
-          fill="url(#prismGlass)"
-          points={geometry.polygon}
-          stroke="#f8fbff"
-          strokeOpacity={0.34 + intensity * 0.26}
-          strokeWidth="1.55"
-        />
-        <polygon
-          fill="none"
-          points={geometry.polygon}
-          stroke="#ffffff"
-          strokeOpacity={energized ? 0.2 + intensity * 0.16 : 0.11}
-          strokeWidth="2.8"
-        />
+        <polygon fill="none" points={geometry.polygon} stroke="#d9efff" strokeOpacity="0.18" strokeWidth="15" />
+        <polygon fill="none" points={geometry.polygon} stroke="#cfeaff" strokeOpacity="0.42" strokeWidth="7" />
+        <polygon fill="none" points={geometry.polygon} stroke="#f8fcff" strokeOpacity={0.78 + intensity * 0.16} strokeWidth="2.6" />
       </svg>
-      <div className="landing-optics-vignette absolute inset-0" />
     </div>
   )
 }

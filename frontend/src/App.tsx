@@ -2529,19 +2529,19 @@ function LandingPage({
         </button>
       </nav>
 
-      <main className="pointer-events-none relative z-10 flex min-h-[calc(100vh-88px)] items-center px-6 pb-12 pt-8 sm:px-8">
-        <section className="mx-auto grid w-full max-w-7xl grid-cols-1 items-center gap-12 lg:grid-cols-[minmax(0,1fr)_420px]">
-          <div className="max-w-3xl py-12">
-            <p className="mb-5 text-xs font-semibold uppercase text-white/45">
+      <main className="pointer-events-none relative z-10 flex min-h-[calc(100vh-88px)] items-start px-6 pb-12 pt-3 sm:px-8">
+        <section className="mx-auto grid w-full max-w-7xl grid-cols-1 items-start gap-8 lg:grid-cols-[minmax(280px,420px)_minmax(320px,390px)] lg:justify-between">
+          <div className="max-w-md pt-8 lg:pt-12">
+            <p className="mb-4 text-xs font-semibold uppercase text-white/45">
               Laboratory writing, clarified.
             </p>
-            <h1 className="max-w-3xl text-4xl font-semibold leading-tight text-white sm:text-7xl lg:text-8xl">
+            <h1 className="max-w-md text-4xl font-semibold leading-tight text-white sm:text-5xl lg:text-6xl">
               AutoLabReport
             </h1>
-            <p className="mt-6 max-w-xl text-base leading-8 text-white/58 sm:text-lg">
+            <p className="mt-5 max-w-sm text-sm leading-7 text-white/58 sm:text-base">
               把原始筆記、表格與草稿整理成可提交的實驗報告。登入後進入極簡寫作空間，專注編輯、預覽與匯出。
             </p>
-            <div className="mt-10 flex flex-wrap gap-3 text-xs text-white/48">
+            <div className="mt-7 flex flex-wrap gap-3 text-xs text-white/48">
               <span className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-2 backdrop-blur">
                 Markdown 編輯
               </span>
@@ -2554,13 +2554,13 @@ function LandingPage({
             </div>
           </div>
 
-          <div className="pointer-events-auto border-white/10 bg-white/[0.045] p-6 shadow-2xl shadow-black/35 backdrop-blur-2xl sm:rounded-[2rem] sm:border sm:p-7">
-            <div className="mb-7">
+          <div className="pointer-events-auto w-full max-w-full justify-self-stretch border-white/12 bg-black/35 p-5 shadow-2xl shadow-black/45 backdrop-blur-sm sm:rounded-[1.5rem] sm:border sm:p-6 lg:mt-2 lg:max-w-[390px] lg:justify-self-end">
+            <div className="mb-5">
               <p className="text-sm font-medium text-white/45">進入工作區</p>
               <h2 className="mt-2 text-2xl font-semibold text-white">登入你的報告空間</h2>
             </div>
 
-            <form onSubmit={handleMagicLinkSubmit} className="space-y-4">
+            <form onSubmit={handleMagicLinkSubmit} className="space-y-3">
               {authMessage && (
                 <div className="rounded-2xl border border-amber-300/25 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-100">
                   {authMessage}
@@ -2569,7 +2569,7 @@ function LandingPage({
               <label className="block text-sm font-medium text-white/72" htmlFor="magic-link-email">
                 Email
               </label>
-              <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 transition-all focus-within:border-white/25 focus-within:bg-black/28">
+              <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-black/35 px-4 py-3 transition-all focus-within:border-white/25 focus-within:bg-black/45">
                 <Mail className="h-4 w-4 shrink-0 text-white/38" aria-hidden="true" />
                 <input
                   id="magic-link-email"
@@ -2602,7 +2602,7 @@ function LandingPage({
               </button>
             </form>
 
-            <div className="my-6 flex items-center gap-4 text-white/30">
+            <div className="my-5 flex items-center gap-4 text-white/30">
               <div className="h-px flex-1 bg-white/10" />
               <span className="text-xs font-medium uppercase tracking-wider">或</span>
               <div className="h-px flex-1 bg-white/10" />
