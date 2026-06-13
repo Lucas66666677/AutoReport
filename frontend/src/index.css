@@ -51,15 +51,46 @@ body,
 }
 
 .landing-optics-background {
-  background: #000000;
+  background:
+    radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.065), transparent 18rem),
+    radial-gradient(circle at 73% 36%, rgba(54, 211, 238, 0.12), transparent 25rem),
+    radial-gradient(circle at 83% 66%, rgba(192, 132, 252, 0.1), transparent 24rem),
+    linear-gradient(135deg, #050507 0%, #08090d 44%, #020203 100%);
 }
 
 .landing-optics-scene svg {
-  mix-blend-mode: normal;
+  mix-blend-mode: screen;
+}
+
+.landing-optics-dust {
+  animation: landing-dust-drift 22s ease-in-out infinite alternate;
 }
 
 .landing-login-flash {
   animation: landing-login-flash 1.9s cubic-bezier(0.2, 0.8, 0.22, 1);
+}
+
+.landing-obstacle {
+  mix-blend-mode: normal;
+}
+
+.landing-optics-vignette {
+  background:
+    linear-gradient(90deg, rgba(5, 5, 7, 0.04), transparent 24%, transparent 72%, rgba(5, 5, 7, 0.38)),
+    linear-gradient(180deg, rgba(5, 5, 7, 0.08), transparent 34%, rgba(5, 5, 7, 0.74));
+  pointer-events: none;
+}
+
+@keyframes landing-dust-drift {
+  from {
+    opacity: 0.68;
+    transform: translate3d(0, 0, 0);
+  }
+
+  to {
+    opacity: 0.92;
+    transform: translate3d(0.8rem, -0.6rem, 0);
+  }
 }
 
 @keyframes landing-login-flash {
@@ -80,6 +111,7 @@ body,
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .landing-optics-dust,
   .landing-login-flash {
     animation: none;
   }
