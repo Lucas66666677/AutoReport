@@ -21,10 +21,12 @@ type SpectrumRay = {
 const VIEWBOX_WIDTH = 1000
 const VIEWBOX_HEIGHT = 620
 const PRISM_CENTER: Point = { x: 500, y: 302 }
+const PRISM_SIDE = 282
+const PRISM_HEIGHT = (Math.sqrt(3) / 2) * PRISM_SIDE
 const PRISM_POINTS: Point[] = [
-  { x: 0, y: -136 },
-  { x: -126, y: 96 },
-  { x: 136, y: 88 },
+  { x: 0, y: -(2 / 3) * PRISM_HEIGHT },
+  { x: -PRISM_SIDE / 2, y: PRISM_HEIGHT / 3 },
+  { x: PRISM_SIDE / 2, y: PRISM_HEIGHT / 3 },
 ]
 const OBSTACLE_RADIUS = 34
 const MIN_RAY_DISTANCE = 26
@@ -455,14 +457,6 @@ export default function PrismLandingScene({ activationKey = 0 }: { activationKey
           strokeWidth="5"
           filter="url(#fineGlow)"
         />
-
-        {pointer && (
-          <g className="landing-obstacle">
-            <circle cx={pointer.x} cy={pointer.y} r={OBSTACLE_RADIUS + 15} fill="#050507" opacity="0.18" filter="url(#softBlur)" />
-            <circle cx={pointer.x} cy={pointer.y} r={OBSTACLE_RADIUS} fill="#050507" opacity="0.58" />
-            <circle cx={pointer.x} cy={pointer.y} r={OBSTACLE_RADIUS} fill="none" stroke="#ffffff" strokeOpacity="0.13" />
-          </g>
-        )}
       </svg>
       <div className="landing-optics-vignette absolute inset-0" />
     </div>
