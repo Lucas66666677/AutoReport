@@ -14,6 +14,8 @@ import {
 import 'katex/dist/katex.min.css'
 import { createClient, type Provider, type User } from '@supabase/supabase-js'
 import {
+  ArrowRight,
+  Mail,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
@@ -50,6 +52,7 @@ const supabase =
 
 const REMARK_PLUGINS = [remarkMath]
 const MarkdownEditor = lazy(() => import('@monaco-editor/react'))
+const PrismLandingScene = lazy(() => import('./PrismLandingScene'))
 const documentYDocs = new Map<string, YDoc>()
 let sharedYDoc: YDoc | null = null
 let mermaidInitialized = false
@@ -2473,67 +2476,110 @@ function LandingPage({
   }
 
   return (
-    <div className={`min-h-screen overflow-auto bg-[#FAFAFC] text-zinc-900 ${SCROLLBAR_HIDE}`}>
-      <nav className="mx-auto flex max-w-7xl items-center justify-between px-8 py-6">
-        <div className="text-sm font-semibold tracking-tight">AutoLabReport</div>
+    <div className={`relative isolate min-h-screen overflow-x-hidden bg-[#050507] text-white ${SCROLLBAR_HIDE}`}>
+      <Suspense
+        fallback={
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_44%,rgba(255,255,255,0.12),transparent_34%),#050507]" />
+        }
+      >
+        <PrismLandingScene />
+      </Suspense>
+
+      <nav className="relative z-10 mx-auto flex max-w-7xl items-center justify-between px-6 py-6 sm:px-8">
+        <div className="flex items-center gap-3">
+          <span className="h-2 w-2 rounded-full bg-white shadow-[0_0_22px_rgba(255,255,255,0.9)]" />
+          <div>
+            <div className="text-sm font-semibold tracking-tight text-white">AutoLabReport</div>
+            <div className="text-[11px] uppercase text-white/40">Prism workspace</div>
+          </div>
+        </div>
         <button
           type="button"
           onClick={() => onOAuthLogin('google')}
           disabled={authLoading}
-          className="text-sm font-medium text-zinc-500 transition-colors hover:text-zinc-900"
+          className="rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/70 backdrop-blur-md transition-all hover:border-white/20 hover:bg-white/[0.08] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
         >
           登入
         </button>
       </nav>
 
-      <main className="px-6 pb-20">
-        <section className="mx-auto max-w-6xl pt-10">
-          <h1 className="mx-auto mt-20 text-center text-5xl font-bold tracking-tight text-zinc-900 md:text-7xl">
-            重塑你的學術生產力。
-          </h1>
-          <p className="mx-auto mt-6 max-w-2xl text-center text-lg leading-8 text-zinc-500 md:text-xl">
-            結合 AI 驅動與 Markdown 協作，為理工實驗結報打造的下一代撰寫平台。
-          </p>
-          <div className="mx-auto mt-10 max-w-md rounded-2xl border border-zinc-200/70 bg-white p-6 shadow-xl shadow-zinc-200/60">
-            <form onSubmit={handleMagicLinkSubmit} className="space-y-3">
-              <label className="block text-sm font-semibold text-zinc-900" htmlFor="magic-link-email">
-                使用 Email 登入
-              </label>
+      <main className="relative z-10 flex min-h-[calc(100vh-88px)] items-center px-6 pb-12 pt-8 sm:px-8">
+        <section className="mx-auto grid w-full max-w-7xl grid-cols-1 items-center gap-12 lg:grid-cols-[minmax(0,1fr)_420px]">
+          <div className="max-w-3xl py-12">
+            <p className="mb-5 text-xs font-semibold uppercase text-white/45">
+              Laboratory writing, clarified.
+            </p>
+            <h1 className="max-w-3xl text-5xl font-semibold leading-tight text-white sm:text-7xl lg:text-8xl">
+              AutoLabReport
+            </h1>
+            <p className="mt-6 max-w-xl text-base leading-8 text-white/58 sm:text-lg">
+              把原始筆記、表格與草稿整理成可提交的實驗報告。登入後進入極簡寫作空間，專注編輯、預覽與匯出。
+            </p>
+            <div className="mt-10 flex flex-wrap gap-3 text-xs text-white/48">
+              <span className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-2 backdrop-blur">
+                Markdown 編輯
+              </span>
+              <span className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-2 backdrop-blur">
+                即時預覽
+              </span>
+              <span className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-2 backdrop-blur">
+                Word 匯出
+              </span>
+            </div>
+          </div>
+
+          <div className="border-white/10 bg-white/[0.045] p-6 shadow-2xl shadow-black/35 backdrop-blur-2xl sm:rounded-[2rem] sm:border sm:p-7">
+            <div className="mb-7">
+              <p className="text-sm font-medium text-white/45">進入工作區</p>
+              <h2 className="mt-2 text-2xl font-semibold text-white">登入你的報告空間</h2>
+            </div>
+
+            <form onSubmit={handleMagicLinkSubmit} className="space-y-4">
               {authMessage && (
-                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800">
+                <div className="rounded-2xl border border-amber-300/25 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-100">
                   {authMessage}
                 </div>
               )}
-              <input
-                id="magic-link-email"
-                type="email"
-                value={email}
-                onChange={(event) => {
-                  setEmail(event.target.value)
-                  setMagicLinkSent(false)
-                }}
-                placeholder="輸入您的電子信箱"
-                className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 outline-none transition-all placeholder:text-zinc-400 focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10"
-                disabled={magicLinkLoading || magicLinkSent}
-                required
-              />
+              <label className="block text-sm font-medium text-white/72" htmlFor="magic-link-email">
+                Email
+              </label>
+              <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 transition-all focus-within:border-white/25 focus-within:bg-black/28">
+                <Mail className="h-4 w-4 shrink-0 text-white/38" aria-hidden="true" />
+                <input
+                  id="magic-link-email"
+                  type="email"
+                  value={email}
+                  onChange={(event) => {
+                    setEmail(event.target.value)
+                    setMagicLinkSent(false)
+                  }}
+                  placeholder="you@example.com"
+                  className="w-full bg-transparent text-sm text-white outline-none placeholder:text-white/28"
+                  disabled={magicLinkLoading || magicLinkSent}
+                  autoComplete="email"
+                  required
+                />
+              </div>
               <button
                 type="submit"
                 disabled={!email.trim() || magicLinkLoading || magicLinkSent}
-                className="w-full rounded-xl bg-zinc-900 px-4 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60"
+                className="group flex w-full items-center justify-center gap-2 rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-black transition-all hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {magicLinkSent
-                  ? '✅ 連結已發送，請檢查信箱'
+                  ? '連結已發送，請檢查信箱'
                   : magicLinkLoading
                     ? '傳送中...'
-                    : '✨ 傳送登入連結'}
+                    : '傳送登入連結'}
+                {!magicLinkSent && !magicLinkLoading && (
+                  <ArrowRight className="h-4 w-4 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
+                )}
               </button>
             </form>
 
-            <div className="my-6 flex items-center gap-4 text-zinc-400">
-              <div className="h-px flex-1 bg-zinc-200" />
+            <div className="my-6 flex items-center gap-4 text-white/30">
+              <div className="h-px flex-1 bg-white/10" />
               <span className="text-xs font-medium uppercase tracking-wider">或</span>
-              <div className="h-px flex-1 bg-zinc-200" />
+              <div className="h-px flex-1 bg-white/10" />
             </div>
 
             <div className="space-y-3">
@@ -2541,9 +2587,9 @@ function LandingPage({
                 type="button"
                 onClick={() => onOAuthLogin('google')}
                 disabled={authLoading}
-                className="flex w-full items-center justify-center gap-2 rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm font-semibold text-zinc-800 shadow-sm transition-all hover:border-zinc-300 hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-60"
+                className="flex w-full items-center justify-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-white/82 transition-all hover:border-white/20 hover:bg-white/[0.08] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-zinc-900 text-xs font-semibold text-white">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white text-xs font-semibold text-black">
                   G
                 </span>
                 使用 Google 繼續
@@ -2552,69 +2598,16 @@ function LandingPage({
                 type="button"
                 onClick={() => onOAuthLogin('github')}
                 disabled={authLoading}
-                className="flex w-full items-center justify-center gap-2 rounded-xl bg-[#24292f] px-4 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:bg-[#24292f]/90 disabled:cursor-not-allowed disabled:opacity-60"
+                className="flex w-full items-center justify-center gap-3 rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm font-semibold text-white/82 transition-all hover:border-white/20 hover:bg-black/35 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <span>GitHub</span>
+                <span className="text-xs font-semibold tracking-wide text-white/58">GH</span>
                 使用 GitHub 繼續
               </button>
             </div>
 
-          </div>
-
-          <div className="mx-auto mt-16 max-w-5xl overflow-hidden rounded-2xl border border-zinc-200/70 bg-white shadow-xl shadow-zinc-200/60">
-            <div className="flex h-12 items-center justify-between border-b border-zinc-100 px-5">
-              <div className="flex items-center gap-2">
-                <span className="h-2.5 w-2.5 rounded-full bg-zinc-200" />
-                <span className="h-2.5 w-2.5 rounded-full bg-zinc-200" />
-                <span className="h-2.5 w-2.5 rounded-full bg-zinc-200" />
-              </div>
-              <div className="h-7 w-28 rounded-full bg-zinc-100" />
-            </div>
-            <div className="grid min-h-96 grid-cols-1 md:grid-cols-[220px_1fr]">
-              <aside className="border-b border-zinc-100 bg-zinc-50/80 p-5 md:border-b-0 md:border-r">
-                <div className="mb-6 h-9 rounded-xl bg-zinc-900/90" />
-                <div className="space-y-3">
-                  <div className="h-8 rounded-lg bg-white shadow-sm ring-1 ring-zinc-100" />
-                  <div className="h-8 rounded-lg bg-zinc-100" />
-                  <div className="h-8 rounded-lg bg-zinc-100" />
-                  <div className="h-8 rounded-lg bg-zinc-100/70" />
-                </div>
-                <div className="mt-8 space-y-3">
-                  <div className="h-3 w-20 rounded-full bg-zinc-200/80" />
-                  <div className="h-7 rounded-md bg-zinc-100" />
-                  <div className="h-7 rounded-md bg-zinc-100" />
-                </div>
-              </aside>
-              <div className="bg-white p-6 md:p-8">
-                <div className="mb-7 flex flex-wrap items-center justify-between gap-4">
-                  <div>
-                    <div className="mb-3 h-5 w-56 rounded-full bg-zinc-200/80" />
-                    <div className="h-3 w-72 max-w-full rounded-full bg-zinc-100" />
-                  </div>
-                  <div className="h-9 w-32 rounded-full bg-zinc-900/90" />
-                </div>
-                <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-                  {[0, 1, 2].map((item) => (
-                    <div key={item} className="rounded-2xl border border-zinc-100 bg-zinc-50 p-4">
-                      <div className="mb-5 h-24 rounded-xl bg-white shadow-sm ring-1 ring-zinc-100" />
-                      <div className="mb-2 h-3 w-10/12 rounded-full bg-zinc-200/80" />
-                      <div className="h-3 w-7/12 rounded-full bg-zinc-200/60" />
-                    </div>
-                  ))}
-                </div>
-                <div className="mt-6 rounded-2xl border border-zinc-100 bg-zinc-50 p-5">
-                  <div className="mb-4 h-4 w-44 rounded-full bg-zinc-200/80" />
-                  <div className="grid gap-3 sm:grid-cols-2">
-                    <div className="space-y-2">
-                      <div className="h-3 rounded-full bg-zinc-200/70" />
-                      <div className="h-3 w-11/12 rounded-full bg-zinc-200/60" />
-                      <div className="h-3 w-8/12 rounded-full bg-zinc-200/50" />
-                    </div>
-                    <div className="h-20 rounded-xl bg-white shadow-sm ring-1 ring-zinc-100" />
-                  </div>
-                </div>
-              </div>
-            </div>
+            <p className="mt-6 text-xs leading-6 text-white/36">
+              登入只負責同步你的工作區；報告內容、預覽與匯出設定會在工作區內管理。
+            </p>
           </div>
         </section>
       </main>

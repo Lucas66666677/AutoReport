@@ -45,6 +45,120 @@ body,
   height: auto;
 }
 
+.landing-prism-aurora {
+  background:
+    radial-gradient(circle at 50% 48%, rgba(255, 255, 255, 0.14), transparent 18rem),
+    radial-gradient(circle at 73% 28%, rgba(56, 189, 248, 0.18), transparent 22rem),
+    radial-gradient(circle at 78% 68%, rgba(167, 139, 250, 0.14), transparent 24rem),
+    radial-gradient(circle at 24% 47%, rgba(255, 255, 255, 0.09), transparent 20rem);
+  animation: landing-aurora-drift 11s ease-in-out infinite alternate;
+}
+
+.landing-prism-rays {
+  mix-blend-mode: screen;
+  opacity: 0.92;
+  pointer-events: none;
+}
+
+.landing-white-ray {
+  animation: landing-white-ray-pulse 4.8s ease-in-out infinite;
+}
+
+.landing-spectrum-ray {
+  animation: landing-spectrum-breathe 5.2s ease-in-out infinite;
+  transform-box: fill-box;
+  transform-origin: 0% 50%;
+}
+
+.landing-spectrum-strokes {
+  animation: landing-spectrum-breathe 5.2s ease-in-out infinite;
+  opacity: 0.68;
+}
+
+.landing-spectrum-strokes path {
+  stroke-linecap: round;
+}
+
+.landing-spectrum-delay-1 {
+  animation-delay: 0.28s;
+}
+
+.landing-spectrum-delay-2 {
+  animation-delay: 0.56s;
+}
+
+.landing-spectrum-delay-3 {
+  animation-delay: 0.84s;
+}
+
+.landing-spectrum-delay-4 {
+  animation-delay: 1.12s;
+}
+
+.landing-prism-vignette {
+  background:
+    linear-gradient(90deg, rgba(5, 5, 7, 0.18), transparent 28%, transparent 68%, rgba(5, 5, 7, 0.48)),
+    linear-gradient(180deg, rgba(5, 5, 7, 0.12), transparent 32%, rgba(5, 5, 7, 0.72));
+  pointer-events: none;
+}
+
+@keyframes landing-aurora-drift {
+  from {
+    filter: saturate(0.88) brightness(0.92);
+    transform: scale(1);
+  }
+
+  to {
+    filter: saturate(1.08) brightness(1.05);
+    transform: scale(1.035);
+  }
+}
+
+@keyframes landing-white-ray-pulse {
+  0%,
+  100% {
+    opacity: 0.72;
+    transform: translateX(-1.2%);
+  }
+
+  50% {
+    opacity: 1;
+    transform: translateX(0.8%);
+  }
+}
+
+@keyframes landing-spectrum-breathe {
+  0%,
+  100% {
+    opacity: 0.5;
+    transform: scaleX(0.98);
+  }
+
+  50% {
+    opacity: 0.88;
+    transform: scaleX(1.03);
+  }
+}
+
+@media (max-width: 900px) {
+  .landing-prism-rays {
+    opacity: 0.68;
+    transform: scale(1.32) translateX(-8%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-prism-aurora,
+  .landing-white-ray,
+  .landing-spectrum-ray {
+    animation: none;
+  }
+
+  .landing-spectrum-strokes {
+    animation: none;
+  }
+}
+
 /* PDF 匯出模式：僅 HEX/rgb，避免 html2canvas 解析 oklch 崩潰 */
 #pdf-preview-content.pdf-print-mode,
 .pdf-export-surface.pdf-print-mode {
