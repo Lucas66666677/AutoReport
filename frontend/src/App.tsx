@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -9,12 +11,7 @@ import {
   type ImgHTMLAttributes,
   type ReactNode,
 } from 'react'
-import Editor from '@monaco-editor/react'
-import html2pdf from 'html2pdf.js'
 import 'katex/dist/katex.min.css'
-import mermaid from 'mermaid'
-import * as Y from 'yjs'
-import { WebrtcProvider } from 'y-webrtc'
 import { createClient, type Provider, type User } from '@supabase/supabase-js'
 import {
   PanelLeftClose,
@@ -28,9 +25,16 @@ import {
 } from 'lucide-react'
 import type { editor } from 'monaco-editor'
 import ReactMarkdown from 'react-markdown'
-import rehypeKatex from 'rehype-katex'
-import rehypeRaw from 'rehype-raw'
 import remarkMath from 'remark-math'
+import type { Text as YText, Doc as YDoc } from 'yjs'
+import type { WebrtcProvider } from 'y-webrtc'
+import {
+  createDocumentVersion,
+  readDocumentVersions,
+  type DocumentVersion,
+} from './documentVersions'
+import { REHYPE_PLUGINS, safeMarkdownUrlTransform } from './markdownSafety'
+import { analyzeReportQuality } from './reportQuality'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 const RENDER_DEBOUNCE_MS = 300
@@ -39,19 +43,20 @@ const CONTENT_STORAGE_KEY = 'autoLabReport_content'
 const DOCUMENTS_STORAGE_KEY = 'autoLabReport_documents'
 const ACTIVE_DOCUMENT_ID_STORAGE_KEY = 'autoLabReport_activeDocumentId'
 const ANONYMOUS_IDENTITY_STORAGE_KEY = 'autoLabReport_anonymousIdentity'
+const AI_SETTINGS_STORAGE_KEY = 'autoLabReport_aiSettings'
+const DOCUMENT_VERSIONS_STORAGE_KEY = 'autoLabReport_documentVersions'
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
 const supabase =
   SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null
 
 const REMARK_PLUGINS = [remarkMath]
-const REHYPE_PLUGINS = [rehypeKatex, rehypeRaw]
-const ydoc = new Y.Doc()
-const documentYDocs = new Map<string, Y.Doc>()
+const MarkdownEditor = lazy(() => import('@monaco-editor/react'))
+const documentYDocs = new Map<string, YDoc>()
+let sharedYDoc: YDoc | null = null
+let mermaidInitialized = false
 const YTEXT_NAME = 'monaco-or-textarea'
 const LOCAL_YJS_ORIGIN = 'local-monaco'
-
-mermaid.initialize({ startOnLoad: false, theme: 'default' })
 
 const DEFAULT_TEMPLATES = [
   {
@@ -241,6 +246,59 @@ type SyncStatus =
 type ShareSetting = 'private' | 'view' | 'edit'
 type CollaboratorRole = 'view' | 'edit'
 type DocumentPermission = 'owner' | 'edit' | 'view' | 'none'
+type AiProvider = 'built_in' | 'extension' | 'user_api_key'
+type UserApiProvider = 'none' | 'openai' | 'gemini' | 'anthropic' | 'deepseek'
+type AiAction = 'outline' | 'rewrite' | 'expand' | 'format' | 'summarize' | 'custom'
+
+type AiSettings = {
+  preferredProvider: AiProvider
+  userApiProvider: UserApiProvider
+  userApiKey: string
+  defaultModel: string
+  rewritePrompt: string
+  expandPrompt: string
+  outlinePrompt: string
+  summarizePrompt: string
+  customPrompt: string
+  extensionAutoReturn: boolean
+}
+
+type AiTaskRequest = {
+  provider?: AiProvider
+  action: AiAction
+  text: string
+  documentId?: string
+  prompt?: string
+  insertMode?: 'replace-selection' | 'insert-at-cursor' | 'replace-document' | 'return'
+}
+
+type AiQuota = {
+  plan: 'free' | 'pro' | string
+  used: number
+  limit: number
+  remaining: number
+}
+
+type BillingConfig = {
+  enabled: boolean
+  pro_price_id_configured: boolean
+  customer_portal_url: string | null
+  message: string
+}
+
+type SupabaseAiSettingsRow = {
+  user_id: string
+  preferred_provider?: AiProvider | null
+  api_provider?: UserApiProvider | null
+  api_key_encrypted?: string | null
+  default_model?: string | null
+  rewrite_prompt?: string | null
+  expand_prompt?: string | null
+  outline_prompt?: string | null
+  summarize_prompt?: string | null
+  custom_prompt?: string | null
+  extension_auto_return?: boolean | null
+}
 
 type Document = {
   id: string
@@ -289,7 +347,16 @@ type AnonymousIdentity = {
   color: string
 }
 
-type AppView = 'dashboard' | 'editor' | 'favorites' | 'templates' | 'trash'
+type AppView =
+  | 'dashboard'
+  | 'editor'
+  | 'favorites'
+  | 'templates'
+  | 'trash'
+  | 'settings'
+  | 'billing'
+  | 'history'
+  | 'quality'
 
 type AiSelectionMenuState = {
   visible: boolean
@@ -347,6 +414,23 @@ const ANONYMOUS_ANIMALS = [
   { name: '匿名海獺', emoji: '🦦' },
   { name: '匿名熊貓', emoji: '🐼' },
 ]
+const DEFAULT_AI_SETTINGS: AiSettings = {
+  preferredProvider: 'built_in',
+  userApiProvider: 'none',
+  userApiKey: '',
+  defaultModel: '',
+  rewritePrompt:
+    '請幫我潤飾重寫以下實驗報告片段。請保留原意、修正語氣與結構，只回傳 Markdown 純文字：\n\n{{text}}',
+  expandPrompt:
+    '請幫我擴寫以下實驗報告片段。請補強學術語氣、邏輯銜接與必要細節，只回傳 Markdown 純文字：\n\n{{text}}',
+  outlinePrompt:
+    '請根據以下範例結構生成實驗報告 Markdown 大綱，包含標準標題與預留填空區：\n\n{{text}}',
+  summarizePrompt:
+    '請將以下實驗報告內容整理成精煉的結論段落，只回傳 Markdown 純文字：\n\n{{text}}',
+  customPrompt:
+    '請根據我的要求處理以下實驗報告內容，只回傳 Markdown 純文字：\n\n{{text}}',
+  extensionAutoReturn: false,
+}
 
 function MermaidBlock({ chart }: { chart: string }) {
   const [svg, setSvg] = useState('')
@@ -358,6 +442,15 @@ function MermaidBlock({ chart }: { chart: string }) {
 
     async function renderMermaid() {
       try {
+        const { default: mermaid } = await import('mermaid')
+        if (!mermaidInitialized) {
+          mermaid.initialize({
+            startOnLoad: false,
+            theme: 'default',
+            securityLevel: 'strict',
+          })
+          mermaidInitialized = true
+        }
         const result = await mermaid.render(renderId, chart)
         if (!isCancelled) {
           setSvg(result.svg)
@@ -590,11 +683,13 @@ function mapDocumentCollaborator(row: DocumentCollaboratorRow): DocumentCollabor
   }
 }
 
-function getDocumentYDoc(documentId: string) {
+async function getDocumentYDoc(documentId: string): Promise<YDoc> {
   const existingDoc = documentYDocs.get(documentId)
   if (existingDoc) return existingDoc
 
-  const nextDoc = documentYDocs.size === 0 ? ydoc : new Y.Doc()
+  const { Doc } = await import('yjs')
+  const nextDoc = documentYDocs.size === 0 && sharedYDoc ? sharedYDoc : new Doc()
+  sharedYDoc ??= nextDoc
   documentYDocs.set(documentId, nextDoc)
   return nextDoc
 }
@@ -943,6 +1038,30 @@ function DocumentSidebar({
         </button>
         <button
           type="button"
+          onClick={() => onChangeView('quality')}
+          className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm font-medium transition ${
+            currentView === 'quality'
+              ? 'border border-zinc-200/50 bg-white font-medium text-zinc-900 shadow-sm dark:border-zinc-700/70 dark:bg-zinc-900 dark:text-zinc-100'
+              : 'text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
+          }`}
+        >
+          <span className="w-5 text-center">✓</span>
+          報告檢查
+        </button>
+        <button
+          type="button"
+          onClick={() => onChangeView('history')}
+          className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm font-medium transition ${
+            currentView === 'history'
+              ? 'border border-zinc-200/50 bg-white font-medium text-zinc-900 shadow-sm dark:border-zinc-700/70 dark:bg-zinc-900 dark:text-zinc-100'
+              : 'text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
+          }`}
+        >
+          <span className="w-5 text-center">↺</span>
+          版本歷史
+        </button>
+        <button
+          type="button"
           onClick={onOpenExtensionModal}
           className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm font-medium text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100"
         >
@@ -1023,6 +1142,20 @@ function DocumentSidebar({
             </button>
             <button
               type="button"
+              onClick={() => {
+                setIsMoreOpen(false)
+                onChangeView('billing')
+              }}
+              className="w-full rounded-lg px-3 py-2 text-left text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+            >
+              💳 方案與用量
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setIsMoreOpen(false)
+                onChangeView('settings')
+              }}
               className="w-full rounded-lg px-3 py-2 text-left text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
             >
               ⚙️ 設定
@@ -1162,6 +1295,90 @@ function getInitialAnonymousIdentity(): AnonymousIdentity {
   return identity
 }
 
+function normalizeAiSettings(settings: Partial<AiSettings> | null | undefined): AiSettings {
+  return {
+    ...DEFAULT_AI_SETTINGS,
+    ...(settings ?? {}),
+    userApiKey: typeof settings?.userApiKey === 'string' ? settings.userApiKey : '',
+    preferredProvider:
+      settings?.preferredProvider === 'extension' || settings?.preferredProvider === 'user_api_key'
+        ? settings.preferredProvider
+        : 'built_in',
+    userApiProvider:
+      settings?.userApiProvider === 'openai' ||
+      settings?.userApiProvider === 'gemini' ||
+      settings?.userApiProvider === 'anthropic' ||
+      settings?.userApiProvider === 'deepseek'
+        ? settings.userApiProvider
+        : 'none',
+  }
+}
+
+function getInitialAiSettings(): AiSettings {
+  if (typeof window === 'undefined') return DEFAULT_AI_SETTINGS
+
+  const savedSettings = window.localStorage.getItem(AI_SETTINGS_STORAGE_KEY)
+  if (!savedSettings) return DEFAULT_AI_SETTINGS
+
+  try {
+    const parsed = JSON.parse(savedSettings) as Partial<AiSettings>
+    return normalizeAiSettings({ ...parsed, userApiKey: '' })
+  } catch {
+    return DEFAULT_AI_SETTINGS
+  }
+}
+
+function getPersistableAiSettings(settings: AiSettings): AiSettings {
+  return {
+    ...settings,
+    userApiKey: '',
+  }
+}
+
+function mapSupabaseAiSettings(row: SupabaseAiSettingsRow, currentSettings: AiSettings): AiSettings {
+  return normalizeAiSettings({
+    ...currentSettings,
+    preferredProvider: row.preferred_provider ?? currentSettings.preferredProvider,
+    userApiProvider: row.api_provider ?? currentSettings.userApiProvider,
+    defaultModel: row.default_model ?? currentSettings.defaultModel,
+    rewritePrompt: row.rewrite_prompt ?? currentSettings.rewritePrompt,
+    expandPrompt: row.expand_prompt ?? currentSettings.expandPrompt,
+    outlinePrompt: row.outline_prompt ?? currentSettings.outlinePrompt,
+    summarizePrompt: row.summarize_prompt ?? currentSettings.summarizePrompt,
+    customPrompt: row.custom_prompt ?? currentSettings.customPrompt,
+    extensionAutoReturn: row.extension_auto_return ?? currentSettings.extensionAutoReturn,
+  })
+}
+
+function toSupabaseAiSettingsPayload(userId: string, settings: AiSettings) {
+  return {
+    user_id: userId,
+    preferred_provider: settings.preferredProvider,
+    api_provider: settings.userApiProvider,
+    api_key_encrypted: null,
+    default_model: settings.defaultModel || null,
+    rewrite_prompt: settings.rewritePrompt,
+    expand_prompt: settings.expandPrompt,
+    outline_prompt: settings.outlinePrompt,
+    summarize_prompt: settings.summarizePrompt,
+    custom_prompt: settings.customPrompt,
+    extension_auto_return: settings.extensionAutoReturn,
+    updated_at: new Date().toISOString(),
+  }
+}
+
+function fillPromptTemplate(template: string, text: string, action: AiAction): string {
+  return template.replaceAll('{{text}}', text).replaceAll('{{action}}', action)
+}
+
+function getPromptTemplateForAction(settings: AiSettings, action: AiAction): string {
+  if (action === 'expand') return settings.expandPrompt
+  if (action === 'outline') return settings.outlinePrompt
+  if (action === 'summarize') return settings.summarizePrompt
+  if (action === 'custom') return settings.customPrompt
+  return settings.rewritePrompt
+}
+
 function getCollaboratorInitial(name: string): string {
   return name.trim().charAt(0).toUpperCase() || 'A'
 }
@@ -1295,6 +1512,333 @@ function CollaboratorAvatarGroup({ collaborators }: { collaborators: Collaborato
         </div>
       )}
     </div>
+  )
+}
+
+function AiSettingsView({
+  settings,
+  quota,
+  quotaLoading,
+  onChangeSettings,
+}: {
+  settings: AiSettings
+  quota: AiQuota | null
+  quotaLoading: boolean
+  onChangeSettings: (settings: AiSettings) => void
+}) {
+  function updateSettings(patch: Partial<AiSettings>) {
+    onChangeSettings(normalizeAiSettings({ ...settings, ...patch }))
+  }
+
+  const providerDescription =
+    settings.preferredProvider === 'built_in'
+      ? '使用 AutoLabReport 內建 AI，適合小白與付費方案。'
+      : settings.preferredProvider === 'extension'
+        ? '使用 Chrome 插件連接 ChatGPT、Gemini、Claude、Grok、DeepSeek。'
+        : '使用你自己的 API Key，適合進階使用者。'
+
+  return (
+    <main className={`flex-1 overflow-auto bg-zinc-50 px-8 py-12 dark:bg-zinc-950 ${SCROLLBAR_HIDE}`}>
+      <div className="mx-auto max-w-5xl">
+        <div className="mb-8">
+          <h1 className="text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">AI 設定</h1>
+          <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+            管理 AutoLabReport 的 AI 供應模式、插件橋接、自備 API Key 與 Prompt 模板。
+          </p>
+        </div>
+
+        <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
+          <section className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">AI Provider</h2>
+            <p className="mt-1 text-sm leading-6 text-zinc-500 dark:text-zinc-400">{providerDescription}</p>
+
+            <div className="mt-5 grid gap-3 sm:grid-cols-3">
+              <div className="rounded-xl border border-zinc-200/70 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-950">
+                <div className="text-xs font-semibold uppercase tracking-wider text-zinc-400">方案</div>
+                <div className="mt-2 text-lg font-bold text-zinc-900 dark:text-zinc-100">
+                  {quota?.plan === 'pro' ? 'Pro' : 'Free'}
+                </div>
+              </div>
+              <div className="rounded-xl border border-zinc-200/70 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-950">
+                <div className="text-xs font-semibold uppercase tracking-wider text-zinc-400">今日剩餘</div>
+                <div className="mt-2 text-lg font-bold text-zinc-900 dark:text-zinc-100">
+                  {quotaLoading ? '...' : quota ? quota.remaining : '-'}
+                </div>
+              </div>
+              <div className="rounded-xl border border-zinc-200/70 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-950">
+                <div className="text-xs font-semibold uppercase tracking-wider text-zinc-400">每日額度</div>
+                <div className="mt-2 text-lg font-bold text-zinc-900 dark:text-zinc-100">
+                  {quotaLoading ? '...' : quota ? quota.limit : '-'}
+                </div>
+              </div>
+            </div>
+
+            <label className="mt-5 block">
+              <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">預設 AI 模式</span>
+              <select
+                value={settings.preferredProvider}
+                onChange={(event) => updateSettings({ preferredProvider: event.target.value as AiProvider })}
+                className="mt-2 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+              >
+                <option value="built_in">AutoLabReport 內建 AI</option>
+                <option value="extension">Chrome 插件橋接</option>
+                <option value="user_api_key">自備 API Key</option>
+              </select>
+            </label>
+
+            <div className="mt-5 rounded-xl border border-zinc-200/70 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-950">
+              <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">免費版建議</div>
+              <p className="mt-2 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+                預設使用少量內建 AI 額度；額度用完後，可改用插件橋接自己的 AI 網頁，或填入自己的 API Key。
+              </p>
+            </div>
+          </section>
+
+          <section className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">自備 API Key</h2>
+            <p className="mt-1 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+              API Key 只保留在目前頁面狀態，不會寫入 localStorage 或 Supabase；重新整理後需重新填入。
+            </p>
+
+            <label className="mt-5 block">
+              <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">API Provider</span>
+              <select
+                value={settings.userApiProvider}
+                onChange={(event) => updateSettings({ userApiProvider: event.target.value as UserApiProvider })}
+                className="mt-2 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+              >
+                <option value="none">尚未設定</option>
+                <option value="openai">OpenAI</option>
+                <option value="gemini">Gemini</option>
+                <option value="anthropic">Claude / Anthropic</option>
+                <option value="deepseek">DeepSeek</option>
+              </select>
+            </label>
+
+            <label className="mt-4 block">
+              <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">API Key</span>
+              <input
+                type="password"
+                value={settings.userApiKey}
+                onChange={(event) => updateSettings({ userApiKey: event.target.value })}
+                placeholder="sk-... / AIza... / 你的金鑰"
+                className="mt-2 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => updateSettings({ userApiKey: '' })}
+              disabled={!settings.userApiKey}
+              className="mt-3 rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold text-zinc-600 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-950"
+            >
+              清除本次 API Key
+            </button>
+
+            <label className="mt-4 block">
+              <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">預設模型（可選）</span>
+              <input
+                value={settings.defaultModel}
+                onChange={(event) => updateSettings({ defaultModel: event.target.value })}
+                placeholder="例如 gpt-4.1-mini / gemini-1.5-flash"
+                className="mt-2 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
+              />
+            </label>
+          </section>
+        </div>
+
+        <section className="mt-6 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">Prompt 模板</h2>
+              <p className="mt-1 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+                使用 <code>{'{{text}}'}</code> 代表選取文字或文件內容，<code>{'{{action}}'}</code> 代表操作名稱。
+              </p>
+            </div>
+            <label className="flex items-center gap-2 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm font-medium text-zinc-600 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300">
+              <input
+                type="checkbox"
+                checked={settings.extensionAutoReturn}
+                onChange={(event) => updateSettings({ extensionAutoReturn: event.target.checked })}
+              />
+              插件自動回填
+            </label>
+            <button
+              type="button"
+              onClick={() =>
+                updateSettings({
+                  rewritePrompt: DEFAULT_AI_SETTINGS.rewritePrompt,
+                  expandPrompt: DEFAULT_AI_SETTINGS.expandPrompt,
+                  outlinePrompt: DEFAULT_AI_SETTINGS.outlinePrompt,
+                  summarizePrompt: DEFAULT_AI_SETTINGS.summarizePrompt,
+                  customPrompt: DEFAULT_AI_SETTINGS.customPrompt,
+                })
+              }
+              className={SUBTLE_BUTTON}
+            >
+              恢復預設 Prompt
+            </button>
+          </div>
+
+          <div className="mt-6 grid gap-5 lg:grid-cols-2">
+            {([
+              ['rewritePrompt', '潤飾重寫'],
+              ['expandPrompt', '擴寫內容'],
+              ['outlinePrompt', '生成大綱'],
+              ['summarizePrompt', '摘要成結論'],
+              ['customPrompt', '自訂指令'],
+            ] as const).map(([key, label]) => (
+              <label key={key} className={key === 'customPrompt' ? 'lg:col-span-2' : ''}>
+                <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">{label}</span>
+                <textarea
+                  value={settings[key]}
+                  onChange={(event) => updateSettings({ [key]: event.target.value } as Partial<AiSettings>)}
+                  className={`mt-2 h-36 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-sm leading-6 text-zinc-900 outline-none transition focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 ${SCROLLBAR_HIDE}`}
+                />
+              </label>
+            ))}
+          </div>
+        </section>
+      </div>
+    </main>
+  )
+}
+
+function BillingView({
+  quota,
+  quotaLoading,
+  billingConfig,
+  onOpenAiSettings,
+}: {
+  quota: AiQuota | null
+  quotaLoading: boolean
+  billingConfig: BillingConfig | null
+  onOpenAiSettings: () => void
+}) {
+  const remainingPercent = quota ? Math.max(0, Math.min(100, (quota.remaining / Math.max(quota.limit, 1)) * 100)) : 0
+  const isPro = quota?.plan === 'pro'
+
+  return (
+    <main className={`flex-1 overflow-auto bg-zinc-50 px-8 py-12 dark:bg-zinc-950 ${SCROLLBAR_HIDE}`}>
+      <div className="mx-auto max-w-6xl">
+        <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-zinc-400">Billing</p>
+            <h1 className="mt-2 text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">
+              方案與 AI 用量
+            </h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+              免費版保留基本 AI 額度；Pro 方案適合長期寫實驗報告、團隊協作與高頻 AI 編修。
+            </p>
+            <div className="mt-3 inline-flex rounded-full bg-white px-3 py-1 text-xs font-semibold text-zinc-500 ring-1 ring-zinc-200/70 dark:bg-zinc-900 dark:text-zinc-400 dark:ring-zinc-800">
+              {billingConfig?.message ?? '正在檢查金流設定...'}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onOpenAiSettings}
+            className="rounded-xl border border-zinc-200 bg-white px-4 py-2 text-sm font-semibold text-zinc-700 shadow-sm transition hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-200 dark:hover:bg-zinc-800"
+          >
+            調整 AI 模式
+          </button>
+        </div>
+
+        <section className="mb-6 rounded-3xl border border-zinc-200 bg-white p-7 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">今日內建 AI 額度</h2>
+              <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+                插件橋接與自備 API Key 不會消耗 AutoLabReport 內建額度。
+              </p>
+            </div>
+            <div className="rounded-2xl bg-zinc-50 px-5 py-3 text-right ring-1 ring-zinc-200/70 dark:bg-zinc-950 dark:ring-zinc-800">
+              <div className="text-xs font-semibold uppercase tracking-wider text-zinc-400">目前方案</div>
+              <div className="mt-1 text-xl font-bold text-zinc-900 dark:text-zinc-100">
+                {isPro ? 'Pro' : 'Free'}
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-7">
+            <div className="mb-2 flex items-center justify-between text-sm">
+              <span className="font-medium text-zinc-600 dark:text-zinc-300">
+                {quotaLoading ? '讀取中...' : `剩餘 ${quota?.remaining ?? '-'} / ${quota?.limit ?? '-'} 次`}
+              </span>
+              <span className="text-zinc-400">每日重置</span>
+            </div>
+            <div className="h-3 overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
+              <div
+                className="h-full rounded-full bg-zinc-900 transition-all dark:bg-zinc-100"
+                style={{ width: `${quotaLoading ? 35 : remainingPercent}%` }}
+              />
+            </div>
+          </div>
+        </section>
+
+        <div className="grid gap-6 lg:grid-cols-2">
+          <section className="flex flex-col rounded-3xl border border-zinc-200 bg-white p-7 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="mb-6">
+              <h2 className="text-xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">Free</h2>
+              <p className="mt-2 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+                適合個人試用與低頻撰寫。保留插件橋接與自備 API Key 兩條免費替代路徑。
+              </p>
+            </div>
+            <div className="text-3xl font-bold text-zinc-900 dark:text-zinc-100">$0</div>
+            <ul className="mt-6 space-y-3 text-sm text-zinc-600 dark:text-zinc-300">
+              <li>✓ 每日少量內建 AI 額度</li>
+              <li>✓ Chrome 插件橋接主流 AI 網頁</li>
+              <li>✓ 自備 API Key 模式</li>
+              <li>✓ Markdown 編輯與匯出</li>
+            </ul>
+            <div className="mt-auto pt-8">
+              <button
+                type="button"
+                onClick={onOpenAiSettings}
+                className="w-full rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm font-semibold text-zinc-700 transition hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-800"
+              >
+                使用免費設定
+              </button>
+            </div>
+          </section>
+
+          <section className="flex flex-col rounded-3xl border border-zinc-900 bg-zinc-950 p-7 text-white shadow-xl dark:border-zinc-700">
+            <div className="mb-6 flex items-start justify-between gap-4">
+              <div>
+                <h2 className="text-xl font-bold tracking-tight">Pro</h2>
+                <p className="mt-2 text-sm leading-6 text-zinc-400">
+                  面向高頻 AI 排版、多人協作與正式課業工作流。Stripe 金流可在下一步接入。
+                </p>
+              </div>
+              <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-semibold text-zinc-200">
+                Coming soon
+              </span>
+            </div>
+            <div className="text-3xl font-bold">$8</div>
+            <p className="mt-1 text-sm text-zinc-400">每月，建議定價</p>
+            <ul className="mt-6 space-y-3 text-sm text-zinc-300">
+              <li>✓ 更高每日內建 AI 額度</li>
+              <li>✓ 進階 Prompt 模板與批次修復</li>
+              <li>✓ 團隊協作與權限分享</li>
+              <li>✓ 優先使用新模型與新功能</li>
+            </ul>
+            <div className="mt-auto pt-8">
+              <button
+                type="button"
+                onClick={() => {
+                  if (billingConfig?.customer_portal_url) {
+                    window.location.href = billingConfig.customer_portal_url
+                    return
+                  }
+                  window.location.href = 'mailto:?subject=AutoLabReport Pro 等候名單&body=我想加入 AutoLabReport Pro 等候名單。'
+                }}
+                className="w-full rounded-xl bg-white px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-zinc-100"
+              >
+                {billingConfig?.enabled ? '管理訂閱' : '加入 Pro 等候名單'}
+              </button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
   )
 }
 
@@ -1652,11 +2196,20 @@ function TemplatesView({
   onUseTemplate: (template: (typeof DEFAULT_TEMPLATES)[number]) => void
 }) {
   const [selectedCategory, setSelectedCategory] = useState('全部')
+  const [query, setQuery] = useState('')
   const categories = ['全部', ...Array.from(new Set(DEFAULT_TEMPLATES.map((template) => template.category)))]
-  const templates =
-    selectedCategory === '全部'
-      ? DEFAULT_TEMPLATES
-      : DEFAULT_TEMPLATES.filter((template) => template.category === selectedCategory)
+  const normalizedQuery = query.trim().toLowerCase()
+  const templates = DEFAULT_TEMPLATES.filter((template) => {
+    const matchesCategory = selectedCategory === '全部' || template.category === selectedCategory
+    const matchesQuery =
+      !normalizedQuery ||
+      [template.title, template.category, template.description, template.content]
+        .join(' ')
+        .toLowerCase()
+        .includes(normalizedQuery)
+
+    return matchesCategory && matchesQuery
+  })
 
   return (
     <main className={`min-h-0 flex-1 overflow-auto bg-zinc-50 transition-colors duration-300 dark:bg-zinc-950 ${SCROLLBAR_HIDE}`}>
@@ -1669,7 +2222,19 @@ function TemplatesView({
           從常見 STEM 實驗骨架開始，套用後會建立成新的本地報告並直接進入編輯器。
         </p>
 
-        <div className="mt-6 flex flex-wrap gap-2">
+        <div className="mt-6 grid gap-3 lg:grid-cols-[1fr_auto]">
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜尋科目、實驗類型或模板內容"
+            className="w-full rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100"
+          />
+          <span className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm font-medium text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
+            {templates.length} 個模板
+          </span>
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-2">
           {categories.map((category) => (
             <button
               key={category}
@@ -1715,6 +2280,168 @@ function TemplatesView({
             </article>
           ))}
         </div>
+        {templates.length === 0 && (
+          <div className="mt-8 rounded-2xl border border-dashed border-zinc-200 bg-white px-8 py-14 text-center text-sm text-zinc-500 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
+            找不到符合條件的模板。
+          </div>
+        )}
+      </div>
+    </main>
+  )
+}
+
+function ReportQualityView({
+  document,
+  markdown,
+  onBackToEditor,
+}: {
+  document: Document | undefined
+  markdown: string
+  onBackToEditor: () => void
+}) {
+  const checks = useMemo(() => analyzeReportQuality(markdown), [markdown])
+  const passedCount = checks.filter((item) => item.passed).length
+  const score = checks.length ? Math.round((passedCount / checks.length) * 100) : 0
+
+  return (
+    <main className={`min-h-0 flex-1 overflow-auto bg-zinc-50 transition-colors duration-300 dark:bg-zinc-950 ${SCROLLBAR_HIDE}`}>
+      <div className="mx-auto max-w-6xl px-8 py-12">
+        <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="mb-2 text-sm font-medium text-zinc-500 dark:text-zinc-400">Quality Check</p>
+            <h1 className="text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">報告檢查</h1>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+              {document?.title ?? '目前文件'} 的結構完整度檢查，適合匯出前快速補洞。
+            </p>
+          </div>
+          <button type="button" onClick={onBackToEditor} className={SUBTLE_BUTTON}>
+            回到編輯器
+          </button>
+        </div>
+
+        <section className="mb-6 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <div className="flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <div className="text-5xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">{score}</div>
+              <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+                已通過 {passedCount} / {checks.length} 個檢查項目
+              </p>
+            </div>
+            <div className="h-3 min-w-64 flex-1 overflow-hidden rounded-full bg-zinc-100 dark:bg-zinc-800">
+              <div
+                className="h-full rounded-full bg-emerald-500 transition-all"
+                style={{ width: `${score}%` }}
+              />
+            </div>
+          </div>
+        </section>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          {checks.map((item) => (
+            <article
+              key={item.id}
+              className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+            >
+              <div className="flex items-start gap-3">
+                <span
+                  className={`mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-sm font-bold ${
+                    item.passed
+                      ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300'
+                      : 'bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300'
+                  }`}
+                >
+                  {item.passed ? '✓' : '!'}
+                </span>
+                <div>
+                  <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-50">{item.label}</h2>
+                  <p className="mt-1 text-sm leading-6 text-zinc-500 dark:text-zinc-400">{item.description}</p>
+                  {!item.passed && (
+                    <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
+                      {item.suggestion}
+                    </p>
+                  )}
+                </div>
+              </div>
+            </article>
+          ))}
+        </div>
+      </div>
+    </main>
+  )
+}
+
+function VersionHistoryView({
+  document,
+  versions,
+  onBackToEditor,
+  onSaveVersion,
+  onRestoreVersion,
+}: {
+  document: Document | undefined
+  versions: DocumentVersion[]
+  onBackToEditor: () => void
+  onSaveVersion: () => void
+  onRestoreVersion: (version: DocumentVersion) => void
+}) {
+  return (
+    <main className={`min-h-0 flex-1 overflow-auto bg-zinc-50 transition-colors duration-300 dark:bg-zinc-950 ${SCROLLBAR_HIDE}`}>
+      <div className="mx-auto max-w-6xl px-8 py-12">
+        <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="mb-2 text-sm font-medium text-zinc-500 dark:text-zinc-400">Version History</p>
+            <h1 className="text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">版本歷史</h1>
+            <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+              為 {document?.title ?? '目前文件'} 儲存本地快照，方便在大量 AI 改寫前後回復。
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button type="button" onClick={onBackToEditor} className={SUBTLE_BUTTON}>
+              回到編輯器
+            </button>
+            <button
+              type="button"
+              onClick={onSaveVersion}
+              className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+            >
+              儲存目前版本
+            </button>
+          </div>
+        </div>
+
+        {versions.length === 0 ? (
+          <div className="rounded-2xl border border-dashed border-zinc-200 bg-white px-8 py-16 text-center shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">尚未儲存版本</h2>
+            <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
+              點擊「儲存目前版本」後，快照會保留在這台瀏覽器。
+            </p>
+          </div>
+        ) : (
+          <div className="space-y-4">
+            {versions.map((version) => (
+              <article
+                key={version.id}
+                className="rounded-2xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <h2 className="truncate text-base font-semibold text-zinc-900 dark:text-zinc-50">
+                      {version.title}
+                    </h2>
+                    <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
+                      {formatDocumentTime(version.createdAt)} · {version.note}
+                    </p>
+                    <p className="mt-3 line-clamp-2 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
+                      {version.content.replace(/[#*_`>|-]/g, ' ').replace(/\s+/g, ' ').trim() || '空白版本'}
+                    </p>
+                  </div>
+                  <button type="button" onClick={() => onRestoreVersion(version)} className={SUBTLE_BUTTON}>
+                    還原
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        )}
       </div>
     </main>
   )
@@ -1724,10 +2451,12 @@ function LandingPage({
   onOAuthLogin,
   onSendMagicLink,
   authLoading,
+  authMessage,
 }: {
   onOAuthLogin: (provider: Provider) => void
   onSendMagicLink: (email: string) => Promise<boolean>
   authLoading: boolean
+  authMessage: string | null
 }) {
   const [email, setEmail] = useState('')
   const [magicLinkSent, setMagicLinkSent] = useState(false)
@@ -1772,6 +2501,11 @@ function LandingPage({
               <label className="block text-sm font-semibold text-zinc-900" htmlFor="magic-link-email">
                 使用 Email 登入
               </label>
+              {authMessage && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-800">
+                  {authMessage}
+                </div>
+              )}
               <input
                 id="magic-link-email"
                 type="email"
@@ -1911,6 +2645,9 @@ function WorkspaceApp({
     return getInitialWorkspace()
   })
   const [documents, setDocuments] = useState<Document[]>(initialWorkspace.documents)
+  const [documentVersions, setDocumentVersions] = useState<DocumentVersion[]>(() =>
+    readDocumentVersions(DOCUMENT_VERSIONS_STORAGE_KEY),
+  )
   const [activeDocumentId, setActiveDocumentId] = useState(initialWorkspace.activeDocumentId)
   const [currentView, setCurrentView] = useState<AppView>(initialSharedDocument ? 'editor' : 'dashboard')
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
@@ -1928,6 +2665,7 @@ function WorkspaceApp({
   const [isShareModalOpen, setIsShareModalOpen] = useState(false)
   const [isExtensionModalOpen, setIsExtensionModalOpen] = useState(false)
   const [isAdvancedMenuOpen, setIsAdvancedMenuOpen] = useState(false)
+  const [mobileEditorPane, setMobileEditorPane] = useState<'edit' | 'preview'>('edit')
   const [collaboratorEmail, setCollaboratorEmail] = useState('')
   const [documentCollaborators, setDocumentCollaborators] = useState<DocumentCollaborator[]>([])
   const [documentCollaboratorsLoading, setDocumentCollaboratorsLoading] = useState(false)
@@ -1936,6 +2674,11 @@ function WorkspaceApp({
   const [titleDraft, setTitleDraft] = useState(activeDocument?.title ?? '')
   const [outlineExampleText, setOutlineExampleText] = useState('')
   const [outlineLoading, setOutlineLoading] = useState(false)
+  const [aiSettings, setAiSettings] = useState<AiSettings>(getInitialAiSettings)
+  const [aiTaskLoading, setAiTaskLoading] = useState<AiAction | null>(null)
+  const [aiQuota, setAiQuota] = useState<AiQuota | null>(null)
+  const [aiQuotaLoading, setAiQuotaLoading] = useState(false)
+  const [billingConfig, setBillingConfig] = useState<BillingConfig | null>(null)
   const [bridgeToast, setBridgeToast] = useState<string | null>(null)
   const [shareCopied, setShareCopied] = useState(false)
   const [collaborators, setCollaborators] = useState<CollaboratorPresence[]>([])
@@ -1955,10 +2698,11 @@ function WorkspaceApp({
   const advancedMenuRef = useRef<HTMLDivElement | null>(null)
   const documentsRef = useRef<Document[]>(documents)
   const providerRef = useRef<WebrtcProvider | null>(null)
-  const ytextRef = useRef<Y.Text | null>(null)
+  const ytextRef = useRef<YText | null>(null)
   const ytextObserverCleanupRef = useRef<(() => void) | null>(null)
   const isApplyingRemoteRef = useRef(false)
   const canEditActiveDocumentRef = useRef(true)
+  const aiSettingsHydratedRef = useRef(false)
   const activeAiSelectionRef = useRef<PendingAiSelection | null>(null)
   const pendingAiSelectionRef = useRef<PendingAiSelection | null>(null)
   const shareResetTimerRef = useRef<number | null>(null)
@@ -1976,6 +2720,15 @@ function WorkspaceApp({
   const canEditActiveDocument =
     activeDocumentPermission === 'owner' || activeDocumentPermission === 'edit'
   const isReadOnlyMode = activeDocumentPermission === 'view'
+  const activeDocumentVersions = useMemo(
+    () =>
+      activeDocument
+        ? documentVersions
+            .filter((version) => version.documentId === activeDocument.id)
+            .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
+        : [],
+    [activeDocument, documentVersions],
+  )
 
   const applyLoadedDocument = useCallback((document: Document) => {
     setActiveDocumentId(document.id)
@@ -1984,6 +2737,33 @@ function WorkspaceApp({
     editorRef.current?.setValue(document.content)
     isApplyingRemoteRef.current = false
   }, [])
+
+  const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
+    if (!supabase || !user) return {}
+    const { data } = await supabase.auth.getSession()
+    const token = data.session?.access_token
+    return token ? { Authorization: `Bearer ${token}` } : {}
+  }, [user])
+
+  const refreshAiQuota = useCallback(async () => {
+    if (!user) {
+      setAiQuota(null)
+      return
+    }
+
+    setAiQuotaLoading(true)
+    try {
+      const headers = await getAuthHeaders()
+      const res = await fetch(`${API_BASE_URL}/api/ai/quota`, { headers })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const quota = (await res.json()) as AiQuota
+      setAiQuota(quota)
+    } catch {
+      setAiQuota(null)
+    } finally {
+      setAiQuotaLoading(false)
+    }
+  }, [getAuthHeaders, user])
 
   const readDocumentCollaborators = useCallback(async (documentId: string): Promise<DocumentCollaborator[]> => {
     if (!supabase || !shouldUseSupabaseDocuments) return []
@@ -2074,8 +2854,98 @@ function WorkspaceApp({
   }, [documents])
 
   useEffect(() => {
+    window.localStorage.setItem(DOCUMENT_VERSIONS_STORAGE_KEY, JSON.stringify(documentVersions.slice(0, 120)))
+  }, [documentVersions])
+
+  useEffect(() => {
     window.localStorage.setItem(ACTIVE_DOCUMENT_ID_STORAGE_KEY, activeDocumentId)
   }, [activeDocumentId])
+
+  useEffect(() => {
+    window.localStorage.setItem(AI_SETTINGS_STORAGE_KEY, JSON.stringify(getPersistableAiSettings(aiSettings)))
+  }, [aiSettings])
+
+  useEffect(() => {
+    let isCancelled = false
+
+    async function fetchBillingConfig() {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/billing/config`)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const data = (await res.json()) as BillingConfig
+        if (!isCancelled) setBillingConfig(data)
+      } catch {
+        if (!isCancelled) {
+          setBillingConfig({
+            enabled: false,
+            pro_price_id_configured: false,
+            customer_portal_url: null,
+            message: '金流設定尚未連線',
+          })
+        }
+      }
+    }
+
+    void fetchBillingConfig()
+
+    return () => {
+      isCancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!supabase || !user) {
+      aiSettingsHydratedRef.current = false
+      return
+    }
+
+    let isCancelled = false
+    const fetchTimer = window.setTimeout(async () => {
+      try {
+        const { data, error } = await supabase
+          .from('user_ai_settings')
+          .select('*')
+          .eq('user_id', user.id)
+          .maybeSingle()
+
+        if (error) throw error
+        if (!isCancelled && data) {
+          setAiSettings((currentSettings) =>
+            mapSupabaseAiSettings(data as SupabaseAiSettingsRow, currentSettings),
+          )
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'AI 設定讀取失敗'
+        if (!isCancelled) setBridgeToast(`AI 設定讀取失敗：${message}`)
+      } finally {
+        if (!isCancelled) {
+          aiSettingsHydratedRef.current = true
+          void refreshAiQuota()
+        }
+      }
+    }, 0)
+
+    return () => {
+      isCancelled = true
+      window.clearTimeout(fetchTimer)
+    }
+  }, [refreshAiQuota, user])
+
+  useEffect(() => {
+    if (!supabase || !user || !aiSettingsHydratedRef.current) return
+
+    const saveTimer = window.setTimeout(async () => {
+      const { error } = await supabase
+        .from('user_ai_settings')
+        .upsert(toSupabaseAiSettingsPayload(user.id, aiSettings), { onConflict: 'user_id' })
+
+      if (error) {
+        setBridgeToast(`AI 設定儲存失敗：${error.message}`)
+      }
+    }, 600)
+
+    return () => window.clearTimeout(saveTimer)
+  }, [aiSettings, user])
 
   useEffect(() => {
     if (!shouldUseSupabaseDocuments) return
@@ -2339,73 +3209,100 @@ function WorkspaceApp({
   useEffect(() => {
     if (!activeDocumentId) return
 
+    let isCancelled = false
+    let cleanupCollaboration: (() => void) | null = null
+
     ytextObserverCleanupRef.current?.()
     providerRef.current?.destroy()
+    ytextRef.current = null
 
-    const activeDoc = documentsRef.current.find((document) => document.id === activeDocumentId)
-    const roomDoc = getDocumentYDoc(activeDocumentId)
-    const ytext = roomDoc.getText(YTEXT_NAME)
+    async function setupCollaboration() {
+      const activeDoc = documentsRef.current.find((document) => document.id === activeDocumentId)
+      const roomDoc = await getDocumentYDoc(activeDocumentId)
+      if (isCancelled) return
 
-    if (ytext.length === 0 && activeDoc?.content) {
-      roomDoc.transact(() => {
-        ytext.insert(0, activeDoc.content)
-      }, LOCAL_YJS_ORIGIN)
-    }
+      const ytext = roomDoc.getText(YTEXT_NAME)
 
-    ytextRef.current = ytext
-    const nextMarkdown = ytext.toString()
-    isApplyingRemoteRef.current = true
-    updateMarkdownValue(nextMarkdown)
-    editorRef.current?.setValue(nextMarkdown)
-    isApplyingRemoteRef.current = false
-
-    const provider = new WebrtcProvider(activeDocumentId, roomDoc)
-    providerRef.current = provider
-    provider.awareness.setLocalStateField('user', awarenessUser)
-    if (editorRef.current) {
-      const cursorState = getCursorAwarenessState(editorRef.current, awarenessUser)
-      if (cursorState) {
-        provider.awareness.setLocalStateField('cursor', cursorState)
+      if (ytext.length === 0 && activeDoc?.content) {
+        roomDoc.transact(() => {
+          ytext.insert(0, activeDoc.content)
+        }, LOCAL_YJS_ORIGIN)
       }
-    }
 
-    const syncCollaborators = () => {
-      const nextCollaborators = Array.from(provider.awareness.getStates().entries())
-        .map(([clientId, state]) =>
-          getCollaboratorFromAwarenessState(clientId, state, roomDoc.clientID),
-        )
-        .filter((collaborator): collaborator is CollaboratorPresence => Boolean(collaborator))
-        .sort((left, right) => Number(right.isLocal) - Number(left.isLocal) || left.name.localeCompare(right.name))
-
-      setCollaborators(nextCollaborators)
-    }
-
-    provider.awareness.on('change', syncCollaborators)
-    syncCollaborators()
-
-    const handleYTextChange = () => {
-      const remoteValue = ytext.toString()
+      ytextRef.current = ytext
+      const nextMarkdown = ytext.toString()
       isApplyingRemoteRef.current = true
-      updateMarkdownValue(remoteValue)
-      if (editorRef.current && editorRef.current.getValue() !== remoteValue) {
-        editorRef.current.setValue(remoteValue)
-      }
+      updateMarkdownValue(nextMarkdown)
+      editorRef.current?.setValue(nextMarkdown)
       isApplyingRemoteRef.current = false
+
+      const { WebrtcProvider: WebrtcProviderCtor } = await import('y-webrtc')
+      if (isCancelled) return
+
+      const provider = new WebrtcProviderCtor(activeDocumentId, roomDoc)
+      providerRef.current = provider
+      provider.awareness.setLocalStateField('user', awarenessUser)
+      if (editorRef.current) {
+        const cursorState = getCursorAwarenessState(editorRef.current, awarenessUser)
+        if (cursorState) {
+          provider.awareness.setLocalStateField('cursor', cursorState)
+        }
+      }
+
+      const syncCollaborators = () => {
+        const nextCollaborators = Array.from(provider.awareness.getStates().entries())
+          .map(([clientId, state]) =>
+            getCollaboratorFromAwarenessState(clientId, state, roomDoc.clientID),
+          )
+          .filter((collaborator): collaborator is CollaboratorPresence => Boolean(collaborator))
+          .sort((left, right) => Number(right.isLocal) - Number(left.isLocal) || left.name.localeCompare(right.name))
+
+        setCollaborators(nextCollaborators)
+      }
+
+      provider.awareness.on('change', syncCollaborators)
+      syncCollaborators()
+
+      const handleYTextChange = () => {
+        const remoteValue = ytext.toString()
+        isApplyingRemoteRef.current = true
+        updateMarkdownValue(remoteValue)
+        if (editorRef.current && editorRef.current.getValue() !== remoteValue) {
+          editorRef.current.setValue(remoteValue)
+        }
+        isApplyingRemoteRef.current = false
+      }
+
+      ytext.observe(handleYTextChange)
+      ytextObserverCleanupRef.current = () => {
+        ytext.unobserve(handleYTextChange)
+      }
+
+      cleanupCollaboration = () => {
+        ytext.unobserve(handleYTextChange)
+        ytextObserverCleanupRef.current = null
+        provider.awareness.off('change', syncCollaborators)
+        setCollaborators([])
+        provider.destroy()
+        if (providerRef.current === provider) {
+          providerRef.current = null
+        }
+      }
     }
 
-    ytext.observe(handleYTextChange)
-    ytextObserverCleanupRef.current = () => {
-      ytext.unobserve(handleYTextChange)
-    }
+    void setupCollaboration().catch((err) => {
+      if (isCancelled) return
+      const message = err instanceof Error ? err.message : '協作連線初始化失敗'
+      setBridgeToast(`協作連線初始化失敗：${message}`)
+    })
 
     return () => {
-      ytext.unobserve(handleYTextChange)
-      provider.awareness.off('change', syncCollaborators)
-      setCollaborators([])
-      provider.destroy()
-      if (providerRef.current === provider) {
-        providerRef.current = null
-      }
+      isCancelled = true
+      cleanupCollaboration?.()
+      ytextObserverCleanupRef.current = null
+      providerRef.current?.destroy()
+      providerRef.current = null
+      ytextRef.current = null
     }
   }, [activeDocumentId, awarenessUser])
 
@@ -2589,7 +3486,85 @@ function WorkspaceApp({
     })
   }
 
-  function requestAiEdit(action: 'rewrite' | 'expand') {
+  async function runAiTask(request: AiTaskRequest): Promise<string | null> {
+    const provider = request.provider ?? aiSettings.preferredProvider
+    const cleanText = request.text.trim()
+    if (!cleanText) {
+      setBridgeToast('請先提供要處理的文字')
+      return null
+    }
+
+    const promptTemplate = request.prompt ?? getPromptTemplateForAction(aiSettings, request.action)
+    const prompt = fillPromptTemplate(promptTemplate, cleanText, request.action)
+
+    if (provider === 'user_api_key' && (!aiSettings.userApiKey.trim() || aiSettings.userApiProvider === 'none')) {
+      setBridgeToast('請先到 AI 設定填入 API Provider 與 API Key')
+      return null
+    }
+
+    if (provider === 'extension') {
+      window.dispatchEvent(
+        new CustomEvent('AutoLabReport_RequestAI', {
+          detail: {
+            text: cleanText,
+            action: request.action,
+            prompt,
+            autoReturn: aiSettings.extensionAutoReturn,
+          },
+        }),
+      )
+      setBridgeToast('已送出至瀏覽器插件')
+      return null
+    }
+
+    setAiTaskLoading(request.action)
+    try {
+      const authHeaders = await getAuthHeaders()
+      const res = await fetch(`${API_BASE_URL}/api/ai/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({
+          provider,
+          action: request.action,
+          text: cleanText,
+          document_id: request.documentId ?? activeDocumentId,
+          prompt,
+          api_provider: provider === 'user_api_key' ? aiSettings.userApiProvider : undefined,
+          api_key: provider === 'user_api_key' ? aiSettings.userApiKey : undefined,
+          model: aiSettings.defaultModel || undefined,
+        }),
+      })
+
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`
+        try {
+          const err = (await res.json()) as { detail?: string }
+          if (err.detail) detail = err.detail
+        } catch {
+          /* response may not be JSON */
+        }
+        throw new Error(detail)
+      }
+
+      const data = (await res.json()) as { markdown?: string; remaining_quota?: number }
+      if (typeof data.remaining_quota === 'number') {
+        setAiQuota((currentQuota) =>
+          currentQuota ? { ...currentQuota, remaining: data.remaining_quota ?? currentQuota.remaining } : currentQuota,
+        )
+        void refreshAiQuota()
+        setBridgeToast(`AI 已完成，今日剩餘 ${data.remaining_quota} 次`)
+      }
+      return data.markdown?.trim() || null
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'AI 任務失敗'
+      setBridgeToast(`AI 任務失敗：${message}`)
+      return null
+    } finally {
+      setAiTaskLoading(null)
+    }
+  }
+
+  async function requestAiEdit(action: 'rewrite' | 'expand') {
     if (!canEditActiveDocumentRef.current) {
       setBridgeToast('此文件目前為唯讀模式，無法發送重寫請求')
       return
@@ -2599,16 +3574,17 @@ function WorkspaceApp({
     if (!activeSelection) return
 
     pendingAiSelectionRef.current = activeSelection
-    window.dispatchEvent(
-      new CustomEvent('AutoLabReport_RequestAI', {
-        detail: {
-          text: activeSelection.text,
-          action,
-        },
-      }),
-    )
+    const result = await runAiTask({
+      action,
+      text: activeSelection.text,
+      documentId: activeDocumentId,
+      insertMode: 'replace-selection',
+    })
+    if (result) {
+      insertAtCursor(result)
+      pendingAiSelectionRef.current = null
+    }
     setAiSelectionMenu((current) => ({ ...current, visible: false }))
-    setBridgeToast(action === 'rewrite' ? '已送出潤飾重寫請求' : '已送出擴寫內容請求')
   }
 
   function applyEditorEdit(text: string, cursorOffset?: number) {
@@ -2672,20 +3648,14 @@ function WorkspaceApp({
 
     setOutlineLoading(true)
     try {
-      const res = await fetch(`${API_BASE_URL}/api/generate-outline`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sample_structure: outlineExampleText }),
+      const outlineMarkdown = await runAiTask({
+        action: 'outline',
+        text: outlineExampleText || markdown || '# 實驗報告\n## 實驗目的\n## 實驗原理\n## 實驗步驟\n## 結果與討論',
+        documentId: activeDocumentId,
+        insertMode: 'insert-at-cursor',
       })
-
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`)
-      }
-
-      const data = (await res.json()) as { markdown: string }
-      const outlineMarkdown = data.markdown.trim()
       if (!outlineMarkdown) {
-        throw new Error('後端未回傳大綱內容')
+        return
       }
 
       if (editorRef.current) {
@@ -2698,7 +3668,7 @@ function WorkspaceApp({
       setOutlineExampleText('')
     } catch (err) {
       const message = err instanceof Error ? err.message : '產生大綱失敗'
-      window.alert(`產生大綱失敗：${message}`)
+      setBridgeToast(`產生大綱失敗：${message}`)
     } finally {
       setOutlineLoading(false)
     }
@@ -3126,6 +4096,7 @@ function WorkspaceApp({
 
     try {
       element.classList.add('pdf-print-mode')
+      const { default: html2pdf } = await import('html2pdf.js')
 
       const pdfOptions = {
         margin: [12, 12, 12, 12] as [number, number, number, number],
@@ -3177,6 +4148,45 @@ function WorkspaceApp({
     link.remove()
     window.URL.revokeObjectURL(url)
     setIsAdvancedMenuOpen(false)
+  }
+
+  function saveActiveDocumentVersion(note = '手動儲存') {
+    if (!activeDocument) {
+      setBridgeToast('目前沒有可儲存版本的文件')
+      return
+    }
+
+    const nextVersion = createDocumentVersion(activeDocument, markdown, note)
+    setDocumentVersions((currentVersions) => {
+      const versionsForDocument = currentVersions.filter((version) => version.documentId === activeDocument.id)
+      const duplicateLatest = versionsForDocument
+        .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0]
+
+      if (duplicateLatest?.content === markdown) {
+        setBridgeToast('目前內容與最新版本相同')
+        return currentVersions
+      }
+
+      return [nextVersion, ...currentVersions].slice(0, 120)
+    })
+    setBridgeToast('已儲存目前版本')
+  }
+
+  function restoreDocumentVersion(version: DocumentVersion) {
+    if (!activeDocument || version.documentId !== activeDocument.id) {
+      setBridgeToast('此版本不屬於目前文件')
+      return
+    }
+
+    if (!canEditActiveDocument) {
+      setBridgeToast('此文件目前為唯讀模式，無法還原版本')
+      return
+    }
+
+    saveActiveDocumentVersion('還原前自動備份')
+    syncEditorValue(version.content)
+    setCurrentView('editor')
+    setBridgeToast(`已還原 ${formatDocumentTime(version.createdAt)} 的版本`)
   }
 
   function syncWithGithub() {
@@ -3501,6 +4511,28 @@ function WorkspaceApp({
                     type="button"
                     onClick={() => {
                       setIsAdvancedMenuOpen(false)
+                      saveActiveDocumentVersion()
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-white/10 hover:text-white"
+                  >
+                    <span>↺</span>
+                    儲存版本快照
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAdvancedMenuOpen(false)
+                      setCurrentView('quality')
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-white/10 hover:text-white"
+                  >
+                    <span>✓</span>
+                    報告完整度檢查
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAdvancedMenuOpen(false)
                       exportWordReport()
                     }}
                     className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-white/10 hover:text-white"
@@ -3599,11 +4631,63 @@ function WorkspaceApp({
           onRestoreDocument={restoreDocument}
           onHardDeleteDocument={hardDeleteDocument}
         />
+      ) : currentView === 'settings' ? (
+        <AiSettingsView
+          settings={aiSettings}
+          quota={aiQuota}
+          quotaLoading={aiQuotaLoading}
+          onChangeSettings={setAiSettings}
+        />
+      ) : currentView === 'billing' ? (
+        <BillingView
+          quota={aiQuota}
+          quotaLoading={aiQuotaLoading}
+          billingConfig={billingConfig}
+          onOpenAiSettings={() => setCurrentView('settings')}
+        />
+      ) : currentView === 'quality' ? (
+        <ReportQualityView
+          document={activeDocument}
+          markdown={markdown}
+          onBackToEditor={() => setCurrentView('editor')}
+        />
+      ) : currentView === 'history' ? (
+        <VersionHistoryView
+          document={activeDocument}
+          versions={activeDocumentVersions}
+          onBackToEditor={() => setCurrentView('editor')}
+          onSaveVersion={() => saveActiveDocumentVersion()}
+          onRestoreVersion={restoreDocumentVersion}
+        />
       ) : currentView === 'templates' ? (
         <TemplatesView onUseTemplate={createDocumentFromTemplate} />
       ) : (
+      <>
+      <div className="flex border-b border-zinc-200 bg-white p-2 dark:border-zinc-800 dark:bg-zinc-950 lg:hidden">
+        {([
+          ['edit', '編輯'],
+          ['preview', '預覽'],
+        ] as const).map(([pane, label]) => (
+          <button
+            key={pane}
+            type="button"
+            onClick={() => setMobileEditorPane(pane)}
+            className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition ${
+              mobileEditorPane === pane
+                ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950'
+                : 'text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900'
+            }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       <main className="grid min-h-0 flex-1 grid-cols-1 bg-white lg:grid-cols-2 dark:bg-zinc-950">
-        <section className="flex min-h-0 flex-grow flex-col border-b border-zinc-200 transition-colors duration-300 dark:border-zinc-800 lg:border-b-0 lg:border-r">
+        <section
+          className={`min-h-0 flex-grow flex-col border-b border-zinc-200 transition-colors duration-300 dark:border-zinc-800 lg:flex lg:border-b-0 lg:border-r ${
+            mobileEditorPane === 'edit' ? 'flex' : 'hidden'
+          }`}
+        >
           <div className="border-b border-zinc-200/60 px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-zinc-500 transition-colors duration-300 dark:border-zinc-800 dark:text-zinc-400">
             {isReadOnlyMode ? '唯讀區 — 可檢視但不可編輯' : '編輯區 — 貼上 LLM 報告'}
           </div>
@@ -3626,7 +4710,7 @@ function WorkspaceApp({
                 type="button"
                 title="生成報告大綱"
                 onClick={() => setIsOutlineModalOpen(true)}
-                disabled={!canEditActiveDocument}
+                disabled={!canEditActiveDocument || Boolean(aiTaskLoading)}
                 className="flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-medium text-zinc-200 transition-all hover:bg-white/10 hover:text-white active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-40"
               >
                 <Sparkles className="h-4 w-4" strokeWidth={2} />
@@ -3637,7 +4721,7 @@ function WorkspaceApp({
                 type="button"
                 title="智慧排版修復 — 清理標點空白與連續重複段落"
                 onClick={handleSmartFormat}
-                disabled={isEditorEmpty || !canEditActiveDocument}
+                disabled={isEditorEmpty || !canEditActiveDocument || Boolean(aiTaskLoading)}
                 className="flex items-center gap-1.5 rounded-lg bg-gradient-to-r from-violet-500/90 to-blue-500/90 px-3 py-1.5 text-sm font-semibold text-white shadow-sm transition-all hover:from-violet-400 hover:to-blue-400 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 <Wand2 className="h-4 w-4" strokeWidth={2} />
@@ -3675,56 +4759,68 @@ function WorkspaceApp({
                 </button>
               </div>
             )}
-            <Editor
-              height="100%"
-              defaultLanguage="markdown"
-              theme="vs-dark"
-              value={markdown}
-              onMount={(ed) => {
-                editorRef.current = ed
-                editorScrollDisposableRef.current?.dispose()
-                editorScrollDisposableRef.current = ed.onDidScrollChange((event) => {
-                  if (event.scrollTopChanged) {
-                    syncPreviewScroll()
+            <Suspense
+              fallback={
+                <div className="flex h-full items-center justify-center text-sm font-medium text-zinc-500">
+                  正在載入編輯器...
+                </div>
+              }
+            >
+              <MarkdownEditor
+                height="100%"
+                defaultLanguage="markdown"
+                theme="vs-dark"
+                value={markdown}
+                onMount={(ed) => {
+                  editorRef.current = ed
+                  editorScrollDisposableRef.current?.dispose()
+                  editorScrollDisposableRef.current = ed.onDidScrollChange((event) => {
+                    if (event.scrollTopChanged) {
+                      syncPreviewScroll()
+                      updateAiSelectionMenu(ed)
+                    }
+                  })
+                  editorContentDisposableRef.current?.dispose()
+                  editorContentDisposableRef.current = ed.onDidChangeModelContent(
+                    applyMonacoChangesToYText,
+                  )
+                  editorSelectionDisposableRef.current?.dispose()
+                  editorSelectionDisposableRef.current = ed.onDidChangeCursorSelection(() => {
+                    updateLocalCursorAwareness(ed)
                     updateAiSelectionMenu(ed)
-                  }
-                })
-                editorContentDisposableRef.current?.dispose()
-                editorContentDisposableRef.current = ed.onDidChangeModelContent(
-                  applyMonacoChangesToYText,
-                )
-                editorSelectionDisposableRef.current?.dispose()
-                editorSelectionDisposableRef.current = ed.onDidChangeCursorSelection(() => {
-                  updateLocalCursorAwareness(ed)
-                  updateAiSelectionMenu(ed)
-                })
+                  })
 
-                editorPasteCleanupRef.current?.()
-                const editorDomNode = ed.getDomNode()
-                editorDomNode?.addEventListener('paste', handleEditorPaste)
-                editorPasteCleanupRef.current = () => {
-                  editorDomNode?.removeEventListener('paste', handleEditorPaste)
-                }
-                updateLocalCursorAwareness(ed)
-              }}
-              options={{
-                readOnly: !canEditActiveDocument,
-                domReadOnly: !canEditActiveDocument,
-                readOnlyMessage: { value: '此文件目前為唯讀模式' },
-                minimap: { enabled: false },
-                wordWrap: 'on',
-                fontSize: 14,
-                lineHeight: 24,
-                fontFamily:
-                  'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
-                scrollBeyondLastLine: false,
-                placeholder: '在此貼上 ChatGPT / Gemini 產生的實驗報告…',
-              }}
-            />
+                  editorPasteCleanupRef.current?.()
+                  const editorDomNode = ed.getDomNode()
+                  editorDomNode?.addEventListener('paste', handleEditorPaste)
+                  editorPasteCleanupRef.current = () => {
+                    editorDomNode?.removeEventListener('paste', handleEditorPaste)
+                  }
+                  updateLocalCursorAwareness(ed)
+                }}
+                options={{
+                  readOnly: !canEditActiveDocument,
+                  domReadOnly: !canEditActiveDocument,
+                  readOnlyMessage: { value: '此文件目前為唯讀模式' },
+                  minimap: { enabled: false },
+                  wordWrap: 'on',
+                  fontSize: 14,
+                  lineHeight: 24,
+                  fontFamily:
+                    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                  scrollBeyondLastLine: false,
+                  placeholder: '在此貼上 ChatGPT / Gemini 產生的實驗報告...',
+                }}
+              />
+            </Suspense>
           </div>
         </section>
 
-        <section className="flex min-h-0 flex-grow flex-col bg-zinc-100 transition-colors duration-300 dark:bg-zinc-900">
+        <section
+          className={`min-h-0 flex-grow flex-col bg-zinc-100 transition-colors duration-300 dark:bg-zinc-900 lg:flex ${
+            mobileEditorPane === 'preview' ? 'flex' : 'hidden'
+          }`}
+        >
           <div className="border-b border-zinc-200/60 px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-zinc-500 transition-colors duration-300 dark:border-zinc-800 dark:text-zinc-400">
             預覽區 — 所見即所得
           </div>
@@ -3749,7 +4845,7 @@ function WorkspaceApp({
                 <ReactMarkdown
                   remarkPlugins={REMARK_PLUGINS}
                   rehypePlugins={REHYPE_PLUGINS}
-                  urlTransform={(value) => value}
+                  urlTransform={safeMarkdownUrlTransform}
                   components={MARKDOWN_COMPONENTS}
                 >
                   {preview}
@@ -3761,6 +4857,7 @@ function WorkspaceApp({
           </div>
         </section>
       </main>
+      </>
       )}
       </div>
 
@@ -3982,33 +5079,79 @@ function WorkspaceApp({
 
       {isExtensionModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/30 px-4 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-2xl border border-zinc-100 bg-white p-8 shadow-2xl transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950">
+          <div className="w-full max-w-2xl rounded-3xl border border-zinc-100 bg-white p-8 shadow-2xl transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950">
             <div className="mb-6 flex items-start gap-4">
               <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl bg-zinc-100 text-2xl dark:bg-zinc-900">
                 🧩
               </div>
-              <div>
+              <div className="min-w-0 flex-1">
                 <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
                   安裝 AutoLabReport Bridge
                 </h2>
                 <p className="mt-2 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
-                  Chrome 擴充套件已建立在專案根目錄的 extension 資料夾。請到 Chrome 的擴充功能頁面開啟開發人員模式，選擇「載入未封裝項目」，並選取該資料夾。
+                  用插件把 ChatGPT、Claude、Gemini、Grok、DeepSeek 的回覆送回目前文件，也可以把反白文字帶到 AI 網頁重寫。
                 </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsExtensionModalOpen(false)}
+                className="rounded-full p-2 text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-900 dark:hover:text-zinc-100"
+                title="關閉"
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="grid gap-4 md:grid-cols-3">
+              {[
+                ['1', '開啟擴充功能頁', '進入 chrome://extensions，開啟右上角開發人員模式。'],
+                ['2', '載入未封裝項目', '點擊 Load unpacked，選擇專案根目錄的 extension 資料夾。'],
+                ['3', '設定 Prompt', '點擊插件圖示，選擇 AI 網站並調整重寫/擴寫 Prompt。'],
+              ].map(([step, title, description]) => (
+                <div
+                  key={step}
+                  className="rounded-2xl border border-zinc-200/70 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900"
+                >
+                  <div className="mb-3 flex h-8 w-8 items-center justify-center rounded-full bg-zinc-900 text-sm font-bold text-white dark:bg-zinc-100 dark:text-zinc-950">
+                    {step}
+                  </div>
+                  <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">{title}</div>
+                  <p className="mt-2 text-xs leading-5 text-zinc-500 dark:text-zinc-400">{description}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="mt-5 rounded-2xl border border-zinc-200/60 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">本機插件路徑</div>
+              <div className="mt-2 rounded-xl bg-white px-3 py-2 font-mono text-xs text-zinc-500 ring-1 ring-zinc-200/70 dark:bg-zinc-950 dark:text-zinc-400 dark:ring-zinc-800">
+                D:\AutoLabReport\extension
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2 text-xs font-medium text-zinc-500 dark:text-zinc-400">
+                {['ChatGPT', 'Claude', 'Gemini', 'Grok', 'DeepSeek'].map((site) => (
+                  <span
+                    key={site}
+                    className="rounded-full bg-white px-3 py-1 ring-1 ring-zinc-200/70 dark:bg-zinc-950 dark:ring-zinc-800"
+                  >
+                    {site}
+                  </span>
+                ))}
               </div>
             </div>
 
-            <div className="rounded-xl border border-zinc-200/60 bg-zinc-50 p-4 text-sm text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300">
-              <div className="font-medium text-zinc-900 dark:text-zinc-100">路徑</div>
-              <div className="mt-1 font-mono text-xs">D:\AutoLabReport\extension</div>
-            </div>
-
-            <div className="mt-6 flex justify-end">
+            <div className="mt-6 flex flex-wrap justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => window.open('chrome://extensions', '_blank')}
+                className={SUBTLE_BUTTON}
+              >
+                開啟 Chrome 擴充功能頁
+              </button>
               <button
                 type="button"
                 onClick={() => setIsExtensionModalOpen(false)}
                 className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
               >
-                知道了
+                完成
               </button>
             </div>
           </div>
@@ -4027,6 +5170,7 @@ function WorkspaceApp({
 function App() {
   const [user, setUser] = useState<User | null>(null)
   const [authLoading, setAuthLoading] = useState(Boolean(supabase))
+  const [authMessage, setAuthMessage] = useState<string | null>(null)
   const [publicRouteLoading, setPublicRouteLoading] = useState(false)
   const [publicSharedDocument, setPublicSharedDocument] = useState<Document | null>(null)
 
@@ -4121,8 +5265,9 @@ function App() {
   }, [authLoading, user])
 
   async function signInWithOAuth(provider: Provider) {
+    setAuthMessage(null)
     if (!supabase) {
-      window.alert('尚未設定 Supabase 環境變數，請先設定 VITE_SUPABASE_URL 與 VITE_SUPABASE_ANON_KEY。')
+      setAuthMessage('尚未設定 Supabase 環境變數，請先設定 VITE_SUPABASE_URL 與 VITE_SUPABASE_ANON_KEY。')
       return
     }
 
@@ -4136,13 +5281,14 @@ function App() {
 
     if (error) {
       setAuthLoading(false)
-      window.alert(`登入失敗：${error.message}`)
+      setAuthMessage(`登入失敗：${error.message}`)
     }
   }
 
   async function sendMagicLink(email: string): Promise<boolean> {
+    setAuthMessage(null)
     if (!supabase) {
-      window.alert('尚未設定 Supabase 環境變數，請先設定 VITE_SUPABASE_URL 與 VITE_SUPABASE_ANON_KEY。')
+      setAuthMessage('尚未設定 Supabase 環境變數，請先設定 VITE_SUPABASE_URL 與 VITE_SUPABASE_ANON_KEY。')
       return false
     }
 
@@ -4154,7 +5300,7 @@ function App() {
     })
 
     if (error) {
-      window.alert(`登入連結發送失敗：${error.message}`)
+      setAuthMessage(`登入連結發送失敗：${error.message}`)
       return false
     }
 
@@ -4197,6 +5343,7 @@ function App() {
         onOAuthLogin={signInWithOAuth}
         onSendMagicLink={sendMagicLink}
         authLoading={authLoading}
+        authMessage={authMessage}
       />
     )
   }
