@@ -2462,12 +2462,38 @@ function LandingPage({
   const [email, setEmail] = useState('')
   const [magicLinkSent, setMagicLinkSent] = useState(false)
   const [magicLinkLoading, setMagicLinkLoading] = useState(false)
+  const [prismActivationKey, setPrismActivationKey] = useState(0)
+  const oauthTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (oauthTimerRef.current) {
+        window.clearTimeout(oauthTimerRef.current)
+      }
+    }
+  }, [])
+
+  function ignitePrism() {
+    setPrismActivationKey((current) => current + 1)
+  }
+
+  function handleOAuthLogin(provider: Provider) {
+    if (authLoading) return
+
+    ignitePrism()
+    if (oauthTimerRef.current) {
+      window.clearTimeout(oauthTimerRef.current)
+    }
+    oauthTimerRef.current = window.setTimeout(() => onOAuthLogin(provider), 620)
+  }
 
   async function handleMagicLinkSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!email.trim() || magicLinkSent) return
 
+    ignitePrism()
     setMagicLinkLoading(true)
+    await new Promise((resolve) => window.setTimeout(resolve, 520))
     const didSend = await onSendMagicLink(email.trim())
     setMagicLinkLoading(false)
     if (didSend) {
@@ -2482,10 +2508,10 @@ function LandingPage({
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_44%,rgba(255,255,255,0.12),transparent_34%),#050507]" />
         }
       >
-        <PrismLandingScene />
+        <PrismLandingScene activationKey={prismActivationKey} />
       </Suspense>
 
-      <nav className="relative z-10 mx-auto flex max-w-7xl items-center justify-between px-6 py-6 sm:px-8">
+      <nav className="pointer-events-none relative z-10 mx-auto flex max-w-7xl items-center justify-between px-6 py-6 sm:px-8">
         <div className="flex items-center gap-3">
           <span className="h-2 w-2 rounded-full bg-white shadow-[0_0_22px_rgba(255,255,255,0.9)]" />
           <div>
@@ -2495,21 +2521,21 @@ function LandingPage({
         </div>
         <button
           type="button"
-          onClick={() => onOAuthLogin('google')}
+          onClick={() => handleOAuthLogin('google')}
           disabled={authLoading}
-          className="rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/70 backdrop-blur-md transition-all hover:border-white/20 hover:bg-white/[0.08] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+          className="pointer-events-auto rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/70 backdrop-blur-md transition-all hover:border-white/20 hover:bg-white/[0.08] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
         >
           登入
         </button>
       </nav>
 
-      <main className="relative z-10 flex min-h-[calc(100vh-88px)] items-center px-6 pb-12 pt-8 sm:px-8">
+      <main className="pointer-events-none relative z-10 flex min-h-[calc(100vh-88px)] items-center px-6 pb-12 pt-8 sm:px-8">
         <section className="mx-auto grid w-full max-w-7xl grid-cols-1 items-center gap-12 lg:grid-cols-[minmax(0,1fr)_420px]">
           <div className="max-w-3xl py-12">
             <p className="mb-5 text-xs font-semibold uppercase text-white/45">
               Laboratory writing, clarified.
             </p>
-            <h1 className="max-w-3xl text-5xl font-semibold leading-tight text-white sm:text-7xl lg:text-8xl">
+            <h1 className="max-w-3xl text-4xl font-semibold leading-tight text-white sm:text-7xl lg:text-8xl">
               AutoLabReport
             </h1>
             <p className="mt-6 max-w-xl text-base leading-8 text-white/58 sm:text-lg">
@@ -2528,7 +2554,7 @@ function LandingPage({
             </div>
           </div>
 
-          <div className="border-white/10 bg-white/[0.045] p-6 shadow-2xl shadow-black/35 backdrop-blur-2xl sm:rounded-[2rem] sm:border sm:p-7">
+          <div className="pointer-events-auto border-white/10 bg-white/[0.045] p-6 shadow-2xl shadow-black/35 backdrop-blur-2xl sm:rounded-[2rem] sm:border sm:p-7">
             <div className="mb-7">
               <p className="text-sm font-medium text-white/45">進入工作區</p>
               <h2 className="mt-2 text-2xl font-semibold text-white">登入你的報告空間</h2>
@@ -2585,7 +2611,7 @@ function LandingPage({
             <div className="space-y-3">
               <button
                 type="button"
-                onClick={() => onOAuthLogin('google')}
+                onClick={() => handleOAuthLogin('google')}
                 disabled={authLoading}
                 className="flex w-full items-center justify-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-white/82 transition-all hover:border-white/20 hover:bg-white/[0.08] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
@@ -2596,7 +2622,7 @@ function LandingPage({
               </button>
               <button
                 type="button"
-                onClick={() => onOAuthLogin('github')}
+                onClick={() => handleOAuthLogin('github')}
                 disabled={authLoading}
                 className="flex w-full items-center justify-center gap-3 rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm font-semibold text-white/82 transition-all hover:border-white/20 hover:bg-black/35 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
               >

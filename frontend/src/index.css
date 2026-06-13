@@ -45,116 +45,85 @@ body,
   height: auto;
 }
 
-.landing-prism-aurora {
-  background:
-    radial-gradient(circle at 50% 48%, rgba(255, 255, 255, 0.14), transparent 18rem),
-    radial-gradient(circle at 73% 28%, rgba(56, 189, 248, 0.18), transparent 22rem),
-    radial-gradient(circle at 78% 68%, rgba(167, 139, 250, 0.14), transparent 24rem),
-    radial-gradient(circle at 24% 47%, rgba(255, 255, 255, 0.09), transparent 20rem);
-  animation: landing-aurora-drift 11s ease-in-out infinite alternate;
+.landing-optics-scene {
+  cursor: crosshair;
+  touch-action: none;
 }
 
-.landing-prism-rays {
+.landing-optics-background {
+  background:
+    radial-gradient(circle at 50% 50%, rgba(255, 255, 255, 0.065), transparent 18rem),
+    radial-gradient(circle at 73% 36%, rgba(54, 211, 238, 0.12), transparent 25rem),
+    radial-gradient(circle at 83% 66%, rgba(192, 132, 252, 0.1), transparent 24rem),
+    linear-gradient(135deg, #050507 0%, #08090d 44%, #020203 100%);
+}
+
+.landing-optics-scene svg {
   mix-blend-mode: screen;
-  opacity: 0.92;
-  pointer-events: none;
 }
 
-.landing-white-ray {
-  animation: landing-white-ray-pulse 4.8s ease-in-out infinite;
+.landing-optics-dust {
+  animation: landing-dust-drift 22s ease-in-out infinite alternate;
 }
 
-.landing-spectrum-ray {
-  animation: landing-spectrum-breathe 5.2s ease-in-out infinite;
-  transform-box: fill-box;
-  transform-origin: 0% 50%;
+.landing-prism-dragging {
+  cursor: grabbing;
 }
 
-.landing-spectrum-strokes {
-  animation: landing-spectrum-breathe 5.2s ease-in-out infinite;
-  opacity: 0.68;
+.landing-login-flash {
+  animation: landing-login-flash 1.9s cubic-bezier(0.2, 0.8, 0.22, 1);
 }
 
-.landing-spectrum-strokes path {
-  stroke-linecap: round;
+.landing-obstacle {
+  mix-blend-mode: normal;
 }
 
-.landing-spectrum-delay-1 {
-  animation-delay: 0.28s;
-}
-
-.landing-spectrum-delay-2 {
-  animation-delay: 0.56s;
-}
-
-.landing-spectrum-delay-3 {
-  animation-delay: 0.84s;
-}
-
-.landing-spectrum-delay-4 {
-  animation-delay: 1.12s;
-}
-
-.landing-prism-vignette {
+.landing-optics-vignette {
   background:
-    linear-gradient(90deg, rgba(5, 5, 7, 0.18), transparent 28%, transparent 68%, rgba(5, 5, 7, 0.48)),
-    linear-gradient(180deg, rgba(5, 5, 7, 0.12), transparent 32%, rgba(5, 5, 7, 0.72));
+    linear-gradient(90deg, rgba(5, 5, 7, 0.04), transparent 24%, transparent 72%, rgba(5, 5, 7, 0.38)),
+    linear-gradient(180deg, rgba(5, 5, 7, 0.08), transparent 34%, rgba(5, 5, 7, 0.74));
   pointer-events: none;
 }
 
-@keyframes landing-aurora-drift {
+@keyframes landing-dust-drift {
   from {
-    filter: saturate(0.88) brightness(0.92);
-    transform: scale(1);
+    opacity: 0.68;
+    transform: translate3d(0, 0, 0);
   }
 
   to {
-    filter: saturate(1.08) brightness(1.05);
-    transform: scale(1.035);
+    opacity: 0.92;
+    transform: translate3d(0.8rem, -0.6rem, 0);
   }
 }
 
-@keyframes landing-white-ray-pulse {
-  0%,
-  100% {
-    opacity: 0.72;
-    transform: translateX(-1.2%);
+@keyframes landing-login-flash {
+  0% {
+    opacity: 0.7;
+    transform: translateX(-1.1rem);
   }
 
-  50% {
+  38% {
     opacity: 1;
-    transform: translateX(0.8%);
+    transform: translateX(0);
   }
-}
 
-@keyframes landing-spectrum-breathe {
-  0%,
   100% {
-    opacity: 0.5;
-    transform: scaleX(0.98);
-  }
-
-  50% {
-    opacity: 0.88;
-    transform: scaleX(1.03);
+    opacity: 0.82;
+    transform: translateX(0);
   }
 }
 
 @media (max-width: 900px) {
-  .landing-prism-rays {
-    opacity: 0.68;
-    transform: scale(1.32) translateX(-8%);
+  .landing-optics-scene svg {
+    transform: scale(1.22) translateX(-7%);
+    transform-origin: center;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .landing-prism-aurora,
-  .landing-white-ray,
-  .landing-spectrum-ray {
-    animation: none;
-  }
-
-  .landing-spectrum-strokes {
+  .landing-optics-dust,
+  .landing-login-flash {
     animation: none;
   }
 }
