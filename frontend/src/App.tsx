@@ -4470,6 +4470,43 @@ function WorkspaceApp({
             {syncStatus === 'error' && (
               <span className="text-xs font-medium text-red-500">同步失敗</span>
             )}
+            <button
+              type="button"
+              onClick={() => setCurrentView('settings')}
+              className="hidden rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-sm font-semibold text-zinc-700 shadow-sm transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900 md:inline-flex"
+            >
+              AI 設定
+            </button>
+            <button
+              type="button"
+              onClick={() => setCurrentView('quality')}
+              className="hidden rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-sm font-semibold text-zinc-700 shadow-sm transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900 lg:inline-flex"
+            >
+              報告檢查
+            </button>
+            <button
+              type="button"
+              onClick={() => setCurrentView('history')}
+              className="hidden rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-sm font-semibold text-zinc-700 shadow-sm transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900 lg:inline-flex"
+            >
+              版本
+            </button>
+            <button
+              type="button"
+              onClick={() => void exportWordReport()}
+              disabled={isEditorEmpty || syncStatus === 'exporting' || syncStatus === 'exportingPdf'}
+              className="hidden rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-sm font-semibold text-zinc-700 shadow-sm transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900 xl:inline-flex"
+            >
+              Word
+            </button>
+            <button
+              type="button"
+              onClick={() => void exportPdfReport()}
+              disabled={isEditorEmpty || syncStatus === 'exporting' || syncStatus === 'exportingPdf'}
+              className="hidden rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-sm font-semibold text-zinc-700 shadow-sm transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900 xl:inline-flex"
+            >
+              PDF
+            </button>
             {user ? (
               <button
                 type="button"
@@ -4703,9 +4740,20 @@ function WorkspaceApp({
               <span className="text-xs font-medium uppercase tracking-[0.18em] text-zinc-500">
                 Markdown AI Console
               </span>
+              <span className="ml-3 hidden text-xs text-zinc-600 sm:inline">
+                反白文字可用潤飾 / 擴寫
+              </span>
             </div>
 
             <div className="flex shrink-0 items-center gap-2">
+              <button
+                type="button"
+                title="切換 AI 模式、插件橋接或自備 API Key"
+                onClick={() => setCurrentView('settings')}
+                className="hidden items-center gap-1.5 rounded-lg border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-medium text-zinc-200 transition-all hover:bg-white/10 hover:text-white active:scale-[0.98] sm:flex"
+              >
+                AI 設定
+              </button>
               <button
                 type="button"
                 title="生成報告大綱"
