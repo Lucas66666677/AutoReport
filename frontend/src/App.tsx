@@ -2650,7 +2650,7 @@ function WorkspaceApp({
   )
   const [activeDocumentId, setActiveDocumentId] = useState(initialWorkspace.activeDocumentId)
   const [currentView, setCurrentView] = useState<AppView>(initialSharedDocument ? 'editor' : 'dashboard')
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false)
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(Boolean(initialSharedDocument))
   const activeDocument =
     documents.find((document) => document.id === activeDocumentId && document.type === 'file' && !document.isTrashed) ??
     documents.find((document) => document.type === 'file' && !document.isTrashed)
@@ -2829,6 +2829,7 @@ function WorkspaceApp({
           : undefined
         if (documentToOpen) {
           applyLoadedDocument(documentToOpen)
+          setIsSidebarCollapsed(true)
           setCurrentView('editor')
         }
 
@@ -3118,6 +3119,7 @@ function WorkspaceApp({
         return [sharedDocument, ...currentDocuments]
       })
       applyLoadedDocument(sharedDocument)
+      setIsSidebarCollapsed(true)
       setCurrentView('editor')
       window.history.replaceState(null, '', `/editor/${encodeURIComponent(sharedDocument.id)}`)
     }
@@ -3716,6 +3718,7 @@ function WorkspaceApp({
     const nextDocument = createDocument(`未命名報告 ${fileCount + 1}`, '', parentId)
     setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
     loadDocument(nextDocument)
+    setIsSidebarCollapsed(true)
     setCurrentView('editor')
   }
 
@@ -3755,6 +3758,7 @@ function WorkspaceApp({
     const nextDocument = createDocument(template.title, template.content, null)
     setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
     loadDocument(nextDocument)
+    setIsSidebarCollapsed(true)
     setCurrentView('editor')
     window.setTimeout(() => {
       editorRef.current?.focus()
@@ -3785,6 +3789,7 @@ function WorkspaceApp({
     }
 
     loadDocument(nextDocument)
+    setIsSidebarCollapsed(true)
     setCurrentView('editor')
   }
 
@@ -4384,15 +4389,16 @@ function WorkspaceApp({
   }
 
   const isGenerating = syncStatus === 'pending' || syncStatus === 'rendering'
+  const shouldShowSidebar = Boolean(user && (currentView !== 'editor' || !isSidebarCollapsed))
 
   return (
     <div className="flex h-full min-h-screen bg-zinc-50 font-sans text-zinc-800 transition-colors duration-300 dark:bg-zinc-950 dark:text-zinc-100">
-      {user && (
+      {shouldShowSidebar && (
         <DocumentSidebar
           documents={documents}
           activeDocumentId={activeDocumentId}
           currentView={currentView}
-          isCollapsed={isSidebarCollapsed}
+          isCollapsed={currentView === 'editor' ? false : isSidebarCollapsed}
           onToggleCollapsed={() => setIsSidebarCollapsed((current) => !current)}
           onChangeView={setCurrentView}
           onCreateDocument={createNewDocument}
@@ -4411,8 +4417,19 @@ function WorkspaceApp({
 
       <div className="flex min-w-0 flex-1 flex-col">
       {currentView === 'editor' ? (
-        <header className="sticky top-0 z-40 flex h-14 shrink-0 items-center justify-between gap-3 bg-white px-4 shadow-sm transition-colors duration-300 dark:bg-zinc-950">
-          <div className="min-w-0 flex-1">
+        <header className="sticky top-0 z-40 flex h-14 shrink-0 items-center justify-between gap-3 border-b border-zinc-800 bg-[#242529] px-4 text-zinc-100 shadow-sm">
+          <div className="flex min-w-0 flex-1 items-center gap-2">
+            {user && isSidebarCollapsed && (
+              <button
+                type="button"
+                onClick={() => setIsSidebarCollapsed(false)}
+                className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white"
+                title="顯示工作區"
+              >
+                <PanelLeftOpen className="h-4 w-4" strokeWidth={2} />
+                <span className="hidden sm:inline">工作區</span>
+              </button>
+            )}
             {isTitleEditing ? (
               <input
                 value={titleDraft}
@@ -4428,7 +4445,7 @@ function WorkspaceApp({
                     setIsTitleEditing(false)
                   }
                 }}
-                className="w-full max-w-md rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-1.5 text-sm font-semibold text-zinc-900 outline-none transition focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:bg-zinc-950"
+                className="w-full max-w-md rounded-lg border border-white/10 bg-zinc-900 px-3 py-1.5 text-sm font-semibold text-zinc-100 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-400/20"
               />
             ) : (
               <button
@@ -4438,9 +4455,9 @@ function WorkspaceApp({
                   setTitleDraft(activeDocument?.title ?? '')
                   setIsTitleEditing(true)
                 }}
-                className={`max-w-md truncate rounded-lg px-2 py-1 text-left text-sm font-semibold text-zinc-900 transition-colors dark:text-zinc-100 ${
+                className={`max-w-md truncate rounded-lg px-2 py-1 text-left text-sm font-semibold text-zinc-100 transition-colors ${
                   isActiveDocumentOwner
-                    ? 'hover:bg-zinc-100 dark:hover:bg-zinc-900'
+                    ? 'hover:bg-white/10'
                     : 'cursor-default'
                 }`}
                 title={isActiveDocumentOwner ? '點擊重新命名' : '只有擁有者可以重新命名'}
@@ -4473,21 +4490,21 @@ function WorkspaceApp({
             <button
               type="button"
               onClick={() => setCurrentView('settings')}
-              className="hidden rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-sm font-semibold text-zinc-700 shadow-sm transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900 md:inline-flex"
+              className="hidden rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white md:inline-flex"
             >
               AI 設定
             </button>
             <button
               type="button"
               onClick={() => setCurrentView('quality')}
-              className="hidden rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-sm font-semibold text-zinc-700 shadow-sm transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900 lg:inline-flex"
+              className="hidden rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white lg:inline-flex"
             >
               報告檢查
             </button>
             <button
               type="button"
               onClick={() => setCurrentView('history')}
-              className="hidden rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-sm font-semibold text-zinc-700 shadow-sm transition-colors hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900 lg:inline-flex"
+              className="hidden rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white lg:inline-flex"
             >
               版本
             </button>
@@ -4495,7 +4512,7 @@ function WorkspaceApp({
               type="button"
               onClick={() => void exportWordReport()}
               disabled={isEditorEmpty || syncStatus === 'exporting' || syncStatus === 'exportingPdf'}
-              className="hidden rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-sm font-semibold text-zinc-700 shadow-sm transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900 xl:inline-flex"
+              className="hidden rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40 xl:inline-flex"
             >
               Word
             </button>
@@ -4503,7 +4520,7 @@ function WorkspaceApp({
               type="button"
               onClick={() => void exportPdfReport()}
               disabled={isEditorEmpty || syncStatus === 'exporting' || syncStatus === 'exportingPdf'}
-              className="hidden rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-sm font-semibold text-zinc-700 shadow-sm transition-colors hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200 dark:hover:bg-zinc-900 xl:inline-flex"
+              className="hidden rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40 xl:inline-flex"
             >
               PDF
             </button>
@@ -4511,7 +4528,7 @@ function WorkspaceApp({
               <button
                 type="button"
                 onClick={shareCurrentDocument}
-                className="rounded-lg bg-zinc-900 px-3.5 py-1.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+                className="rounded-md bg-violet-600 px-3.5 py-1.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-violet-500"
               >
                 ✨ 分享
               </button>
@@ -4519,7 +4536,7 @@ function WorkspaceApp({
               <button
                 type="button"
                 onClick={onRequestAuth}
-                className="rounded-lg bg-white px-3.5 py-1.5 text-sm font-semibold text-zinc-900 shadow-sm ring-1 ring-zinc-200 transition-colors hover:bg-zinc-50 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+                className="rounded-md bg-violet-600 px-3.5 py-1.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-violet-500"
               >
                 註冊 / 登入
               </button>
@@ -4529,7 +4546,7 @@ function WorkspaceApp({
               <button
                 type="button"
                 onClick={() => setIsAdvancedMenuOpen((current) => !current)}
-                className="rounded-lg border border-zinc-200 bg-white px-3 py-1.5 text-lg leading-none text-zinc-600 shadow-sm transition hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300 dark:hover:bg-zinc-900"
+                className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-lg leading-none text-zinc-200 transition hover:bg-white/10 hover:text-white"
                 title="進階操作"
               >
                 ⋯
@@ -4719,13 +4736,13 @@ function WorkspaceApp({
           </button>
         ))}
       </div>
-      <main className="grid min-h-0 flex-1 grid-cols-1 bg-white lg:grid-cols-2 dark:bg-zinc-950">
+      <main className="grid min-h-0 flex-1 grid-cols-1 bg-[#1f2023] lg:grid-cols-2">
         <section
-          className={`min-h-0 flex-grow flex-col border-b border-zinc-200 transition-colors duration-300 dark:border-zinc-800 lg:flex lg:border-b-0 lg:border-r ${
+          className={`min-h-0 flex-grow flex-col border-b border-zinc-800 transition-colors duration-300 lg:flex lg:border-b-0 lg:border-r ${
             mobileEditorPane === 'edit' ? 'flex' : 'hidden'
           }`}
         >
-          <div className="border-b border-zinc-200/60 px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-zinc-500 transition-colors duration-300 dark:border-zinc-800 dark:text-zinc-400">
+          <div className="border-b border-zinc-800 bg-[#2b2c31] px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-zinc-400">
             {isReadOnlyMode ? '唯讀區 — 可檢視但不可編輯' : '編輯區 — 貼上 LLM 報告'}
           </div>
 
@@ -4778,7 +4795,7 @@ function WorkspaceApp({
             </div>
           </div>
 
-          <div className="relative min-h-[280px] flex-1 flex-grow bg-white font-mono leading-relaxed lg:min-h-0 dark:bg-zinc-950">
+          <div className="relative min-h-[280px] flex-1 flex-grow bg-[#1f2023] font-mono leading-relaxed lg:min-h-0">
             {aiSelectionMenu.visible && (
               <div
                 className="absolute z-50 flex items-center gap-1 rounded-lg border border-zinc-200/60 bg-white px-1.5 py-1.5 text-sm shadow-xl transition-colors duration-200 dark:border-zinc-700 dark:bg-zinc-950"
@@ -4865,21 +4882,21 @@ function WorkspaceApp({
         </section>
 
         <section
-          className={`min-h-0 flex-grow flex-col bg-zinc-100 transition-colors duration-300 dark:bg-zinc-900 lg:flex ${
+          className={`min-h-0 flex-grow flex-col bg-white transition-colors duration-300 lg:flex ${
             mobileEditorPane === 'preview' ? 'flex' : 'hidden'
           }`}
         >
-          <div className="border-b border-zinc-200/60 px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-zinc-500 transition-colors duration-300 dark:border-zinc-800 dark:text-zinc-400">
+          <div className="border-b border-zinc-200 bg-white px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-zinc-500">
             預覽區 — 所見即所得
           </div>
           <div
             ref={previewRef}
-            className={`preview-pane flex-1 overflow-auto bg-zinc-100 px-8 py-12 transition-colors duration-300 dark:bg-zinc-900 lg:px-14 lg:py-16 ${SCROLLBAR_HIDE}`}
+            className={`preview-pane flex-1 overflow-auto bg-white px-8 py-10 transition-colors duration-300 lg:px-14 ${SCROLLBAR_HIDE}`}
           >
             {renderError ? (
               <p className="text-sm text-red-400">預覽錯誤：{renderError}</p>
             ) : isEditorEmpty ? (
-              <div className="mx-auto flex h-full min-h-[420px] max-w-4xl flex-col items-center justify-center rounded-2xl border border-dashed border-zinc-200/80 bg-white px-12 py-16 text-center shadow-[0_24px_80px_rgba(0,0,0,0.08)] transition-colors duration-300 dark:border-zinc-700 dark:bg-white">
+              <div className="mx-auto flex h-full min-h-[420px] max-w-4xl flex-col items-center justify-center rounded-xl border border-dashed border-zinc-200 bg-white px-12 py-16 text-center">
                 <div className="mb-4 text-5xl">🤖</div>
                 <p className="max-w-md text-base leading-relaxed text-zinc-600">
                   歡迎使用 AutoLabReport！請將 LLM 生成的實驗報告貼在左側，或使用上方工具列排版，我們將自動為您生成精美排版與數據圖表。
@@ -4888,7 +4905,7 @@ function WorkspaceApp({
             ) : preview ? (
               <div
                 id="pdf-preview-content"
-                className="pdf-export-surface markdown-preview prose prose-zinc mx-auto min-h-[calc(100vh-12rem)] max-w-4xl rounded-2xl bg-white px-14 py-16 text-zinc-900 shadow-[0_24px_80px_rgba(0,0,0,0.10)] transition-colors duration-300 prose-headings:font-semibold prose-p:leading-loose lg:px-20 lg:py-20"
+                className="pdf-export-surface markdown-preview prose prose-zinc mx-auto min-h-[calc(100vh-9rem)] max-w-4xl bg-white px-4 py-8 text-zinc-900 transition-colors duration-300 prose-headings:font-semibold prose-p:leading-loose lg:px-10 lg:py-12"
               >
                 <ReactMarkdown
                   remarkPlugins={REMARK_PLUGINS}
