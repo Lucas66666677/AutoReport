@@ -19,11 +19,14 @@ import {
   Beaker,
   Bold,
   BookMarked,
+  BriefcaseBusiness,
   ChevronDown,
+  CheckSquare,
   Clock3,
   Code2,
   Cloud,
   Copy,
+  CreditCard,
   CalendarDays,
   Database,
   Download,
@@ -38,13 +41,21 @@ import {
   FolderPlus,
   Gauge,
   Heading2,
+  History,
   Home,
+  Image as ImageIcon,
   Info,
+  Italic,
   LayoutTemplate,
   Library,
   Link,
+  List,
+  ListOrdered,
+  Lock,
   LogOut,
   Mail,
+  MessageCircle,
+  Minus,
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
@@ -55,12 +66,17 @@ import {
   PinOff,
   Plus,
   Puzzle,
+  Quote,
+  Redo2,
   Search,
   Settings,
   Share2,
+  SlidersHorizontal,
   Star,
+  Strikethrough,
   Table2,
   Trash2,
+  Undo2,
   UploadCloud,
   UserPlus,
   Users,
@@ -398,6 +414,7 @@ type AppView =
   | 'editor'
   | 'favorites'
   | 'templates'
+  | 'prompts'
   | 'trash'
   | 'settings'
   | 'billing'
@@ -409,6 +426,14 @@ type AiSelectionMenuState = {
   top: number
   left: number
   selectedText: string
+}
+
+type EditorStats = {
+  lineNumber: number
+  column: number
+  lineCount: number
+  length: number
+  selectedLength: number
 }
 
 type StoredSelectionRange = {
@@ -614,6 +639,72 @@ function convertTsvToMarkdownTable(text: string): string {
     `|${separator.join('|')}|`,
     ...tableRows.map((row) => `| ${row.join(' | ')} |`),
   ].join('\n')
+}
+
+function escapeMarkdownTableCell(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().replace(/\|/g, '\\|')
+}
+
+function rowsToMarkdownTable(rows: string[][]): string {
+  const cleanRows = rows
+    .map((row) => row.map(escapeMarkdownTableCell))
+    .filter((row) => row.some(Boolean))
+
+  if (!cleanRows.length) return ''
+
+  const columnCount = Math.max(...cleanRows.map((row) => row.length))
+  const normalizeRow = (row: string[]) =>
+    Array.from({ length: columnCount }, (_, index) => row[index] ?? '')
+  const [headerRow, ...bodyRows] = cleanRows.map(normalizeRow)
+  const separator = Array.from({ length: columnCount }, () => '---')
+  const tableRows = bodyRows.length ? bodyRows : [Array.from({ length: columnCount }, () => '')]
+
+  return [
+    `| ${headerRow.join(' | ')} |`,
+    `| ${separator.join('|')}|`,
+    ...tableRows.map((row) => `| ${row.join(' | ')} |`),
+  ].join('\n')
+}
+
+function convertHtmlTableToMarkdown(html: string): string {
+  if (typeof DOMParser === 'undefined' || !html.includes('<table')) return ''
+
+  const parser = new DOMParser()
+  const document = parser.parseFromString(html, 'text/html')
+  const table = document.querySelector('table')
+  if (!table) return ''
+
+  const rows = Array.from(table.querySelectorAll('tr')).map((row) =>
+    Array.from(row.querySelectorAll('th,td')).map((cell) => cell.textContent ?? ''),
+  )
+
+  return rowsToMarkdownTable(rows)
+}
+
+function convertHtmlImagesToMarkdown(html: string): string {
+  if (typeof DOMParser === 'undefined' || !html.includes('<img')) return ''
+
+  const parser = new DOMParser()
+  const document = parser.parseFromString(html, 'text/html')
+  const images = Array.from(document.querySelectorAll('img'))
+    .map((image) => {
+      const src = image.getAttribute('src')?.trim()
+      if (!src) return ''
+      const alt = image.getAttribute('alt')?.trim() || 'image'
+      return `![${alt.replace(/\[|\]/g, '')}](${src})`
+    })
+    .filter(Boolean)
+
+  return images.join('\n\n')
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result ?? ''))
+    reader.onerror = () => reject(reader.error)
+    reader.readAsDataURL(file)
+  })
 }
 
 function applyAutoNumbering(text: string): string {
@@ -862,8 +953,8 @@ function DocumentSidebar({
       id: 'prompts',
       label: '我的提示詞庫',
       icon: Library,
-      isActive: false,
-      onClick: () => onChangeView('settings'),
+      isActive: currentView === 'prompts',
+      onClick: () => onChangeView('prompts'),
     },
     {
       id: 'trash',
@@ -1529,6 +1620,7 @@ function getInitialAppView(initialSharedDocument?: Document | null): AppView {
   if (window.location.pathname === '/dashboard/projects') return 'projects'
   if (window.location.pathname === '/dashboard/settings') return 'settings'
   if (window.location.pathname === '/dashboard/templates') return 'templates'
+  if (window.location.pathname === '/dashboard/prompts') return 'prompts'
   if (window.location.pathname === '/dashboard/trash') return 'trash'
   return 'dashboard'
 }
@@ -1926,6 +2018,141 @@ function AiSettingsView({
               </label>
             ))}
           </div>
+        </section>
+      </div>
+    </main>
+  )
+}
+
+type PromptKey = 'outlinePrompt' | 'rewritePrompt' | 'expandPrompt' | 'summarizePrompt' | 'customPrompt'
+
+function PromptLibraryView({
+  settings,
+  onChangeSettings,
+  onOpenAiSettings,
+  onNotify,
+}: {
+  settings: AiSettings
+  onChangeSettings: (settings: AiSettings) => void
+  onOpenAiSettings: () => void
+  onNotify: (message: string) => void
+}) {
+  const promptCards: Array<{
+    key: PromptKey
+    title: string
+    description: string
+    task: string
+  }> = [
+    {
+      key: 'outlinePrompt',
+      title: '生成報告',
+      description: '只有資料或老師要求時，先產生報告骨架。',
+      task: '原始資料 → 報告大綱',
+    },
+    {
+      key: 'rewritePrompt',
+      title: '整理內容',
+      description: '把 ChatGPT / Gemini 生成的內容整理成正式段落。',
+      task: '亂格式 → 清楚 Markdown',
+    },
+    {
+      key: 'expandPrompt',
+      title: '補完整段落',
+      description: '讓過短的原理、分析或結論變得完整。',
+      task: '草稿 → 完整敘述',
+    },
+    {
+      key: 'summarizePrompt',
+      title: '摘要結論',
+      description: '把長篇內容濃縮成可以放進結論的版本。',
+      task: '長文 → 精簡結論',
+    },
+    {
+      key: 'customPrompt',
+      title: '自訂處理',
+      description: '留給你自己的課程、老師要求或固定寫作風格。',
+      task: '自訂流程',
+    },
+  ]
+
+  function updatePrompt(key: PromptKey, value: string) {
+    onChangeSettings(normalizeAiSettings({ ...settings, [key]: value }))
+  }
+
+  function restorePrompt(key: PromptKey) {
+    updatePrompt(key, DEFAULT_AI_SETTINGS[key])
+    onNotify('已恢復預設提示詞')
+  }
+
+  async function copyPrompt(key: PromptKey) {
+    try {
+      await navigator.clipboard.writeText(settings[key])
+      onNotify('提示詞已複製')
+    } catch {
+      onNotify('瀏覽器不允許直接複製，請手動選取文字')
+    }
+  }
+
+  return (
+    <main className={`flex-1 overflow-auto bg-slate-50 px-8 py-10 ${SCROLLBAR_HIDE}`}>
+      <div className="mx-auto max-w-6xl">
+        <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-400">Prompt Library</p>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">我的提示詞庫</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
+              這裡放你常用的 AI 指令。小白平常只要用 Assist，進階時才需要調整這些文字模板。
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onOpenAiSettings}
+            className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
+          >
+            AI 連接方式
+          </button>
+        </div>
+
+        <section className="grid gap-5 lg:grid-cols-2">
+          {promptCards.map((prompt) => (
+            <article
+              key={prompt.key}
+              className={`rounded-3xl border border-slate-200 bg-white p-5 shadow-sm ${
+                prompt.key === 'customPrompt' ? 'lg:col-span-2' : ''
+              }`}
+            >
+              <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <div className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">
+                    {prompt.task}
+                  </div>
+                  <h2 className="mt-3 text-lg font-semibold text-slate-950">{prompt.title}</h2>
+                  <p className="mt-1 text-sm leading-6 text-slate-500">{prompt.description}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void copyPrompt(prompt.key)}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-950"
+                  >
+                    複製
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => restorePrompt(prompt.key)}
+                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-950"
+                  >
+                    預設
+                  </button>
+                </div>
+              </div>
+              <textarea
+                value={settings[prompt.key]}
+                onChange={(event) => updatePrompt(prompt.key, event.target.value)}
+                className={`h-44 w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white focus:ring-4 focus:ring-slate-100 ${SCROLLBAR_HIDE}`}
+              />
+            </article>
+          ))}
         </section>
       </div>
     </main>
@@ -3165,6 +3392,7 @@ function WorkspaceApp({
   const [isShareModalOpen, setIsShareModalOpen] = useState(false)
   const [isExtensionModalOpen, setIsExtensionModalOpen] = useState(false)
   const [isAdvancedMenuOpen, setIsAdvancedMenuOpen] = useState(false)
+  const [isUserMenuOpen, setIsUserMenuOpen] = useState(false)
   const [isAssistDrawerOpen, setIsAssistDrawerOpen] = useState(false)
   const [activeAssistTask, setActiveAssistTask] = useState<string | null>(null)
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
@@ -3192,6 +3420,13 @@ function WorkspaceApp({
     left: 0,
     selectedText: '',
   })
+  const [editorStats, setEditorStats] = useState<EditorStats>({
+    lineNumber: 1,
+    column: 1,
+    lineCount: 1,
+    length: 0,
+    selectedLength: 0,
+  })
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
   const editorScrollDisposableRef = useRef<{ dispose: () => void } | null>(null)
   const editorContentDisposableRef = useRef<{ dispose: () => void } | null>(null)
@@ -3199,6 +3434,8 @@ function WorkspaceApp({
   const editorPasteCleanupRef = useRef<(() => void) | null>(null)
   const previewRef = useRef<HTMLDivElement | null>(null)
   const advancedMenuRef = useRef<HTMLDivElement | null>(null)
+  const userMenuRef = useRef<HTMLDivElement | null>(null)
+  const editorImportInputRef = useRef<HTMLInputElement | null>(null)
   const documentsRef = useRef<Document[]>(documents)
   const providerRef = useRef<WebrtcProvider | null>(null)
   const ytextRef = useRef<YText | null>(null)
@@ -3241,6 +3478,7 @@ function WorkspaceApp({
       projects: '/dashboard/projects',
       settings: '/dashboard/settings',
       templates: '/dashboard/templates',
+      prompts: '/dashboard/prompts',
       trash: '/dashboard/trash',
     }
     const nextPath = routeByView[currentView] ?? '/dashboard/home'
@@ -3485,6 +3723,13 @@ function WorkspaceApp({
         !advancedMenuRef.current.contains(event.target)
       ) {
         setIsAdvancedMenuOpen(false)
+      }
+      if (
+        userMenuRef.current &&
+        event.target instanceof Node &&
+        !userMenuRef.current.contains(event.target)
+      ) {
+        setIsUserMenuOpen(false)
       }
     }
 
@@ -4007,6 +4252,33 @@ function WorkspaceApp({
     })
   }
 
+  function updateEditorStats(ed = editorRef.current) {
+    const fallbackLineCount = Math.max(1, markdown.split(/\r?\n/).length)
+    if (!ed) {
+      setEditorStats({
+        lineNumber: 1,
+        column: 1,
+        lineCount: fallbackLineCount,
+        length: markdown.length,
+        selectedLength: 0,
+      })
+      return
+    }
+
+    const model = ed.getModel()
+    const position = ed.getPosition()
+    const selection = ed.getSelection()
+    const selectedLength = model && selection ? model.getValueInRange(selection).length : 0
+
+    setEditorStats({
+      lineNumber: position?.lineNumber ?? 1,
+      column: position?.column ?? 1,
+      lineCount: model?.getLineCount() ?? fallbackLineCount,
+      length: model?.getValueLength() ?? markdown.length,
+      selectedLength,
+    })
+  }
+
   async function runAiTask(request: AiTaskRequest): Promise<string | null> {
     const provider = request.provider ?? aiSettings.preferredProvider
     const cleanText = request.text.trim()
@@ -4122,6 +4394,7 @@ function WorkspaceApp({
 
     ed.executeEdits('toolbar', [{ range: selection, text, forceMoveMarkers: true }])
     updateMarkdownValue(ed.getValue())
+    updateEditorStats(ed)
 
     if (cursorOffset !== undefined) {
       const start = selection.getStartPosition()
@@ -4162,8 +4435,84 @@ function WorkspaceApp({
     applyEditorEdit(nextText, selectedText ? undefined : 3)
   }
 
+  function prefixSelection(prefix: string, placeholder = '文字') {
+    const selectedText = getSelectedEditorText()
+    const sourceText = selectedText || placeholder
+    const nextText = sourceText
+      .split(/\r?\n/)
+      .map((line) => `${prefix}${line || placeholder}`)
+      .join('\n')
+    applyEditorEdit(nextText)
+  }
+
+  function insertLink() {
+    const selectedText = getSelectedEditorText()
+    const url = window.prompt('貼上連結網址', 'https://')
+    if (!url) return
+    const label = selectedText || window.prompt('連結文字', '連結') || '連結'
+    applyEditorEdit(`[${label}](${url})`)
+  }
+
+  function insertImage() {
+    const url = window.prompt('貼上圖片網址', 'https://')
+    if (!url) return
+    const alt = window.prompt('圖片描述', 'image') || 'image'
+    applyEditorEdit(`![${alt.replace(/\[|\]/g, '')}](${url})`)
+  }
+
+  function insertChecklist() {
+    prefixSelection('- [ ] ', '待辦事項')
+  }
+
+  function insertCommentBlock() {
+    applyEditorEdit('> [!NOTE]\n> 在這裡補充說明或提醒。\n')
+  }
+
+  function triggerEditorCommand(command: 'undo' | 'redo') {
+    const ed = editorRef.current
+    if (!ed || !canEditActiveDocumentRef.current) return
+
+    ed.trigger('toolbar', command, null)
+    updateMarkdownValue(ed.getValue())
+    updateEditorStats(ed)
+    ed.focus()
+  }
+
   function handleEditorPaste(event: ClipboardEvent) {
     if (!canEditActiveDocumentRef.current) return
+
+    const imageFile = Array.from(event.clipboardData?.items ?? [])
+      .find((item) => item.kind === 'file' && item.type.startsWith('image/'))
+      ?.getAsFile()
+    if (imageFile) {
+      event.preventDefault()
+      event.stopPropagation()
+      void readFileAsDataUrl(imageFile)
+        .then((dataUrl) => {
+          if (!dataUrl) return
+          insertAtCursor(`![pasted-image](${dataUrl})`)
+          setBridgeToast('圖片已貼上為 Markdown')
+        })
+        .catch(() => setBridgeToast('圖片貼上失敗'))
+      return
+    }
+
+    const pastedHtml = event.clipboardData?.getData('text/html') ?? ''
+    const htmlTable = convertHtmlTableToMarkdown(pastedHtml)
+    if (htmlTable) {
+      event.preventDefault()
+      event.stopPropagation()
+      insertAtCursor(htmlTable)
+      return
+    }
+
+    const htmlImages = convertHtmlImagesToMarkdown(pastedHtml)
+    if (htmlImages) {
+      event.preventDefault()
+      event.stopPropagation()
+      insertAtCursor(htmlImages)
+      return
+    }
 
     const pastedText = event.clipboardData?.getData('text/plain') ?? ''
     if (!pastedText.includes('\t') || !/\r?\n/.test(pastedText)) return
@@ -5066,9 +5415,46 @@ function WorkspaceApp({
     },
   ]
   const activeAssistTaskConfig = assistTasks.find((task) => task.title === activeAssistTask) ?? null
+  const editorToolbarGroups = [
+    [
+      { label: '復原', icon: Undo2, action: () => triggerEditorCommand('undo') },
+      { label: '重做', icon: Redo2, action: () => triggerEditorCommand('redo') },
+    ],
+    [
+      { label: '粗體', icon: Bold, action: () => wrapSelection('**', '**', '粗體文字') },
+      { label: '斜體', icon: Italic, action: () => wrapSelection('*', '*', '斜體文字') },
+      { label: '刪除線', icon: Strikethrough, action: () => wrapSelection('~~', '~~', '刪除線') },
+      { label: '標題', icon: Heading2, action: headingSelection },
+    ],
+    [
+      { label: '程式碼', icon: Code2, action: () => wrapSelection('`', '`', 'code') },
+      { label: '引用', icon: Quote, action: () => prefixSelection('> ', '引用文字') },
+      { label: '項目清單', icon: List, action: () => prefixSelection('- ', '項目') },
+      { label: '編號清單', icon: ListOrdered, action: () => prefixSelection('1. ', '項目') },
+      { label: '核取清單', icon: CheckSquare, action: insertChecklist },
+    ],
+    [
+      { label: '連結', icon: Link, action: insertLink },
+      { label: '圖片', icon: ImageIcon, action: insertImage },
+      { label: '表格', icon: Table2, action: () => insertAtCursor('| 欄位 A | 欄位 B |\n|---|---|\n|  |  |') },
+      { label: '分隔線', icon: Minus, action: () => insertAtCursor('\n---\n') },
+      { label: '註解', icon: MessageCircle, action: insertCommentBlock },
+    ],
+  ]
 
   return (
     <div className="flex h-full min-h-screen bg-slate-50 font-sans text-slate-800">
+      <input
+        ref={editorImportInputRef}
+        type="file"
+        accept=".md,.markdown,text/markdown,text/plain"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.target.files?.[0]
+          if (file) void importMarkdownFile(file)
+          event.currentTarget.value = ''
+        }}
+      />
       {shouldShowSidebar && (
         <DocumentSidebar
           documents={documents}
@@ -5161,6 +5547,109 @@ function WorkspaceApp({
           </div>
 
           <div className="flex items-center gap-2">
+            {user && (
+              <div ref={userMenuRef} className="relative">
+                <button
+                  type="button"
+                  onClick={() => setIsUserMenuOpen((current) => !current)}
+                  className="inline-flex h-10 items-center gap-2 rounded-2xl border border-slate-200 bg-white px-2 pr-3 text-slate-600 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
+                  title="帳號選單"
+                >
+                  {topbarAvatarUrl ? (
+                    <img
+                      src={topbarAvatarUrl}
+                      alt={topbarUserName}
+                      className="h-7 w-7 rounded-full object-cover"
+                      referrerPolicy="no-referrer"
+                    />
+                  ) : (
+                    <span className="grid h-7 w-7 place-items-center rounded-full bg-slate-950 text-xs font-semibold text-white">
+                      {topbarUserInitial}
+                    </span>
+                  )}
+                  <ChevronDown className={`h-4 w-4 transition-transform ${isUserMenuOpen ? 'rotate-180' : ''}`} strokeWidth={2} />
+                </button>
+                {isUserMenuOpen && (
+                  <div className="absolute right-0 top-full z-50 mt-2 w-80 overflow-hidden rounded-2xl border border-slate-200 bg-white text-sm text-slate-600 shadow-2xl shadow-slate-200/80">
+                    <div className="flex items-center gap-3 border-b border-slate-100 p-4">
+                      {topbarAvatarUrl ? (
+                        <img
+                          src={topbarAvatarUrl}
+                          alt={topbarUserName}
+                          className="h-12 w-12 rounded-full object-cover"
+                          referrerPolicy="no-referrer"
+                        />
+                      ) : (
+                        <span className="grid h-12 w-12 place-items-center rounded-full bg-slate-950 text-sm font-semibold text-white">
+                          {topbarUserInitial}
+                        </span>
+                      )}
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold text-slate-950">{topbarUserName}</p>
+                        <p className="truncate text-xs text-slate-400">{user.email ?? '已登入'}</p>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsUserMenuOpen(false)
+                            setBridgeToast('公開頁面功能準備中')
+                          }}
+                          className="mt-1 text-xs font-semibold text-indigo-600 transition hover:text-indigo-500"
+                        >
+                          瀏覽公開頁面
+                        </button>
+                      </div>
+                    </div>
+                    {[
+                      {
+                        label: '我的工作空間',
+                        icon: Lock,
+                        action: () => setCurrentView('dashboard'),
+                      },
+                      {
+                        label: '設定',
+                        icon: Settings,
+                        action: () => setCurrentView('settings'),
+                      },
+                      {
+                        label: '我參與的團隊',
+                        icon: Users,
+                        action: () => setBridgeToast('團隊功能準備中'),
+                      },
+                      {
+                        label: '付費',
+                        icon: CreditCard,
+                        action: () => setCurrentView('billing'),
+                      },
+                    ].map((item) => (
+                      <button
+                        key={item.label}
+                        type="button"
+                        onClick={() => {
+                          setIsUserMenuOpen(false)
+                          item.action()
+                        }}
+                        className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
+                      >
+                        <item.icon className="h-4 w-4" strokeWidth={2} />
+                        {item.label}
+                      </button>
+                    ))}
+                    <div className="my-1 h-px bg-slate-100" />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsUserMenuOpen(false)
+                        onSignOut()
+                      }}
+                      className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium text-slate-600 transition-colors hover:bg-slate-50 hover:text-slate-950"
+                    >
+                      <LogOut className="h-4 w-4" strokeWidth={2} />
+                      登出
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
             <CollaboratorAvatarGroup collaborators={collaborators} />
             <button
               type="button"
@@ -5202,38 +5691,44 @@ function WorkspaceApp({
                 className="grid h-10 w-10 place-items-center rounded-xl text-slate-400 transition hover:bg-slate-100 hover:text-slate-950"
                 title="進階操作"
               >
-                ⋯
+                <MoreHorizontal className="h-5 w-5" strokeWidth={2} />
               </button>
               {isAdvancedMenuOpen && (
-                <div className="absolute right-0 top-full z-50 mt-2 w-72 overflow-hidden rounded-2xl border border-slate-200 bg-white py-2 text-sm text-slate-600 shadow-2xl shadow-slate-200/70">
-                  <button
-                    type="button"
-                    onClick={downloadMarkdownReport}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
-                  >
-                    下載為 Markdown
-                  </button>
-                  {user && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsAdvancedMenuOpen(false)
-                        void shareCurrentDocument()
-                      }}
-                      className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
-                    >
-                      分享連結
-                    </button>
-                  )}
+                <div className={`absolute right-0 top-full z-50 mt-2 max-h-[calc(100vh-6rem)] w-80 overflow-auto rounded-2xl border border-slate-200 bg-white py-2 text-sm text-slate-600 shadow-2xl shadow-slate-200/80 ${SCROLLBAR_HIDE}`}>
                   <button
                     type="button"
                     onClick={() => {
                       setIsAdvancedMenuOpen(false)
                       saveActiveDocumentVersion()
+                      syncWithGithub()
+                      setCurrentView('history')
                     }}
                     className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
                   >
-                    儲存版本快照
+                    <History className="h-4 w-4" strokeWidth={2} />
+                    版本與 GitHub 同步
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAdvancedMenuOpen(false)
+                      setBridgeToast('筆記設定功能準備中')
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
+                  >
+                    <Info className="h-4 w-4" strokeWidth={2} />
+                    筆記設定
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAdvancedMenuOpen(false)
+                      void shareCurrentDocument()
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
+                  >
+                    <SlidersHorizontal className="h-4 w-4" strokeWidth={2} />
+                    參與度設定
                   </button>
                   <button
                     type="button"
@@ -5243,43 +5738,129 @@ function WorkspaceApp({
                     }}
                     className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
                   >
+                    <CheckSquare className="h-4 w-4" strokeWidth={2} />
                     報告完整度檢查
                   </button>
                   <button
                     type="button"
                     onClick={() => {
                       setIsAdvancedMenuOpen(false)
-                      exportWordReport()
+                      setIsAssistDrawerOpen(true)
                     }}
                     className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
                   >
-                    匯出為 Word (.docx)
+                    <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
+                    Assist
                   </button>
                   <button
                     type="button"
                     onClick={() => {
                       setIsAdvancedMenuOpen(false)
-                      exportPdfReport()
+                      if (activeDocument) void moveDocument(activeDocument.id)
                     }}
+                    disabled={!activeDocument || !isActiveDocumentOwner}
                     className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
                   >
-                    匯出為 PDF
+                    <Archive className="h-4 w-4" strokeWidth={2} />
+                    移動
                   </button>
                   <button
                     type="button"
-                    onClick={syncWithGithub}
+                    onClick={() => {
+                      setIsAdvancedMenuOpen(false)
+                      if (activeDocument) duplicateDocument(activeDocument.id)
+                    }}
+                    disabled={!activeDocument || !isActiveDocumentOwner}
                     className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
                   >
-                    與 GitHub 同步
+                    <Copy className="h-4 w-4" strokeWidth={2} />
+                    建立副本
                   </button>
-                  <div className="my-2 h-px bg-slate-100" />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAdvancedMenuOpen(false)
+                      setBridgeToast('轉移筆記擁有權需要後端權限流程')
+                    }}
+                    disabled={!isActiveDocumentOwner}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
+                  >
+                    <BriefcaseBusiness className="h-4 w-4" strokeWidth={2} />
+                    轉移筆記擁有權
+                  </button>
                   <button
                     type="button"
                     onClick={deleteActiveDocument}
                     disabled={!isActiveDocumentOwner}
                     className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    刪除此報告
+                    <Trash2 className="h-4 w-4" strokeWidth={2} />
+                    刪除此筆記
+                  </button>
+                  <div className="my-2 h-px bg-slate-100" />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAdvancedMenuOpen(false)
+                      setBridgeToast('已保留為範本入口，後續可接 templates 資料表')
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
+                  >
+                    <BookMarked className="h-4 w-4" strokeWidth={2} />
+                    存為範本
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAdvancedMenuOpen(false)
+                      setCurrentView('templates')
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
+                  >
+                    <Plus className="h-4 w-4" strokeWidth={2} />
+                    插入範本
+                  </button>
+                  <div className="my-2 h-px bg-slate-100" />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAdvancedMenuOpen(false)
+                      editorImportInputRef.current?.click()
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
+                  >
+                    <FileUp className="h-4 w-4" strokeWidth={2} />
+                    匯入 Markdown
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAdvancedMenuOpen(false)
+                      void exportWordReport()
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
+                  >
+                    <Download className="h-4 w-4" strokeWidth={2} />
+                    匯出 Word
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAdvancedMenuOpen(false)
+                      void exportPdfReport()
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
+                  >
+                    <Download className="h-4 w-4" strokeWidth={2} />
+                    匯出 PDF
+                  </button>
+                  <button
+                    type="button"
+                    onClick={downloadMarkdownReport}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
+                  >
+                    <Download className="h-4 w-4" strokeWidth={2} />
+                    下載 Markdown
                   </button>
                 </div>
               )}
@@ -5387,6 +5968,13 @@ function WorkspaceApp({
           quotaLoading={aiQuotaLoading}
           onChangeSettings={setAiSettings}
         />
+      ) : currentView === 'prompts' ? (
+        <PromptLibraryView
+          settings={aiSettings}
+          onChangeSettings={setAiSettings}
+          onOpenAiSettings={() => setCurrentView('settings')}
+          onNotify={setBridgeToast}
+        />
       ) : currentView === 'billing' ? (
         <BillingView
           quota={aiQuota}
@@ -5437,6 +6025,35 @@ function WorkspaceApp({
             mobileEditorPane === 'edit' ? 'flex' : 'hidden'
           }`}
         >
+          <div className="flex min-h-12 shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-3 py-2">
+            <div className={`flex min-w-0 flex-1 items-center gap-1 overflow-x-auto ${SCROLLBAR_HIDE}`}>
+              {editorToolbarGroups.map((group, groupIndex) => (
+                <div key={groupIndex} className="flex items-center gap-1 border-r border-slate-200 pr-2 last:border-r-0 last:pr-0">
+                  {group.map((item) => (
+                    <button
+                      key={item.label}
+                      type="button"
+                      onClick={item.action}
+                      disabled={!canEditActiveDocument}
+                      className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-35"
+                      title={item.label}
+                      aria-label={item.label}
+                    >
+                      <item.icon className="h-4 w-4" strokeWidth={2} />
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </div>
+            <button
+              type="button"
+              onClick={() => setIsAssistDrawerOpen(true)}
+              className="inline-flex h-8 shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
+            >
+              <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
+              Assist
+            </button>
+          </div>
           <div className="relative min-h-[280px] flex-1 flex-grow bg-slate-50 font-mono leading-relaxed lg:min-h-0">
             {aiSelectionMenu.visible && (
               <div
@@ -5509,12 +6126,16 @@ function WorkspaceApp({
                   })
                   editorContentDisposableRef.current?.dispose()
                   editorContentDisposableRef.current = ed.onDidChangeModelContent(
-                    applyMonacoChangesToYText,
+                    (event) => {
+                      applyMonacoChangesToYText(event)
+                      updateEditorStats(ed)
+                    },
                   )
                   editorSelectionDisposableRef.current?.dispose()
                   editorSelectionDisposableRef.current = ed.onDidChangeCursorSelection(() => {
                     updateLocalCursorAwareness(ed)
                     updateAiSelectionMenu(ed)
+                    updateEditorStats(ed)
                   })
 
                   editorPasteCleanupRef.current?.()
@@ -5524,12 +6145,13 @@ function WorkspaceApp({
                     editorDomNode?.removeEventListener('paste', handleEditorPaste)
                   }
                   updateLocalCursorAwareness(ed)
+                  updateEditorStats(ed)
                 }}
                 options={{
                   readOnly: !canEditActiveDocument,
                   domReadOnly: !canEditActiveDocument,
                   readOnlyMessage: { value: '此文件目前為唯讀模式' },
-                  lineNumbers: 'off',
+                  lineNumbers: 'on',
                   minimap: { enabled: false },
                   wordWrap: 'on',
                   fontSize: 16,
@@ -5541,8 +6163,8 @@ function WorkspaceApp({
                   hideCursorInOverviewRuler: true,
                   glyphMargin: false,
                   folding: false,
-                  lineDecorationsWidth: 0,
-                  lineNumbersMinChars: 0,
+                  lineDecorationsWidth: 8,
+                  lineNumbersMinChars: 3,
                   renderLineHighlight: 'none',
                   scrollbar: {
                     verticalScrollbarSize: 8,
@@ -5553,6 +6175,21 @@ function WorkspaceApp({
                 }}
               />
             </Suspense>
+          </div>
+          <div className="flex h-9 shrink-0 items-center justify-between border-t border-slate-200 bg-white px-3 text-xs font-medium text-slate-500">
+            <div className="flex min-w-0 items-center gap-3">
+              <span>第 {editorStats.lineNumber} 行，第 {editorStats.column} 欄</span>
+              <span className="hidden sm:inline">共 {editorStats.lineCount} 行</span>
+              {editorStats.selectedLength > 0 && (
+                <span className="hidden sm:inline">已選 {editorStats.selectedLength} 字</span>
+              )}
+            </div>
+            <div className="flex items-center gap-3">
+              <span className="hidden sm:inline">空白寬度：4</span>
+              <span>換行</span>
+              <span>Markdown</span>
+              <span>長度：{editorStats.length}</span>
+            </div>
           </div>
         </section>
 
