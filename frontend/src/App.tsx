@@ -18,24 +18,31 @@ import {
   Archive,
   Beaker,
   Bold,
-  Bot,
+  BookMarked,
   ChevronDown,
   Clock3,
   Code2,
+  Cloud,
   Copy,
   CalendarDays,
+  Database,
+  Download,
+  ExternalLink,
   FileClock,
   FileText,
   FileCode2,
   FilePlus2,
+  FileUp,
   Filter,
   FolderOpen,
   FolderPlus,
+  Gauge,
   Heading2,
   Home,
   Info,
   LayoutTemplate,
   Library,
+  Link,
   LogOut,
   Mail,
   MoreHorizontal,
@@ -43,6 +50,7 @@ import {
   PanelLeftOpen,
   PanelRightOpen,
   Pencil,
+  PenLine,
   Pin,
   PinOff,
   Plus,
@@ -50,12 +58,14 @@ import {
   Search,
   Settings,
   Share2,
-  Sparkles,
   Star,
   Table2,
   Trash2,
   UploadCloud,
+  UserPlus,
   Users,
+  Video,
+  X,
 } from 'lucide-react'
 import type { editor } from 'monaco-editor'
 import ReactMarkdown from 'react-markdown'
@@ -784,6 +794,8 @@ function DocumentSidebar({
   onToggleFavorite,
   onOpenExtensionModal,
   onOpenFeedback,
+  quota,
+  quotaLoading,
   user,
   onSignOut,
 }: {
@@ -802,6 +814,8 @@ function DocumentSidebar({
   onToggleFavorite: (id: string) => void
   onOpenExtensionModal: () => void
   onOpenFeedback: () => void
+  quota: AiQuota | null
+  quotaLoading: boolean
   user: User | null
   onSignOut: () => void
 }) {
@@ -816,6 +830,7 @@ function DocumentSidebar({
   const userName = getUserDisplayName(user)
   const avatarUrl = getUserAvatarUrl(user)
   const userInitial = getUserInitial(user)
+  const remainingPercent = quota ? Math.max(0, Math.min(100, (quota.remaining / Math.max(quota.limit, 1)) * 100)) : 0
   const navButtonBase =
     'group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium transition-all duration-200'
   const navButtonIdle =
@@ -832,7 +847,7 @@ function DocumentSidebar({
     {
       id: 'ai-mode',
       label: 'AI Mode',
-      icon: Bot,
+      icon: Gauge,
       isActive: currentView === 'settings',
       onClick: () => onChangeView('settings'),
     },
@@ -1097,7 +1112,7 @@ function DocumentSidebar({
       <div className="flex items-center justify-between px-5 py-5">
         <div className="flex min-w-0 items-center gap-3">
           <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-indigo-500 via-violet-500 to-fuchsia-500 text-white shadow-lg shadow-indigo-500/20">
-            <Sparkles className="h-5 w-5" strokeWidth={2.2} />
+            <FileText className="h-5 w-5" strokeWidth={2.2} />
           </div>
           <div className="min-w-0">
             <h2 className="truncate text-sm font-semibold tracking-tight text-slate-950">AutoLabReport</h2>
@@ -1186,6 +1201,30 @@ function DocumentSidebar({
                   onTogglePin: () => togglePinnedItem(item.id),
                 }),
               )}
+              <button
+                type="button"
+                onClick={() => onChangeView('settings')}
+                className="mt-3 w-full rounded-2xl border border-slate-200 bg-white p-3 text-left shadow-sm transition hover:border-slate-300 hover:shadow-md"
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">AI 額度</p>
+                    <p className="mt-1 text-sm font-semibold text-slate-950">
+                      {quotaLoading ? '讀取中...' : `${quota?.remaining ?? 3} / ${quota?.limit ?? 3} 次`}
+                    </p>
+                  </div>
+                  <Gauge className="h-4 w-4 text-slate-400" strokeWidth={2} />
+                </div>
+                <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100">
+                  <div
+                    className="h-full rounded-full bg-slate-950 transition-all"
+                    style={{ width: `${quotaLoading ? 35 : quota ? remainingPercent : 100}%` }}
+                  />
+                </div>
+                <p className="mt-2 text-[11px] font-medium text-slate-400">
+                  {quota?.plan === 'pro' ? 'Pro 高級 AI' : '免費版：內建 3 次或自備連接'}
+                </p>
+              </button>
             </div>
           )}
         </section>
@@ -1607,138 +1646,251 @@ function AiSettingsView({
     onChangeSettings(normalizeAiSettings({ ...settings, ...patch }))
   }
 
-  const providerDescription =
-    settings.preferredProvider === 'built_in'
-      ? '使用 AutoLabReport 內建 AI，適合小白與付費方案。'
-      : settings.preferredProvider === 'extension'
-        ? '使用 Chrome 插件連接 ChatGPT、Gemini、Claude、Grok、DeepSeek。'
-        : '使用你自己的 API Key，適合進階使用者。'
+  const isPro = quota?.plan === 'pro'
+  const used = quota ? Math.max(0, quota.used) : 0
+  const limit = quota?.limit ?? 3
+  const remaining = quota?.remaining ?? 3
+  const remainingPercent = Math.max(0, Math.min(100, (remaining / Math.max(limit, 1)) * 100))
+  const modelOptions = isPro
+    ? [
+        { value: '', label: 'AutoLab Premium（自動選擇）' },
+        { value: 'gpt-4.1', label: 'GPT-4.1（高品質）' },
+        { value: 'claude-sonnet-4', label: 'Claude Sonnet（長文寫作）' },
+        { value: 'gemini-2.5-pro', label: 'Gemini Pro（資料整理）' },
+        { value: 'deepseek-r1', label: 'DeepSeek R1（推理檢查）' },
+      ]
+    : [
+        { value: '', label: 'Auto Free（自動選擇）' },
+        { value: 'gemini-flash', label: 'Gemini Flash（免費/快速）' },
+        { value: 'deepseek-chat', label: 'DeepSeek Chat（免費/長文）' },
+        { value: 'user-api-model', label: '自備 API 模型' },
+      ]
+  const connectionCards = [
+    {
+      id: 'built_in' as AiProvider,
+      title: '內建額度',
+      status: isPro ? 'Pro 高級 AI 可用' : `${remaining} / ${limit} 次可用`,
+      description: isPro ? '付費版直接使用 AutoLabReport 的高級 AI。' : '免費版先提供 3 次測試額度，適合確認流程。',
+      icon: Gauge,
+    },
+    {
+      id: 'extension' as AiProvider,
+      title: '瀏覽器插件',
+      status: '待測試連接',
+      description: '用你自己的 ChatGPT、Gemini 或其他網頁 AI，不消耗內建額度。',
+      icon: Puzzle,
+    },
+    {
+      id: 'user_api_key' as AiProvider,
+      title: '自備 API Key',
+      status: settings.userApiKey ? '本次已填入' : '未設定',
+      description: '適合進階使用者；金鑰只留在本次頁面狀態。',
+      icon: Database,
+    },
+  ]
+  const toolCards = [
+    { title: 'Google Drive', description: '匯出、同步與備份文件。', status: '待連接', icon: Cloud },
+    { title: 'Markdown 匯入', description: '上傳 .md 後直接進入編輯器。', status: '已可用', icon: FileUp },
+    { title: 'Word / PDF 匯出', description: '把報告交付成常用格式。', status: '已可用', icon: Download },
+    { title: '新增工具', description: '之後可讓使用者添加自己的工具列。', status: '預留', icon: Plus },
+  ]
 
   return (
-    <main className={`flex-1 overflow-auto bg-zinc-50 px-8 py-12 dark:bg-zinc-950 ${SCROLLBAR_HIDE}`}>
-      <div className="mx-auto max-w-5xl">
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100">AI 設定</h1>
-          <p className="mt-2 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">
-            管理 AutoLabReport 的 AI 供應模式、插件橋接、自備 API Key 與 Prompt 模板。
-          </p>
+    <main className={`flex-1 overflow-auto bg-slate-50 px-8 py-10 ${SCROLLBAR_HIDE}`}>
+      <div className="mx-auto max-w-6xl">
+        <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-400">AI Mode</p>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">AI 連接方式</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
+              不需要理解模型或 prompt。先選你要怎麼連接 AI，再決定要用快速、穩定，還是高品質模式。
+            </p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white px-5 py-4 text-right shadow-sm">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">目前方案</p>
+            <p className="mt-1 text-xl font-semibold text-slate-950">{isPro ? 'Pro' : 'Free'}</p>
+          </div>
         </div>
 
-        <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
-          <section className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-            <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">AI Provider</h2>
-            <p className="mt-1 text-sm leading-6 text-zinc-500 dark:text-zinc-400">{providerDescription}</p>
-
-            <div className="mt-5 grid gap-3 sm:grid-cols-3">
-              <div className="rounded-xl border border-zinc-200/70 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-950">
-                <div className="text-xs font-semibold uppercase tracking-wider text-zinc-400">方案</div>
-                <div className="mt-2 text-lg font-bold text-zinc-900 dark:text-zinc-100">
-                  {quota?.plan === 'pro' ? 'Pro' : 'Free'}
-                </div>
-              </div>
-              <div className="rounded-xl border border-zinc-200/70 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-950">
-                <div className="text-xs font-semibold uppercase tracking-wider text-zinc-400">今日剩餘</div>
-                <div className="mt-2 text-lg font-bold text-zinc-900 dark:text-zinc-100">
-                  {quotaLoading ? '...' : quota ? quota.remaining : '-'}
-                </div>
-              </div>
-              <div className="rounded-xl border border-zinc-200/70 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-950">
-                <div className="text-xs font-semibold uppercase tracking-wider text-zinc-400">每日額度</div>
-                <div className="mt-2 text-lg font-bold text-zinc-900 dark:text-zinc-100">
-                  {quotaLoading ? '...' : quota ? quota.limit : '-'}
-                </div>
-              </div>
-            </div>
-
-            <label className="mt-5 block">
-              <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">預設 AI 模式</span>
-              <select
-                value={settings.preferredProvider}
-                onChange={(event) => updateSettings({ preferredProvider: event.target.value as AiProvider })}
-                className="mt-2 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
-              >
-                <option value="built_in">AutoLabReport 內建 AI</option>
-                <option value="extension">Chrome 插件橋接</option>
-                <option value="user_api_key">自備 API Key</option>
-              </select>
-            </label>
-
-            <div className="mt-5 rounded-xl border border-zinc-200/70 bg-zinc-50 p-4 dark:border-zinc-800 dark:bg-zinc-950">
-              <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">免費版建議</div>
-              <p className="mt-2 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
-                預設使用少量內建 AI 額度；額度用完後，可改用插件橋接自己的 AI 網頁，或填入自己的 API Key。
+        <section className="mb-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-950">今日內建額度</h2>
+              <p className="mt-1 text-sm text-slate-500">
+                免費版可用內建 3 次測試；插件與自備 API Key 不消耗這裡的額度。
               </p>
+            </div>
+            <p className="text-sm font-semibold text-slate-500">
+              {quotaLoading ? '讀取中...' : `已用 ${used} 次，剩餘 ${remaining} / ${limit} 次`}
+            </p>
+          </div>
+          <div className="mt-5 h-2 overflow-hidden rounded-full bg-slate-100">
+            <div
+              className="h-full rounded-full bg-slate-950 transition-all"
+              style={{ width: `${quotaLoading ? 35 : remainingPercent}%` }}
+            />
+          </div>
+        </section>
+
+        <div className="grid gap-6 lg:grid-cols-[1.15fr_0.85fr]">
+          <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <div className="mb-5">
+              <h2 className="text-lg font-semibold text-slate-950">選擇連接方式</h2>
+              <p className="mt-1 text-sm text-slate-500">按你現在擁有的資源選，不需要懂技術設定。</p>
+            </div>
+            <div className="grid gap-3">
+              {connectionCards.map((card) => (
+                <button
+                  key={card.id}
+                  type="button"
+                  onClick={() => updateSettings({ preferredProvider: card.id })}
+                  className={`group flex items-start gap-4 rounded-2xl border p-4 text-left transition hover:-translate-y-0.5 hover:shadow-md ${
+                    settings.preferredProvider === card.id
+                      ? 'border-slate-950 bg-slate-950 text-white shadow-md'
+                      : 'border-slate-200 bg-white text-slate-900'
+                  }`}
+                >
+                  <div
+                    className={`grid h-11 w-11 shrink-0 place-items-center rounded-2xl ${
+                      settings.preferredProvider === card.id ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-600'
+                    }`}
+                  >
+                    <card.icon className="h-5 w-5" strokeWidth={2} />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="text-sm font-semibold">{card.title}</h3>
+                      <span
+                        className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                          settings.preferredProvider === card.id
+                            ? 'bg-white/15 text-white'
+                            : 'bg-slate-100 text-slate-500'
+                        }`}
+                      >
+                        {card.status}
+                      </span>
+                    </div>
+                    <p
+                      className={`mt-1 text-sm leading-6 ${
+                        settings.preferredProvider === card.id ? 'text-white/72' : 'text-slate-500'
+                      }`}
+                    >
+                      {card.description}
+                    </p>
+                  </div>
+                </button>
+              ))}
             </div>
           </section>
 
-          <section className="rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-            <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">自備 API Key</h2>
-            <p className="mt-1 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
-              API Key 只保留在目前頁面狀態，不會寫入 localStorage 或 Supabase；重新整理後需重新填入。
+          <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+            <h2 className="text-lg font-semibold text-slate-950">模型選擇</h2>
+            <p className="mt-1 text-sm leading-6 text-slate-500">
+              免費版顯示免費模型；Pro 版可切換高級模型。留空代表由系統自動選擇。
             </p>
-
             <label className="mt-5 block">
-              <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">API Provider</span>
+              <span className="text-sm font-semibold text-slate-700">預設模型</span>
               <select
-                value={settings.userApiProvider}
-                onChange={(event) => updateSettings({ userApiProvider: event.target.value as UserApiProvider })}
-                className="mt-2 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
-              >
-                <option value="none">尚未設定</option>
-                <option value="openai">OpenAI</option>
-                <option value="gemini">Gemini</option>
-                <option value="anthropic">Claude / Anthropic</option>
-                <option value="deepseek">DeepSeek</option>
-              </select>
-            </label>
-
-            <label className="mt-4 block">
-              <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">API Key</span>
-              <input
-                type="password"
-                value={settings.userApiKey}
-                onChange={(event) => updateSettings({ userApiKey: event.target.value })}
-                placeholder="sk-... / AIza... / 你的金鑰"
-                className="mt-2 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
-              />
-            </label>
-            <button
-              type="button"
-              onClick={() => updateSettings({ userApiKey: '' })}
-              disabled={!settings.userApiKey}
-              className="mt-3 rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold text-zinc-600 transition hover:bg-zinc-50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-950"
-            >
-              清除本次 API Key
-            </button>
-
-            <label className="mt-4 block">
-              <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">預設模型（可選）</span>
-              <input
                 value={settings.defaultModel}
                 onChange={(event) => updateSettings({ defaultModel: event.target.value })}
-                placeholder="例如 gpt-4.1-mini / gemini-1.5-flash"
-                className="mt-2 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100"
-              />
+                className="mt-2 h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-900 outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-100"
+              >
+                {modelOptions.map((model) => (
+                  <option key={model.value} value={model.value}>
+                    {model.label}
+                  </option>
+                ))}
+              </select>
             </label>
-          </section>
-        </div>
-
-        <section className="mt-6 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">Prompt 模板</h2>
-              <p className="mt-1 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
-                使用 <code>{'{{text}}'}</code> 代表選取文字或文件內容，<code>{'{{action}}'}</code> 代表操作名稱。
-              </p>
-            </div>
-            <label className="flex items-center gap-2 rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-sm font-medium text-zinc-600 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-300">
+            <label className="mt-5 flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm font-medium text-slate-600">
+              <span>插件完成後自動回填編輯器</span>
               <input
                 type="checkbox"
                 checked={settings.extensionAutoReturn}
                 onChange={(event) => updateSettings({ extensionAutoReturn: event.target.checked })}
+                className="h-4 w-4"
               />
-              插件自動回填
             </label>
+          </section>
+        </div>
+
+        <section className="mt-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-950">自備 API Key</h2>
+              <p className="mt-1 text-sm leading-6 text-slate-500">
+                適合你有自己的模型帳號。金鑰只保留在目前頁面狀態，不寫入瀏覽器或資料庫。
+              </p>
+              <div className="mt-5 grid gap-4">
+                <label className="block">
+                  <span className="text-sm font-semibold text-slate-700">API 供應商</span>
+                  <select
+                    value={settings.userApiProvider}
+                    onChange={(event) => updateSettings({ userApiProvider: event.target.value as UserApiProvider })}
+                    className="mt-2 h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-900 outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-100"
+                  >
+                    <option value="none">尚未設定</option>
+                    <option value="openai">OpenAI</option>
+                    <option value="gemini">Gemini</option>
+                    <option value="anthropic">Claude / Anthropic</option>
+                    <option value="deepseek">DeepSeek</option>
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="text-sm font-semibold text-slate-700">API Key</span>
+                  <input
+                    type="password"
+                    value={settings.userApiKey}
+                    onChange={(event) => updateSettings({ userApiKey: event.target.value })}
+                    placeholder="貼上你的 API Key"
+                    className="mt-2 h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-900 outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-100"
+                  />
+                </label>
+                <button
+                  type="button"
+                  onClick={() => updateSettings({ userApiKey: '' })}
+                  disabled={!settings.userApiKey}
+                  className="w-fit rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  清除本次金鑰
+                </button>
+              </div>
+            </div>
+            <div>
+              <h2 className="text-lg font-semibold text-slate-950">可用工具</h2>
+              <p className="mt-1 text-sm leading-6 text-slate-500">
+                先把工具入口留清楚，已完成的可以直接使用；Google Drive 需要後端 OAuth 才能真正連接。
+              </p>
+              <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                {toolCards.map((tool) => (
+                  <button
+                    key={tool.title}
+                    type="button"
+                    className="rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:-translate-y-0.5 hover:shadow-md"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <tool.icon className="h-5 w-5 text-slate-500" strokeWidth={2} />
+                      <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-500">
+                        {tool.status}
+                      </span>
+                    </div>
+                    <h3 className="mt-4 text-sm font-semibold text-slate-950">{tool.title}</h3>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">{tool.description}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section className="mt-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-950">進階文字模板</h2>
+              <p className="mt-1 text-sm leading-6 text-slate-500">
+                這裡留給進階使用者調整語氣。一般使用者只需要在 Assist 裡選任務即可。
+              </p>
+            </div>
             <button
               type="button"
               onClick={() =>
@@ -1750,26 +1902,26 @@ function AiSettingsView({
                   customPrompt: DEFAULT_AI_SETTINGS.customPrompt,
                 })
               }
-              className={SUBTLE_BUTTON}
+              className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
             >
-              恢復預設 Prompt
+              恢復預設
             </button>
           </div>
 
           <div className="mt-6 grid gap-5 lg:grid-cols-2">
             {([
-              ['rewritePrompt', '潤飾重寫'],
-              ['expandPrompt', '擴寫內容'],
-              ['outlinePrompt', '生成大綱'],
-              ['summarizePrompt', '摘要成結論'],
-              ['customPrompt', '自訂指令'],
+              ['rewritePrompt', '整理內容'],
+              ['expandPrompt', '補完整段落'],
+              ['outlinePrompt', '生成報告'],
+              ['summarizePrompt', '摘要結論'],
+              ['customPrompt', '自訂處理'],
             ] as const).map(([key, label]) => (
               <label key={key} className={key === 'customPrompt' ? 'lg:col-span-2' : ''}>
-                <span className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">{label}</span>
+                <span className="text-sm font-semibold text-slate-700">{label}</span>
                 <textarea
                   value={settings[key]}
                   onChange={(event) => updateSettings({ [key]: event.target.value } as Partial<AiSettings>)}
-                  className={`mt-2 h-36 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-sm leading-6 text-zinc-900 outline-none transition focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-100 ${SCROLLBAR_HIDE}`}
+                  className={`mt-2 h-32 w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white focus:ring-4 focus:ring-slate-100 ${SCROLLBAR_HIDE}`}
                 />
               </label>
             ))}
@@ -1923,6 +2075,7 @@ function DashboardView({
   documents,
   onOpenDocument,
   onCreateDocument,
+  onImportMarkdown,
   onShareDocument,
   favoriteOnly = false,
   isLoading = false,
@@ -1930,6 +2083,7 @@ function DashboardView({
   documents: Document[]
   onOpenDocument: (id: string) => void
   onCreateDocument: () => void
+  onImportMarkdown: (file: File) => void
   onRenameDocument: (id: string) => void
   onShareDocument: (id: string) => void
   onToggleFavorite: (id: string) => void
@@ -1937,6 +2091,7 @@ function DashboardView({
   favoriteOnly?: boolean
   isLoading?: boolean
 }) {
+  const markdownInputRef = useRef<HTMLInputElement | null>(null)
   const fileDocuments = documents.filter(
     (document) => document.type === 'file' && !document.isTrashed && (!favoriteOnly || document.isFavorite),
   )
@@ -1954,23 +2109,23 @@ function DashboardView({
       icon: FilePlus2,
       tint: 'from-white to-slate-100',
       iconTone: 'text-slate-800',
-      onClick: onCreateDocument,
+      action: 'create',
     },
     {
       title: '匯入 Word/PDF',
-      description: '轉成 Markdown',
+      description: '先支援 MD 編輯',
       icon: UploadCloud,
       tint: 'from-sky-50 to-cyan-100/70',
       iconTone: 'text-cyan-700',
-      onClick: onCreateDocument,
+      action: 'import-markdown',
     },
     {
       title: '貼上 AI 生成內容',
       description: '整理亂格式',
-      icon: Sparkles,
+      icon: PenLine,
       tint: 'from-violet-50 to-indigo-100/70',
       iconTone: 'text-indigo-700',
-      onClick: onCreateDocument,
+      action: 'create',
     },
     {
       title: '整理實驗數據',
@@ -1978,7 +2133,7 @@ function DashboardView({
       icon: Beaker,
       tint: 'from-amber-50 to-orange-100/70',
       iconTone: 'text-orange-700',
-      onClick: onCreateDocument,
+      action: 'create',
     },
     {
       title: '套用課堂模板',
@@ -1986,12 +2141,23 @@ function DashboardView({
       icon: LayoutTemplate,
       tint: 'from-emerald-50 to-teal-100/70',
       iconTone: 'text-emerald-700',
-      onClick: onCreateDocument,
+      action: 'create',
     },
   ]
 
   return (
     <main className={`min-h-0 flex-1 overflow-auto bg-slate-50 ${SCROLLBAR_HIDE}`}>
+      <input
+        ref={markdownInputRef}
+        type="file"
+        accept=".md,.markdown,text/markdown,text/plain"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.target.files?.[0]
+          if (file) onImportMarkdown(file)
+          event.currentTarget.value = ''
+        }}
+      />
       <div className="mx-auto max-w-7xl px-6 py-10 sm:px-8 lg:px-10">
         <div className="mb-10">
           <p className="mb-3 inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-500 shadow-sm ring-1 ring-slate-200">
@@ -2013,7 +2179,13 @@ function DashboardView({
               <button
                 key={item.title}
                 type="button"
-                onClick={item.onClick}
+                onClick={() => {
+                  if (item.action === 'import-markdown') {
+                    markdownInputRef.current?.click()
+                    return
+                  }
+                  onCreateDocument()
+                }}
                 disabled={isLoading}
                 className={`group flex h-36 w-40 shrink-0 flex-col items-start justify-between rounded-2xl border border-slate-200 bg-gradient-to-br ${item.tint} p-5 text-left shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-lg hover:shadow-slate-200/70 disabled:cursor-not-allowed disabled:opacity-60`}
               >
@@ -2057,8 +2229,11 @@ function DashboardView({
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-6">
-              {recentDocuments.map((document) => (
-                <article
+              {recentDocuments.map((document) => {
+                const previewText = getDocumentPreview(document) || '尚未填寫內容'
+
+                return (
+                  <article
                 key={document.id}
                 role="button"
                 tabIndex={0}
@@ -2071,9 +2246,10 @@ function DashboardView({
                 }}
                 className="group overflow-hidden rounded-2xl border border-slate-200 bg-white text-left shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-lg hover:shadow-slate-200/70"
               >
-                <div className="flex aspect-[4/3] items-center justify-center bg-gradient-to-br from-slate-100 to-slate-200">
-                  <div className="grid h-16 w-16 place-items-center rounded-2xl bg-white/75 text-slate-700 shadow-sm ring-1 ring-white/80 backdrop-blur">
-                    <FileText className="h-8 w-8" strokeWidth={1.8} />
+                <div className="aspect-[4/3] bg-gradient-to-br from-slate-100 to-slate-200 p-4">
+                  <div className="h-full rounded-xl border border-white/80 bg-white/85 p-3 shadow-sm">
+                    <div className="mb-2 h-2 w-16 rounded-full bg-slate-200" />
+                    <p className="line-clamp-5 text-xs leading-5 text-slate-500">{previewText}</p>
                   </div>
                 </div>
                 <div className="border-t border-slate-100 p-4">
@@ -2101,7 +2277,8 @@ function DashboardView({
                   </div>
                 </div>
               </article>
-              ))}
+                )
+              })}
             </div>
           )}
         </section>
@@ -2117,23 +2294,26 @@ function ProjectsView({
   onOpenDocument,
   onRenameDocument,
   onShareDocument,
-  onToggleFavorite,
   onDeleteDocument,
   onDuplicateDocument,
+  onMoveDocument,
   onCreateDocument,
+  onImportMarkdown,
 }: {
   documents: Document[]
   onOpenDocument: (id: string) => void
   onRenameDocument: (id: string) => void
   onShareDocument: (id: string) => void
-  onToggleFavorite: (id: string) => void
   onDeleteDocument: (id: string) => void
   onDuplicateDocument: (id: string) => void
+  onMoveDocument: (id: string) => void
   onCreateDocument: () => void
+  onImportMarkdown: (file: File) => void
 }) {
   const [activeTab, setActiveTab] = useState<ProjectTab>('files')
   const [openMenuId, setOpenMenuId] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
+  const markdownInputRef = useRef<HTMLInputElement | null>(null)
   const tabs: Array<{ id: ProjectTab; label: string }> = [
     { id: 'files', label: '文件' },
     { id: 'imports', label: '匯入檔案' },
@@ -2218,6 +2398,17 @@ function ProjectsView({
 
   return (
     <main className={`min-h-0 flex-1 overflow-auto bg-slate-50 ${SCROLLBAR_HIDE}`}>
+      <input
+        ref={markdownInputRef}
+        type="file"
+        accept=".md,.markdown,text/markdown,text/plain"
+        className="hidden"
+        onChange={(event) => {
+          const file = event.target.files?.[0]
+          if (file) onImportMarkdown(file)
+          event.currentTarget.value = ''
+        }}
+      />
       <div className="mx-auto max-w-7xl px-6 py-8 sm:px-8 lg:px-10">
         <section className="mb-6">
           <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
@@ -2233,16 +2424,26 @@ function ProjectsView({
               新增文件
             </button>
           </div>
-          <div className="group flex h-32 items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-white/70 px-6 text-center shadow-sm transition-all duration-300 hover:border-slate-400 hover:bg-white hover:shadow-md">
+          <button
+            type="button"
+            onClick={() => markdownInputRef.current?.click()}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={(event) => {
+              event.preventDefault()
+              const file = event.dataTransfer.files?.[0]
+              if (file) onImportMarkdown(file)
+            }}
+            className="group flex h-32 w-full items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-white/70 px-6 text-center shadow-sm transition-all duration-300 hover:border-slate-400 hover:bg-white hover:shadow-md"
+          >
             <div className="flex flex-col items-center gap-3">
               <div className="grid h-12 w-12 place-items-center rounded-2xl bg-slate-100 text-slate-500 transition-colors group-hover:bg-slate-50 group-hover:text-slate-800">
                 <UploadCloud className="h-6 w-6" strokeWidth={1.9} />
               </div>
               <p className="text-sm font-semibold text-slate-700">
-                拖曳 Word / PDF 檔案至此，AI 自動解析為 Markdown
+                拖曳 Markdown 檔案至此直接編輯；Word / PDF 解析入口已預留
               </p>
             </div>
-          </div>
+          </button>
         </section>
 
         <section className="mb-6 grid gap-3 md:grid-cols-2">
@@ -2341,7 +2542,7 @@ function ProjectsView({
                         <button type="button" onClick={() => { setOpenMenuId(null); onDuplicateDocument(document.id) }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-950">
                           <Copy className="h-4 w-4" /> 複製
                         </button>
-                        <button type="button" onClick={() => { setOpenMenuId(null); onToggleFavorite(document.id) }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-950">
+                        <button type="button" onClick={() => { setOpenMenuId(null); onMoveDocument(document.id) }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-950">
                           <Archive className="h-4 w-4" /> 移動
                         </button>
                         <button type="button" onClick={() => { setOpenMenuId(null); void onShareDocument(document.id) }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-950">
@@ -2966,6 +3167,7 @@ function WorkspaceApp({
   const [isAdvancedMenuOpen, setIsAdvancedMenuOpen] = useState(false)
   const [isAssistDrawerOpen, setIsAssistDrawerOpen] = useState(false)
   const [activeAssistTask, setActiveAssistTask] = useState<string | null>(null)
+  const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
   const [mobileEditorPane, setMobileEditorPane] = useState<'edit' | 'preview'>('edit')
   const [collaboratorEmail, setCollaboratorEmail] = useState('')
   const [documentCollaborators, setDocumentCollaborators] = useState<DocumentCollaborator[]>([])
@@ -3501,7 +3703,7 @@ function WorkspaceApp({
         }
       }
 
-      setBridgeToast('✨ 成功接收 AI 內容並同步至協作房間！')
+      setBridgeToast('成功接收 AI 內容並同步至協作房間')
     }
 
     window.addEventListener('AutoLabReport_Insert', handleAutoLabReportInsert)
@@ -4064,8 +4266,29 @@ function WorkspaceApp({
     setCurrentView('editor')
   }
 
-  function createNewDocument() {
+  function createBlankDocument() {
+    setIsCreateModalOpen(false)
     void createDocumentForParent(null)
+  }
+
+  function createNewDocument() {
+    setIsCreateModalOpen(true)
+  }
+
+  async function importMarkdownFile(file: File) {
+    if (!file.name.toLowerCase().endsWith('.md') && !file.name.toLowerCase().endsWith('.markdown')) {
+      setBridgeToast('目前先支援上傳 .md / .markdown 檔案')
+      return
+    }
+
+    const content = await file.text()
+    const title = file.name.replace(/\.(md|markdown)$/i, '') || '匯入的 Markdown'
+    const nextDocument = createDocument(title, content, null)
+    setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
+    loadDocument(nextDocument)
+    setIsSidebarCollapsed(true)
+    setCurrentView('editor')
+    setBridgeToast('Markdown 檔案已匯入')
   }
 
   async function createDocumentFromTemplate(template: (typeof DEFAULT_TEMPLATES)[number]) {
@@ -4120,6 +4343,15 @@ function WorkspaceApp({
     void createDocumentForParent(parentId)
   }
 
+  function createDocumentFromPreset(title: string, content: string) {
+    const nextDocument = createDocument(title, content, null)
+    setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
+    loadDocument(nextDocument)
+    setIsSidebarCollapsed(true)
+    setCurrentView('editor')
+    setIsCreateModalOpen(false)
+  }
+
   function duplicateDocument(id: string) {
     const sourceDocument = documents.find((document) => document.id === id && document.type === 'file' && !document.isTrashed)
     if (!sourceDocument) return
@@ -4127,6 +4359,62 @@ function WorkspaceApp({
     const nextDocument = createDocument(`${sourceDocument.title} Copy`, sourceDocument.content, sourceDocument.parentId)
     setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
     setBridgeToast('已建立副本')
+  }
+
+  async function moveDocument(id: string) {
+    if (databaseLoading) return
+
+    const targetDocument = documents.find((document) => document.id === id && document.type === 'file' && !document.isTrashed)
+    if (!targetDocument) return
+    if (getDocumentPermission(targetDocument, user) !== 'owner') {
+      setBridgeToast('只有文件擁有者可以移動文件')
+      return
+    }
+
+    const folders = documents.filter((document) => document.type === 'folder' && !document.isTrashed)
+    const folderHint = folders.length > 0 ? folders.map((folder) => folder.title).join('、') : '目前沒有資料夾'
+    const nextFolderName = window.prompt(
+      `移動「${targetDocument.title}」到哪個資料夾？\n輸入空白可移回根目錄。\n現有資料夾：${folderHint}`,
+      targetDocument.parentId ? documents.find((document) => document.id === targetDocument.parentId)?.title ?? '' : '',
+    )
+    if (nextFolderName === null) return
+
+    const trimmedFolderName = nextFolderName.trim()
+    const matchedFolder = trimmedFolderName
+      ? folders.find((folder) => folder.title.trim().toLowerCase() === trimmedFolderName.toLowerCase())
+      : null
+    const nextParentId: string | null = matchedFolder?.id ?? null
+    if (trimmedFolderName && !nextParentId) {
+      setBridgeToast('找不到這個資料夾，請先建立資料夾後再移動')
+      return
+    }
+
+    const now = new Date().toISOString()
+    if (supabase && shouldUseSupabaseDocuments) {
+      setDatabaseLoading(true)
+      try {
+        const { error } = await supabase
+          .from('documents')
+          .update({ parent_id: nextParentId, updated_at: now })
+          .eq('id', id)
+        if (error) throw error
+        await refreshSupabaseDocuments()
+        setBridgeToast(nextParentId ? '文件已移動到資料夾' : '文件已移回根目錄')
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '移動文件失敗'
+        setBridgeToast(`移動文件失敗：${message}`)
+      } finally {
+        setDatabaseLoading(false)
+      }
+      return
+    }
+
+    setDocuments((currentDocuments) =>
+      currentDocuments.map((document) =>
+        document.id === id ? { ...document, parentId: nextParentId, updatedAt: now } : document,
+      ),
+    )
+    setBridgeToast(nextParentId ? '文件已移動到資料夾' : '文件已移回根目錄')
   }
 
   function selectDocument(id: string) {
@@ -4798,6 +5086,8 @@ function WorkspaceApp({
           onToggleFavorite={toggleDocumentFavorite}
           onOpenExtensionModal={() => setIsExtensionModalOpen(true)}
           onOpenFeedback={openFeedback}
+          quota={aiQuota}
+          quotaLoading={aiQuotaLoading}
           user={user}
           onSignOut={onSignOut}
         />
@@ -4902,7 +5192,7 @@ function WorkspaceApp({
               onClick={() => setIsAssistDrawerOpen(true)}
               className="inline-flex h-10 items-center gap-2 rounded-xl bg-slate-950 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
             >
-              ✨ Assist
+              Assist
             </button>
 
             <div ref={advancedMenuRef} className="relative">
@@ -5052,6 +5342,7 @@ function WorkspaceApp({
           documents={documents}
           onOpenDocument={selectDocument}
           onCreateDocument={createNewDocument}
+          onImportMarkdown={(file) => void importMarkdownFile(file)}
           onRenameDocument={renameDocument}
           onShareDocument={shareDocument}
           onToggleFavorite={toggleDocumentFavorite}
@@ -5063,6 +5354,7 @@ function WorkspaceApp({
           documents={documents}
           onOpenDocument={selectDocument}
           onCreateDocument={createNewDocument}
+          onImportMarkdown={(file) => void importMarkdownFile(file)}
           onRenameDocument={renameDocument}
           onShareDocument={shareDocument}
           onToggleFavorite={toggleDocumentFavorite}
@@ -5076,10 +5368,11 @@ function WorkspaceApp({
           onOpenDocument={selectDocument}
           onRenameDocument={renameDocument}
           onShareDocument={shareDocument}
-          onToggleFavorite={toggleDocumentFavorite}
           onDeleteDocument={deleteDocument}
           onDuplicateDocument={duplicateDocument}
+          onMoveDocument={moveDocument}
           onCreateDocument={createNewDocument}
+          onImportMarkdown={(file) => void importMarkdownFile(file)}
         />
       ) : currentView === 'trash' ? (
         <TrashView
@@ -5424,6 +5717,129 @@ function WorkspaceApp({
       )}
       </div>
 
+      {isCreateModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-5xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl shadow-slate-300/70">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-7 py-6">
+              <div>
+                <h2 className="text-2xl font-semibold tracking-tight text-slate-950">建立新文件</h2>
+                <p className="mt-2 text-sm text-slate-500">先選擇你要完成的任務，進入後再用 Assist 補內容。</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCreateModalOpen(false)}
+                className="grid h-10 w-10 place-items-center rounded-xl text-slate-400 transition hover:bg-slate-100 hover:text-slate-950"
+                aria-label="關閉"
+              >
+                <X className="h-5 w-5" strokeWidth={2} />
+              </button>
+            </div>
+            <div className="grid gap-3 px-7 py-6 md:grid-cols-[240px_1fr]">
+              <aside className="space-y-1 text-sm font-semibold text-slate-500">
+                {['精選推薦', '學術報告', '教案與課堂', '長文寫作', '匯入檔案', '自訂大小'].map((item, index) => (
+                  <div
+                    key={item}
+                    className={`rounded-xl px-4 py-3 ${index === 0 ? 'bg-slate-100 text-slate-950' : 'hover:bg-slate-50'}`}
+                  >
+                    {item}
+                  </div>
+                ))}
+              </aside>
+              <section>
+                <div className="mb-5">
+                  <div className="relative">
+                    <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" strokeWidth={2} />
+                    <input
+                      placeholder="你想建立哪種文件？"
+                      className="h-12 w-full rounded-2xl border border-slate-200 bg-white pl-11 pr-4 text-sm font-medium outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-100"
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {[
+                    {
+                      title: '空白 Markdown',
+                      description: '完全從空白開始',
+                      icon: FilePlus2,
+                      action: createBlankDocument,
+                    },
+                    {
+                      title: '實驗報告',
+                      description: '目的、原理、數據、結論',
+                      icon: Beaker,
+                      action: () => void createDocumentFromTemplate(DEFAULT_TEMPLATES[0]),
+                    },
+                    {
+                      title: '閱讀心得',
+                      description: '摘要、觀點、反思',
+                      icon: BookMarked,
+                      action: () =>
+                        createDocumentFromPreset(
+                          '閱讀心得',
+                          '# 閱讀心得\n\n## 書籍 / 文章資訊\n\n## 內容摘要\n\n## 重要觀點\n\n## 我的反思\n\n## 結論\n',
+                        ),
+                    },
+                    {
+                      title: '專題論文',
+                      description: '緒論、方法、結果、討論',
+                      icon: FileText,
+                      action: () =>
+                        createDocumentFromPreset(
+                          '專題論文草稿',
+                          '# 專題論文\n\n## 摘要\n\n## 緒論\n\n## 文獻回顧\n\n## 研究方法\n\n## 結果\n\n## 討論\n\n## 結論\n',
+                        ),
+                    },
+                    {
+                      title: '寫書 / 長文',
+                      description: '章節大綱與段落草稿',
+                      icon: PenLine,
+                      action: () =>
+                        createDocumentFromPreset(
+                          '長文草稿',
+                          '# 長文草稿\n\n## 核心主題\n\n## 章節大綱\n\n### 第一章\n\n### 第二章\n\n## 待補資料\n',
+                        ),
+                    },
+                    {
+                      title: '教案設計',
+                      description: '目標、活動、評量',
+                      icon: LayoutTemplate,
+                      action: () =>
+                        createDocumentFromPreset(
+                          '教案設計',
+                          '# 教案設計\n\n## 教學目標\n\n## 適用對象\n\n## 教學流程\n\n## 活動設計\n\n## 評量方式\n\n## 延伸任務\n',
+                        ),
+                    },
+                    {
+                      title: '資料分析',
+                      description: '表格、統計與圖表',
+                      icon: Database,
+                      action: () => void createDocumentFromTemplate(DEFAULT_TEMPLATES[4]),
+                    },
+                    {
+                      title: '匯入 Markdown',
+                      description: '上傳 .md 直接編輯',
+                      icon: FileUp,
+                      action: () => setBridgeToast('請到 Home 或 Projects 的匯入入口選擇 .md 檔案'),
+                    },
+                  ].map((item) => (
+                    <button
+                      key={item.title}
+                      type="button"
+                      onClick={item.action}
+                      className="group rounded-2xl border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-lg hover:shadow-slate-200/70"
+                    >
+                      <item.icon className="h-7 w-7 text-slate-700" strokeWidth={1.8} />
+                      <h3 className="mt-4 text-sm font-semibold text-slate-950">{item.title}</h3>
+                      <p className="mt-1 text-sm leading-6 text-slate-500">{item.description}</p>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            </div>
+          </div>
+        </div>
+      )}
+
       {isOutlineModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/30 px-4 backdrop-blur-sm">
           <div className="w-full max-w-lg rounded-2xl border border-zinc-100 bg-white p-8 shadow-2xl transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950">
@@ -5468,175 +5884,153 @@ function WorkspaceApp({
       )}
 
       {isShareModalOpen && activeDocument && user && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/30 px-4 backdrop-blur-sm">
-          <div className="w-full max-w-2xl rounded-3xl border border-zinc-100 bg-white p-7 shadow-2xl transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950">
-            <div className="flex items-start justify-between gap-4">
+        <div className="fixed inset-0 z-50 bg-slate-950/20 backdrop-blur-sm">
+          <button
+            type="button"
+            aria-label="關閉分享"
+            onClick={() => setIsShareModalOpen(false)}
+            className="absolute inset-0"
+          />
+          <aside className="absolute bottom-0 right-0 top-0 flex w-full max-w-[520px] flex-col border-l border-slate-200 bg-white shadow-2xl shadow-slate-400/60">
+            <header className="flex items-start justify-between gap-4 border-b border-slate-200 px-6 py-5">
               <div>
-                <h2 className="text-xl font-semibold tracking-tight text-zinc-900 dark:text-zinc-100">
-                  分享「{activeDocument.title}」
-                </h2>
-                <p className="mt-1.5 text-sm leading-6 text-zinc-500 dark:text-zinc-400">
-                  邀請特定使用者，或設定知道連結的人可以如何存取這份報告。
-                </p>
+                <h2 className="text-xl font-semibold tracking-tight text-slate-950">分享文件</h2>
+                <p className="mt-1 text-sm text-slate-500">{activeDocument.title}</p>
               </div>
               <button
                 type="button"
                 onClick={() => setIsShareModalOpen(false)}
-                className="rounded-full p-2 text-zinc-400 transition hover:bg-zinc-100 hover:text-zinc-900 dark:hover:bg-zinc-900 dark:hover:text-zinc-100"
-                title="關閉"
+                className="grid h-10 w-10 place-items-center rounded-xl text-slate-400 transition hover:bg-slate-100 hover:text-slate-950"
               >
-                ×
+                <X className="h-5 w-5" strokeWidth={2} />
               </button>
-            </div>
+            </header>
 
-            <div className="mt-7 space-y-7">
+            <div className={`min-h-0 flex-1 space-y-6 overflow-auto px-6 py-5 ${SCROLLBAR_HIDE}`}>
               <section>
                 <div className="mb-3 flex items-center justify-between">
-                  <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">特定協作者</h3>
-                  {documentCollaboratorsLoading && (
-                    <span className="text-xs font-medium text-zinc-400">載入中...</span>
-                  )}
+                  <h3 className="text-sm font-semibold text-slate-950">具有訪問權限的人</h3>
+                  {documentCollaboratorsLoading && <span className="text-xs font-medium text-slate-400">載入中...</span>}
                 </div>
-
                 <form
                   onSubmit={(event) => {
                     event.preventDefault()
                     void inviteDocumentCollaborator()
                   }}
-                  className="flex flex-col gap-2 sm:flex-row"
+                  className="relative"
                 >
+                  <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" strokeWidth={2} />
                   <input
                     type="email"
                     value={collaboratorEmail}
                     onChange={(event) => setCollaboratorEmail(event.target.value)}
-                    placeholder="新增使用者 Email"
+                    placeholder="添加成員 Email"
                     disabled={!isActiveDocumentOwner || shareSettingLoading}
-                    className="min-w-0 flex-1 rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:bg-zinc-950"
+                    className="h-12 w-full rounded-2xl border border-slate-200 bg-white pl-11 pr-12 text-sm font-medium text-slate-900 outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                   />
                   <button
                     type="submit"
                     disabled={!isActiveDocumentOwner || shareSettingLoading || !collaboratorEmail.trim()}
-                    className="rounded-xl bg-zinc-900 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+                    className="absolute right-2 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-xl bg-slate-950 text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                    aria-label="邀請"
                   >
-                    邀請
+                    <UserPlus className="h-4 w-4" strokeWidth={2} />
                   </button>
                 </form>
 
-                <div className="mt-4 overflow-hidden rounded-2xl border border-zinc-200/70 bg-zinc-50/60 dark:border-zinc-800 dark:bg-zinc-900/60">
-                  <div className="flex items-center gap-3 border-b border-zinc-200/70 px-4 py-3 dark:border-zinc-800">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-zinc-900 text-sm font-semibold text-white dark:bg-zinc-100 dark:text-zinc-950">
-                      {getUserInitial(isActiveDocumentOwner ? user : null)}
+                <div className="mt-4 space-y-2">
+                  <div className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="grid h-10 w-10 place-items-center rounded-full bg-slate-950 text-sm font-semibold text-white">
+                      {getUserInitial(user)}
                     </div>
                     <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                        {isActiveDocumentOwner ? getUserDisplayName(user) : '文件擁有者'}
-                      </p>
-                      <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">
-                        {isActiveDocumentOwner ? user.email : 'Owner'}
-                      </p>
+                      <p className="truncate text-sm font-semibold text-slate-950">{getUserDisplayName(user)}</p>
+                      <p className="truncate text-xs text-slate-500">{user.email}</p>
                     </div>
-                    <span className="rounded-full bg-zinc-200/70 px-3 py-1 text-xs font-semibold text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-                      擁有者
-                    </span>
+                    <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-500 ring-1 ring-slate-200">擁有者</span>
                   </div>
 
-                  {documentCollaborators.length > 0 ? (
-                    documentCollaborators.map((collaborator) => (
-                      <div
-                        key={collaborator.userEmail}
-                        className="flex items-center gap-3 border-b border-zinc-200/70 px-4 py-3 last:border-b-0 dark:border-zinc-800"
-                      >
-                        <div className="flex h-9 w-9 items-center justify-center rounded-full bg-white text-sm font-semibold text-zinc-700 ring-1 ring-zinc-200 dark:bg-zinc-950 dark:text-zinc-200 dark:ring-zinc-800">
-                          {getCollaboratorInitial(collaborator.userEmail)}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <p className="truncate text-sm font-medium text-zinc-900 dark:text-zinc-100">
-                            {collaborator.userEmail}
-                          </p>
-                          <p className="text-xs text-zinc-500 dark:text-zinc-400">已邀請協作者</p>
-                        </div>
-                        <select
-                          value={collaborator.role}
-                          onChange={(event) =>
-                            void updateDocumentCollaboratorRole(
-                              collaborator.userEmail,
-                              event.target.value as CollaboratorRole,
-                            )
-                          }
-                          disabled={!isActiveDocumentOwner || shareSettingLoading}
-                          className="rounded-lg border border-zinc-200 bg-white px-2.5 py-2 text-xs font-semibold text-zinc-700 outline-none transition focus:border-zinc-400 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-950 dark:text-zinc-200"
-                        >
-                          <option value="view">可檢視</option>
-                          <option value="edit">可編輯</option>
-                        </select>
-                        <button
-                          type="button"
-                          onClick={() => void removeDocumentCollaborator(collaborator.userEmail)}
-                          disabled={!isActiveDocumentOwner || shareSettingLoading}
-                          className="rounded-lg px-2.5 py-2 text-xs font-semibold text-zinc-400 transition hover:bg-red-50 hover:text-red-600 disabled:cursor-not-allowed disabled:opacity-40 dark:hover:bg-red-500/10 dark:hover:text-red-300"
-                        >
-                          移除
-                        </button>
+                  {documentCollaborators.map((collaborator) => (
+                    <div key={collaborator.userEmail} className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-3">
+                      <div className="grid h-10 w-10 place-items-center rounded-full bg-slate-100 text-sm font-semibold text-slate-600">
+                        {getCollaboratorInitial(collaborator.userEmail)}
                       </div>
-                    ))
-                  ) : (
-                    <div className="px-4 py-5 text-sm text-zinc-500 dark:text-zinc-400">
-                      尚未邀請任何協作者。
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold text-slate-950">{collaborator.userEmail}</p>
+                        <p className="text-xs text-slate-500">協作者</p>
+                      </div>
+                      <select
+                        value={collaborator.role}
+                        onChange={(event) =>
+                          void updateDocumentCollaboratorRole(collaborator.userEmail, event.target.value as CollaboratorRole)
+                        }
+                        disabled={!isActiveDocumentOwner || shareSettingLoading}
+                        className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 outline-none"
+                      >
+                        <option value="view">可檢視</option>
+                        <option value="edit">可編輯</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => void removeDocumentCollaborator(collaborator.userEmail)}
+                        disabled={!isActiveDocumentOwner || shareSettingLoading}
+                        className="grid h-9 w-9 place-items-center rounded-xl text-slate-400 transition hover:bg-slate-100 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-40"
+                        aria-label={`移除 ${collaborator.userEmail}`}
+                      >
+                        <X className="h-4 w-4" strokeWidth={2} />
+                      </button>
                     </div>
-                  )}
+                  ))}
                 </div>
               </section>
 
-              <section className="border-t border-zinc-200 pt-6 dark:border-zinc-800">
-                <div className="mb-3">
-                  <h3 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">一般存取權</h3>
-                  <p className="mt-1 text-xs leading-5 text-zinc-500 dark:text-zinc-400">
-                    不在特定協作者名單內的人，會依照此連結權限存取文件。
-                  </p>
-                </div>
-
+              <section className="border-t border-slate-200 pt-5">
+                <h3 className="mb-3 text-sm font-semibold text-slate-950">訪問級別</h3>
                 <select
                   value={activeDocument.shareSetting}
                   onChange={(event) => void updateShareSetting(event.target.value as ShareSetting)}
                   disabled={!isActiveDocumentOwner || shareSettingLoading}
-                  className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 text-sm font-medium text-zinc-900 outline-none transition focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:bg-zinc-950"
+                  className="h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-800 outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                 >
-                  <option value="private">🔒 私密（僅限擁有者與受邀協作者）</option>
-                  <option value="view">👁️ 知道連結的人可以檢視</option>
-                  <option value="edit">✏️ 知道連結的人可以編輯</option>
+                  <option value="private">只有你可以訪問</option>
+                  <option value="view">知道連結的人可以檢視</option>
+                  <option value="edit">知道連結的人可以編輯</option>
                 </select>
-
-                {!isActiveDocumentOwner && (
-                  <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
-                    你不是此文件擁有者，因此只能複製連結，無法修改分享與協作者權限。
-                  </div>
-                )}
+                <button
+                  type="button"
+                  onClick={() => void shareDocument(activeDocument.id, true)}
+                  className="mt-4 flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-slate-950 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+                >
+                  <Link className="h-4 w-4" strokeWidth={2} />
+                  {shareCopied ? '已複製連結' : '複製連結'}
+                </button>
               </section>
 
-              <div className="rounded-xl border border-zinc-200/70 bg-zinc-50 p-3 dark:border-zinc-800 dark:bg-zinc-900">
-                <div className="truncate font-mono text-xs text-zinc-500 dark:text-zinc-400">
-                  {`${window.location.origin}/editor/${activeDocument.id}`}
+              <section className="border-t border-slate-200 pt-5">
+                <h3 className="mb-4 text-sm font-semibold text-slate-950">更多分享方式</h3>
+                <div className="grid grid-cols-4 gap-3">
+                  {[
+                    { label: '下載', icon: Download, action: () => void exportWordReport() },
+                    { label: '公開查看', icon: ExternalLink, action: () => void updateShareSetting('view') },
+                    { label: '錄製', icon: Video, action: () => setBridgeToast('錄製功能準備中') },
+                    { label: 'Google Drive', icon: Cloud, action: () => setBridgeToast('Google Drive 連接需要設定 OAuth Client ID') },
+                  ].map((item) => (
+                    <button
+                      key={item.label}
+                      type="button"
+                      onClick={item.action}
+                      className="flex flex-col items-center gap-2 rounded-2xl border border-slate-200 bg-white p-3 text-xs font-semibold text-slate-600 transition hover:-translate-y-0.5 hover:shadow-md"
+                    >
+                      <span className="grid h-10 w-10 place-items-center rounded-full bg-slate-100 text-slate-600">
+                        <item.icon className="h-5 w-5" strokeWidth={1.9} />
+                      </span>
+                      {item.label}
+                    </button>
+                  ))}
                 </div>
-              </div>
+              </section>
             </div>
-
-            <div className="mt-7 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={() => setIsShareModalOpen(false)}
-                className={SUBTLE_BUTTON}
-              >
-                完成
-              </button>
-              <button
-                type="button"
-                onClick={() => void shareDocument(activeDocument.id, true)}
-                className="rounded-lg bg-zinc-900 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
-              >
-                {shareCopied ? '✅ 已複製' : '複製連結'}
-              </button>
-            </div>
-          </div>
+          </aside>
         </div>
       )}
 
