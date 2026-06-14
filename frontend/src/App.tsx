@@ -104,6 +104,7 @@ const DOCUMENTS_STORAGE_KEY = 'autoLabReport_documents'
 const ACTIVE_DOCUMENT_ID_STORAGE_KEY = 'autoLabReport_activeDocumentId'
 const ANONYMOUS_IDENTITY_STORAGE_KEY = 'autoLabReport_anonymousIdentity'
 const AI_SETTINGS_STORAGE_KEY = 'autoLabReport_aiSettings'
+const USER_TEMPLATES_STORAGE_KEY = 'autoLabReport_userTemplates'
 const DOCUMENT_VERSIONS_STORAGE_KEY = 'autoLabReport_documentVersions'
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
@@ -311,6 +312,23 @@ type AiProvider = 'built_in' | 'extension' | 'user_api_key'
 type UserApiProvider = 'none' | 'openai' | 'gemini' | 'anthropic' | 'deepseek'
 type AiAction = 'outline' | 'rewrite' | 'expand' | 'format' | 'summarize' | 'custom'
 
+type PromptLibraryItem = {
+  id: string
+  title: string
+  description: string
+  content: string
+  updatedAt: string
+}
+
+type ReportTemplate = (typeof DEFAULT_TEMPLATES)[number] & {
+  authorName?: string
+  authorAvatarUrl?: string
+  source?: 'system' | 'community' | 'user'
+  visibility?: 'private' | 'community'
+  useCount?: number
+  tags?: string[]
+}
+
 type AiSettings = {
   preferredProvider: AiProvider
   userApiProvider: UserApiProvider
@@ -321,6 +339,7 @@ type AiSettings = {
   outlinePrompt: string
   summarizePrompt: string
   customPrompt: string
+  promptLibrary: PromptLibraryItem[]
   extensionAutoReturn: boolean
 }
 
@@ -358,6 +377,7 @@ type SupabaseAiSettingsRow = {
   outline_prompt?: string | null
   summarize_prompt?: string | null
   custom_prompt?: string | null
+  prompt_library?: unknown
   extension_auto_return?: boolean | null
 }
 
@@ -498,7 +518,48 @@ const DEFAULT_AI_SETTINGS: AiSettings = {
     '請將以下實驗報告內容整理成精煉的結論段落，只回傳 Markdown 純文字：\n\n{{text}}',
   customPrompt:
     '請根據我的要求處理以下實驗報告內容，只回傳 Markdown 純文字：\n\n{{text}}',
+  promptLibrary: [],
   extensionAutoReturn: false,
+}
+
+function createPromptLibraryItem(): PromptLibraryItem {
+  const now = new Date().toISOString()
+
+  return {
+    id: `prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    title: '未命名提示詞',
+    description: '',
+    content: '',
+    updatedAt: now,
+  }
+}
+
+function normalizePromptLibrary(items: unknown): PromptLibraryItem[] {
+  if (!Array.isArray(items)) return []
+
+  return items.map((item, index) => {
+    const source =
+      item && typeof item === 'object'
+        ? (item as Partial<PromptLibraryItem>)
+        : {}
+
+    return {
+      id:
+        typeof source.id === 'string' && source.id.trim()
+          ? source.id
+          : `prompt-${index}-${Date.now()}`,
+      title:
+        typeof source.title === 'string' && source.title.trim()
+          ? source.title
+          : '未命名提示詞',
+      description: typeof source.description === 'string' ? source.description : '',
+      content: typeof source.content === 'string' ? source.content : '',
+      updatedAt:
+        typeof source.updatedAt === 'string' && source.updatedAt.trim()
+          ? source.updatedAt
+          : new Date().toISOString(),
+    }
+  })
 }
 
 function MermaidBlock({ chart }: { chart: string }) {
@@ -1496,6 +1557,7 @@ function normalizeAiSettings(settings: Partial<AiSettings> | null | undefined): 
     ...DEFAULT_AI_SETTINGS,
     ...(settings ?? {}),
     userApiKey: typeof settings?.userApiKey === 'string' ? settings.userApiKey : '',
+    promptLibrary: normalizePromptLibrary(settings?.promptLibrary),
     preferredProvider:
       settings?.preferredProvider === 'extension' || settings?.preferredProvider === 'user_api_key'
         ? settings.preferredProvider
@@ -1542,6 +1604,7 @@ function mapSupabaseAiSettings(row: SupabaseAiSettingsRow, currentSettings: AiSe
     outlinePrompt: row.outline_prompt ?? currentSettings.outlinePrompt,
     summarizePrompt: row.summarize_prompt ?? currentSettings.summarizePrompt,
     customPrompt: row.custom_prompt ?? currentSettings.customPrompt,
+    promptLibrary: normalizePromptLibrary(row.prompt_library ?? currentSettings.promptLibrary),
     extensionAutoReturn: row.extension_auto_return ?? currentSettings.extensionAutoReturn,
   })
 }
@@ -1558,6 +1621,7 @@ function toSupabaseAiSettingsPayload(userId: string, settings: AiSettings) {
     outline_prompt: settings.outlinePrompt,
     summarize_prompt: settings.summarizePrompt,
     custom_prompt: settings.customPrompt,
+    prompt_library: settings.promptLibrary,
     extension_auto_return: settings.extensionAutoReturn,
     updated_at: new Date().toISOString(),
   }
@@ -1680,47 +1744,6 @@ function getCollaboratorFromAwarenessState(
     color: typeof color === 'string' && color.trim() ? color : getPresenceColor(name),
     isLocal: clientId === localClientId,
   }
-}
-
-function CollaboratorAvatarGroup({ collaborators }: { collaborators: CollaboratorPresence[] }) {
-  if (collaborators.length === 0) return null
-
-  const visibleCollaborators = collaborators.slice(0, 5)
-  const hiddenCount = Math.max(collaborators.length - visibleCollaborators.length, 0)
-
-  return (
-    <div className="flex items-center -space-x-2 pl-1" aria-label="線上協作者">
-      {visibleCollaborators.map((collaborator) => (
-        <div
-          key={collaborator.clientId}
-          title={`${collaborator.name}${collaborator.isLocal ? '（你）' : ''}`}
-          className="relative flex h-8 w-8 items-center justify-center overflow-hidden rounded-full border-2 border-white bg-zinc-100 text-xs font-semibold text-white shadow-sm ring-1 ring-zinc-200/80 transition-transform hover:z-10 hover:-translate-y-0.5 dark:border-zinc-950 dark:ring-zinc-700"
-          style={{ backgroundColor: collaborator.avatar ? undefined : collaborator.color }}
-        >
-          {collaborator.avatar ? (
-            <img
-              src={collaborator.avatar}
-              alt={collaborator.name}
-              className="h-full w-full object-cover"
-              referrerPolicy="no-referrer"
-            />
-          ) : collaborator.emoji ? (
-            <span className="text-base leading-none">{collaborator.emoji}</span>
-          ) : (
-            getCollaboratorInitial(collaborator.name)
-          )}
-        </div>
-      ))}
-      {hiddenCount > 0 && (
-        <div
-          title={`另有 ${hiddenCount} 位協作者在線`}
-          className="flex h-8 w-8 items-center justify-center rounded-full border-2 border-white bg-zinc-900 text-[11px] font-semibold text-white shadow-sm ring-1 ring-zinc-200/80 dark:border-zinc-950 dark:ring-zinc-700"
-        >
-          +{hiddenCount}
-        </div>
-      )}
-    </div>
-  )
 }
 
 function AiSettingsView({
@@ -1980,7 +2003,7 @@ function AiSettingsView({
             <div>
               <h2 className="text-lg font-semibold text-slate-950">進階文字模板</h2>
               <p className="mt-1 text-sm leading-6 text-slate-500">
-                這裡留給進階使用者調整語氣。一般使用者只需要在 Assist 裡選任務即可。
+                這裡留給進階使用者調整語氣。一般使用者只需要在 AI Assist 裡選任務即可。
               </p>
             </div>
             <button
@@ -2024,8 +2047,6 @@ function AiSettingsView({
   )
 }
 
-type PromptKey = 'outlinePrompt' | 'rewritePrompt' | 'expandPrompt' | 'summarizePrompt' | 'customPrompt'
-
 function PromptLibraryView({
   settings,
   onChangeSettings,
@@ -2037,56 +2058,40 @@ function PromptLibraryView({
   onOpenAiSettings: () => void
   onNotify: (message: string) => void
 }) {
-  const promptCards: Array<{
-    key: PromptKey
-    title: string
-    description: string
-    task: string
-  }> = [
-    {
-      key: 'outlinePrompt',
-      title: '生成報告',
-      description: '只有資料或老師要求時，先產生報告骨架。',
-      task: '原始資料 → 報告大綱',
-    },
-    {
-      key: 'rewritePrompt',
-      title: '整理內容',
-      description: '把 ChatGPT / Gemini 生成的內容整理成正式段落。',
-      task: '亂格式 → 清楚 Markdown',
-    },
-    {
-      key: 'expandPrompt',
-      title: '補完整段落',
-      description: '讓過短的原理、分析或結論變得完整。',
-      task: '草稿 → 完整敘述',
-    },
-    {
-      key: 'summarizePrompt',
-      title: '摘要結論',
-      description: '把長篇內容濃縮成可以放進結論的版本。',
-      task: '長文 → 精簡結論',
-    },
-    {
-      key: 'customPrompt',
-      title: '自訂處理',
-      description: '留給你自己的課程、老師要求或固定寫作風格。',
-      task: '自訂流程',
-    },
-  ]
+  const prompts = settings.promptLibrary
 
-  function updatePrompt(key: PromptKey, value: string) {
-    onChangeSettings(normalizeAiSettings({ ...settings, [key]: value }))
+  function commitPromptLibrary(nextPrompts: PromptLibraryItem[]) {
+    onChangeSettings(normalizeAiSettings({ ...settings, promptLibrary: nextPrompts }))
   }
 
-  function restorePrompt(key: PromptKey) {
-    updatePrompt(key, DEFAULT_AI_SETTINGS[key])
-    onNotify('已恢復預設提示詞')
+  function addPrompt() {
+    const nextPrompt = createPromptLibraryItem()
+    commitPromptLibrary([nextPrompt, ...prompts])
+    onNotify('已新增提示詞')
   }
 
-  async function copyPrompt(key: PromptKey) {
+  function updatePrompt(id: string, patch: Partial<PromptLibraryItem>) {
+    commitPromptLibrary(
+      prompts.map((prompt) =>
+        prompt.id === id
+          ? {
+              ...prompt,
+              ...patch,
+              updatedAt: new Date().toISOString(),
+            }
+          : prompt,
+      ),
+    )
+  }
+
+  function deletePrompt(id: string) {
+    commitPromptLibrary(prompts.filter((prompt) => prompt.id !== id))
+    onNotify('已刪除提示詞')
+  }
+
+  async function copyPrompt(prompt: PromptLibraryItem) {
     try {
-      await navigator.clipboard.writeText(settings[key])
+      await navigator.clipboard.writeText(prompt.content)
       onNotify('提示詞已複製')
     } catch {
       onNotify('瀏覽器不允許直接複製，請手動選取文字')
@@ -2101,59 +2106,101 @@ function PromptLibraryView({
             <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-400">Prompt Library</p>
             <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">我的提示詞庫</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
-              這裡放你常用的 AI 指令。小白平常只要用 Assist，進階時才需要調整這些文字模板。
+              這裡只放你自己新增的提示詞。AI Assist 仍然可以照常使用；這一區是給固定課程、老師格式與個人寫作習慣保存用的。
             </p>
           </div>
-          <button
-            type="button"
-            onClick={onOpenAiSettings}
-            className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
-          >
-            AI 連接方式
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={onOpenAiSettings}
+              className="rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
+            >
+              AI 連接方式
+            </button>
+            <button
+              type="button"
+              onClick={addPrompt}
+              className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+            >
+              <Plus className="h-4 w-4" strokeWidth={2} />
+              新增提示詞
+            </button>
+          </div>
         </div>
 
-        <section className="grid gap-5 lg:grid-cols-2">
-          {promptCards.map((prompt) => (
-            <article
-              key={prompt.key}
-              className={`rounded-3xl border border-slate-200 bg-white p-5 shadow-sm ${
-                prompt.key === 'customPrompt' ? 'lg:col-span-2' : ''
-              }`}
+        {prompts.length === 0 ? (
+          <section className="rounded-3xl border border-dashed border-slate-200 bg-white px-8 py-16 text-center shadow-sm">
+            <Library className="mx-auto mb-4 h-10 w-10 text-slate-300" strokeWidth={1.8} />
+            <h2 className="text-lg font-semibold text-slate-950">還沒有提示詞</h2>
+            <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">
+              按下「新增提示詞」後，你可以自己命名、補充用途，並貼上任何常用的文字指令。
+            </p>
+            <button
+              type="button"
+              onClick={addPrompt}
+              className="mt-6 inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
             >
-              <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-                <div>
-                  <div className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">
-                    {prompt.task}
+              <Plus className="h-4 w-4" strokeWidth={2} />
+              新增第一個提示詞
+            </button>
+          </section>
+        ) : (
+          <section className="grid gap-5 lg:grid-cols-2">
+            {prompts.map((prompt) => (
+              <article
+                key={prompt.id}
+                className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm transition hover:border-slate-300 hover:shadow-md"
+              >
+                <div className="mb-4 flex items-start justify-between gap-3">
+                  <div className="min-w-0 flex-1 space-y-3">
+                    <input
+                      value={prompt.title}
+                      onChange={(event) => updatePrompt(prompt.id, { title: event.target.value })}
+                      placeholder="提示詞標題"
+                      className="w-full rounded-2xl border border-transparent bg-slate-50 px-4 py-3 text-base font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-slate-200 focus:bg-white focus:ring-4 focus:ring-slate-100"
+                    />
+                    <input
+                      value={prompt.description}
+                      onChange={(event) => updatePrompt(prompt.id, { description: event.target.value })}
+                      placeholder="用途說明，例如：普物實驗結論、老師指定格式、研究摘要語氣"
+                      className="w-full rounded-2xl border border-transparent bg-slate-50 px-4 py-3 text-sm text-slate-600 outline-none transition placeholder:text-slate-400 focus:border-slate-200 focus:bg-white focus:ring-4 focus:ring-slate-100"
+                    />
                   </div>
-                  <h2 className="mt-3 text-lg font-semibold text-slate-950">{prompt.title}</h2>
-                  <p className="mt-1 text-sm leading-6 text-slate-500">{prompt.description}</p>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void copyPrompt(prompt)}
+                      disabled={!prompt.content.trim()}
+                      className="grid h-10 w-10 place-items-center rounded-xl border border-slate-200 bg-white text-slate-500 transition hover:bg-slate-50 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
+                      title="複製提示詞"
+                      aria-label="複製提示詞"
+                    >
+                      <Copy className="h-4 w-4" strokeWidth={2} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => deletePrompt(prompt.id)}
+                      className="grid h-10 w-10 place-items-center rounded-xl border border-red-100 bg-white text-red-500 transition hover:bg-red-50"
+                      title="刪除提示詞"
+                      aria-label="刪除提示詞"
+                    >
+                      <Trash2 className="h-4 w-4" strokeWidth={2} />
+                    </button>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void copyPrompt(prompt.key)}
-                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-950"
-                  >
-                    複製
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => restorePrompt(prompt.key)}
-                    className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-950"
-                  >
-                    預設
-                  </button>
-                </div>
-              </div>
-              <textarea
-                value={settings[prompt.key]}
-                onChange={(event) => updatePrompt(prompt.key, event.target.value)}
-                className={`h-44 w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-900 outline-none transition focus:border-slate-400 focus:bg-white focus:ring-4 focus:ring-slate-100 ${SCROLLBAR_HIDE}`}
-              />
-            </article>
-          ))}
-        </section>
+                <textarea
+                  value={prompt.content}
+                  onChange={(event) => updatePrompt(prompt.id, { content: event.target.value })}
+                  placeholder="在這裡貼上你的提示詞內容。可以包含寫作規則、輸出格式、老師要求或範例。"
+                  className={`h-56 w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-slate-400 focus:bg-white focus:ring-4 focus:ring-slate-100 ${SCROLLBAR_HIDE}`}
+                />
+                <p className="mt-3 text-xs font-medium text-slate-400">
+                  最後更新：{formatDocumentTime(prompt.updatedAt)}
+                </p>
+              </article>
+            ))}
+          </section>
+        )}
       </div>
     </main>
   )
@@ -2905,18 +2952,237 @@ function TrashView({
 
 function TemplatesView({
   onUseTemplate,
+  onNotify,
+  userName,
 }: {
-  onUseTemplate: (template: (typeof DEFAULT_TEMPLATES)[number]) => void
+  onUseTemplate: (template: ReportTemplate) => void
+  onNotify: (message: string) => void
+  userName: string
 }) {
+  const [activeTab, setActiveTab] = useState<'recommended' | 'community' | 'mine'>('recommended')
   const [selectedCategory, setSelectedCategory] = useState('全部')
   const [query, setQuery] = useState('')
-  const categories = ['全部', ...Array.from(new Set(DEFAULT_TEMPLATES.map((template) => template.category)))]
+  const [isUploadOpen, setIsUploadOpen] = useState(false)
+  const [userTemplates, setUserTemplates] = useState<ReportTemplate[]>(() => {
+    if (typeof window === 'undefined') return []
+
+    try {
+      const savedTemplates = JSON.parse(window.localStorage.getItem(USER_TEMPLATES_STORAGE_KEY) ?? '[]') as unknown
+      if (!Array.isArray(savedTemplates)) return []
+
+      return savedTemplates
+        .map<ReportTemplate | null>((template) => {
+          const source = template && typeof template === 'object' ? (template as Partial<ReportTemplate>) : {}
+          if (!source.title || !source.content) return null
+
+          return {
+            id: source.id ?? `user-template-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            title: source.title,
+            category: source.category ?? '實驗報告',
+            description: source.description ?? '使用者上傳的 Markdown 模板。',
+            content: source.content,
+            authorName: source.authorName ?? userName,
+            source: 'user' as const,
+            visibility: source.visibility === 'community' ? 'community' as const : 'private' as const,
+            useCount: source.useCount ?? 0,
+            tags: source.tags ?? ['我的模板'],
+          }
+        })
+        .filter((template): template is ReportTemplate => Boolean(template))
+    } catch {
+      return []
+    }
+  })
+  const [templateDraft, setTemplateDraft] = useState({
+    title: '',
+    category: '實驗報告',
+    authorName: userName,
+    description: '',
+    content: '',
+  })
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem(USER_TEMPLATES_STORAGE_KEY, JSON.stringify(userTemplates))
+  }, [userTemplates])
+
+  const templateTypes = [
+    {
+      category: '全部',
+      label: '全部模板',
+      description: '瀏覽所有可用模板',
+      icon: LayoutTemplate,
+    },
+    {
+      category: '實驗報告',
+      label: '實驗報告',
+      description: '目的、原理、數據、結論',
+      icon: Beaker,
+    },
+    {
+      category: '閱讀心得',
+      label: '閱讀心得',
+      description: '摘要、觀點、反思',
+      icon: BookMarked,
+    },
+    {
+      category: '專題論文',
+      label: '專題論文',
+      description: '緒論、方法、結果、討論',
+      icon: FileText,
+    },
+    {
+      category: '教案設計',
+      label: '教案設計',
+      description: '目標、活動、評量',
+      icon: LayoutTemplate,
+    },
+    {
+      category: '長文寫作',
+      label: '長文寫作',
+      description: '章節大綱與段落草稿',
+      icon: PenLine,
+    },
+    {
+      category: '資料分析',
+      label: '資料分析',
+      description: '表格、統計與圖表',
+      icon: Database,
+    },
+  ]
+
+  const recommendedTemplates = useMemo<ReportTemplate[]>(
+    () => [
+      ...DEFAULT_TEMPLATES.map((template) => ({
+        ...template,
+        category: template.id === 'data-analysis-lab' ? '資料分析' : '實驗報告',
+        authorName: 'AutoLabReport',
+        source: 'system' as const,
+        visibility: 'community' as const,
+        useCount: 128,
+        tags: [template.category, 'STEM'],
+      })),
+      {
+        id: 'reading-reflection-template',
+        title: '閱讀心得標準架構',
+        category: '閱讀心得',
+        description: '適合課堂閱讀心得、書籍摘要與觀點反思。',
+        content:
+          '# 閱讀心得\n\n## 書籍 / 文章資訊\n\n## 內容摘要\n\n## 重要觀點\n\n## 我的反思\n\n## 與課程的連結\n\n## 結論\n',
+        authorName: 'AutoLabReport',
+        source: 'system',
+        visibility: 'community',
+        useCount: 96,
+        tags: ['心得', '課堂作業'],
+      },
+      {
+        id: 'research-paper-template',
+        title: '專題論文草稿',
+        category: '專題論文',
+        description: '把研究問題、方法、結果與討論先放進乾淨骨架。',
+        content:
+          '# 專題論文\n\n## 摘要\n\n## 緒論\n\n## 文獻回顧\n\n## 研究方法\n\n## 結果\n\n## 討論\n\n## 結論\n\n## 參考資料\n',
+        authorName: 'AutoLabReport',
+        source: 'system',
+        visibility: 'community',
+        useCount: 74,
+        tags: ['論文', '研究'],
+      },
+      {
+        id: 'lesson-plan-template',
+        title: 'STEAM 教案設計',
+        category: '教案設計',
+        description: '包含教學目標、活動流程、材料、評量與延伸任務。',
+        content:
+          '# STEAM 教案設計\n\n## 教學主題\n\n## 適用年級\n\n## 教學目標\n\n## 所需材料\n\n## 課程流程\n\n## 活動設計\n\n## 評量方式\n\n## 延伸任務\n',
+        authorName: 'AutoLabReport',
+        source: 'system',
+        visibility: 'community',
+        useCount: 63,
+        tags: ['教案', 'STEAM'],
+      },
+      {
+        id: 'long-form-template',
+        title: '長文 / 書稿章節架構',
+        category: '長文寫作',
+        description: '從主題、章節、資料缺口開始整理長篇文本。',
+        content:
+          '# 長文草稿\n\n## 核心主題\n\n## 讀者對象\n\n## 章節大綱\n\n### 第一章\n\n### 第二章\n\n### 第三章\n\n## 需要補充的資料\n\n## 下一步待辦\n',
+        authorName: 'AutoLabReport',
+        source: 'system',
+        visibility: 'community',
+        useCount: 42,
+        tags: ['長文', '書稿'],
+      },
+    ],
+    [],
+  )
+
+  const communityTemplates = useMemo<ReportTemplate[]>(
+    () => [
+      {
+        id: 'community-optics-report',
+        title: '光學實驗結報：干涉與繞射',
+        category: '實驗報告',
+        description: '包含數據表、誤差來源與圖表說明欄位，適合普物光學單元。',
+        content:
+          '# 光學實驗結報\n\n## 實驗目的\n\n## 實驗原理\n\n## 儀器與材料\n\n## 原始數據\n\n## 計算與圖表\n\n## 誤差分析\n\n## 結論\n',
+        authorName: 'Lucas Shelby',
+        source: 'community',
+        visibility: 'community',
+        useCount: 31,
+        tags: ['光學', '普物'],
+      },
+      {
+        id: 'community-lesson-inquiry',
+        title: '探究式課堂活動模板',
+        category: '教案設計',
+        description: '把問題引導、分組活動、評量規準與課後反思放在同一份文件。',
+        content:
+          '# 探究式課堂活動\n\n## 課程目標\n\n## 先備知識\n\n## 引導問題\n\n## 小組任務\n\n## 評量規準\n\n## 課後反思\n',
+        authorName: 'Ming Chen',
+        source: 'community',
+        visibility: 'community',
+        useCount: 19,
+        tags: ['教案', '活動'],
+      },
+      {
+        id: 'community-reading-note',
+        title: '三段式閱讀心得',
+        category: '閱讀心得',
+        description: '摘要、引用、個人觀點分開寫，適合快速完成閱讀作業。',
+        content:
+          '# 閱讀心得\n\n## 一、內容摘要\n\n## 二、我想引用的段落\n\n## 三、我的觀點與反思\n\n## 四、延伸問題\n',
+        authorName: 'Yuki Lin',
+        source: 'community',
+        visibility: 'community',
+        useCount: 22,
+        tags: ['閱讀', '心得'],
+      },
+    ],
+    [],
+  )
+
+  const sourceTemplates =
+    activeTab === 'community'
+      ? communityTemplates
+      : activeTab === 'mine'
+        ? userTemplates
+        : recommendedTemplates
+
   const normalizedQuery = query.trim().toLowerCase()
-  const templates = DEFAULT_TEMPLATES.filter((template) => {
+  const templates = sourceTemplates.filter((template) => {
     const matchesCategory = selectedCategory === '全部' || template.category === selectedCategory
     const matchesQuery =
       !normalizedQuery ||
-      [template.title, template.category, template.description, template.content]
+      [
+        template.title,
+        template.category,
+        template.description,
+        template.content,
+        template.authorName,
+        ...(template.tags ?? []),
+      ]
         .join(' ')
         .toLowerCase()
         .includes(normalizedQuery)
@@ -2924,81 +3190,308 @@ function TemplatesView({
     return matchesCategory && matchesQuery
   })
 
+  function updateTemplateDraft(patch: Partial<typeof templateDraft>) {
+    setTemplateDraft((current) => ({ ...current, ...patch }))
+  }
+
+  function resetTemplateDraft() {
+    setTemplateDraft({
+      title: '',
+      category: '實驗報告',
+      authorName: userName,
+      description: '',
+      content: '',
+    })
+  }
+
+  function submitTemplateUpload(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+
+    const title = templateDraft.title.trim()
+    const content = templateDraft.content.trim()
+    if (!title || !content) {
+      onNotify('模板需要標題與 Markdown 內容')
+      return
+    }
+
+    const nextTemplate: ReportTemplate = {
+      id: `user-template-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      title,
+      category: templateDraft.category,
+      description: templateDraft.description.trim() || '使用者上傳的 Markdown 模板。',
+      content,
+      authorName: templateDraft.authorName.trim() || userName,
+      source: 'user',
+      visibility: 'private',
+      useCount: 0,
+      tags: ['我的模板'],
+    }
+
+    setUserTemplates((current) => [nextTemplate, ...current])
+    setActiveTab('mine')
+    setSelectedCategory('全部')
+    setIsUploadOpen(false)
+    resetTemplateDraft()
+    onNotify('模板已加入我的模板')
+  }
+
   return (
-    <main className={`min-h-0 flex-1 overflow-auto bg-zinc-50 transition-colors duration-300 dark:bg-zinc-950 ${SCROLLBAR_HIDE}`}>
-      <div className="mx-auto max-w-6xl px-8 py-12">
-        <p className="mb-2 text-sm font-medium text-zinc-500 dark:text-zinc-400">Templates</p>
-        <h1 className="mb-8 text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
-          探索實驗模板
-        </h1>
-        <p className="-mt-5 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">
-          從常見 STEM 實驗骨架開始，套用後會建立成新的本地報告並直接進入編輯器。
-        </p>
-
-        <div className="mt-6 grid gap-3 lg:grid-cols-[1fr_auto]">
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="搜尋科目、實驗類型或模板內容"
-            className="w-full rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm text-zinc-900 outline-none transition focus:border-zinc-400 focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100"
-          />
-          <span className="rounded-xl border border-zinc-200 bg-white px-4 py-3 text-sm font-medium text-zinc-500 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
-            {templates.length} 個模板
-          </span>
-        </div>
-
-        <div className="mt-4 flex flex-wrap gap-2">
-          {categories.map((category) => (
-            <button
-              key={category}
-              type="button"
-              onClick={() => setSelectedCategory(category)}
-              className={`rounded-full border px-3 py-1.5 text-sm font-medium transition ${
-                selectedCategory === category
-                  ? 'border-zinc-950 bg-zinc-950 text-white dark:border-zinc-100 dark:bg-zinc-100 dark:text-zinc-950'
-                  : 'border-zinc-200/60 bg-white text-zinc-600 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-300 dark:hover:bg-zinc-800'
-              }`}
-            >
-              {category}
-            </button>
-          ))}
-        </div>
-
-        <div className="mt-8 grid grid-cols-1 gap-6 md:grid-cols-3">
-          {templates.map((template) => (
-            <article
-              key={template.id}
-              className="flex min-h-72 cursor-pointer flex-col rounded-xl border border-zinc-200 bg-white p-6 shadow-sm transition-all duration-300 hover:border-zinc-300 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
-            >
-              <div className="mb-4">
-                <span className="rounded-full bg-zinc-100 px-2.5 py-1 text-xs font-medium text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300">
-                  {template.category}
-                </span>
-              </div>
-              <h2 className="mb-2 text-lg font-semibold text-zinc-800 dark:text-zinc-50">
-                {template.title}
-              </h2>
-              <p className="text-sm leading-6 text-zinc-500 dark:text-zinc-400">
-                {template.description}
-              </p>
-              <div className="mt-auto pt-4">
-                <button
-                  type="button"
-                  onClick={() => onUseTemplate(template)}
-                  className="w-full rounded-lg bg-zinc-900 py-2 text-sm font-medium text-white shadow-sm transition-colors hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
-                >
-                  套用此模板
-                </button>
-              </div>
-            </article>
-          ))}
-        </div>
-        {templates.length === 0 && (
-          <div className="mt-8 rounded-2xl border border-dashed border-zinc-200 bg-white px-8 py-14 text-center text-sm text-zinc-500 shadow-sm dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
-            找不到符合條件的模板。
+    <main className={`min-h-0 flex-1 overflow-auto bg-slate-50 ${SCROLLBAR_HIDE}`}>
+      <div className="mx-auto max-w-7xl px-6 py-10 sm:px-8 lg:px-10">
+        <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-400">Template Center</p>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">模板中心</h1>
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
+              從常見文件類型開始，也可以上傳自己的 Markdown 模板。公開模板會保留作者署名，適合之後做成社群模板庫。
+            </p>
           </div>
+          <button
+            type="button"
+            onClick={() => setIsUploadOpen(true)}
+            className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+          >
+            <FileUp className="h-4 w-4" strokeWidth={2} />
+            上傳模板
+          </button>
+        </div>
+
+        <section className="mb-8 grid gap-3 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-7">
+          {templateTypes.map((type) => {
+            const TypeIcon = type.icon
+
+            return (
+              <button
+                key={type.category}
+                type="button"
+                onClick={() => setSelectedCategory(type.category)}
+                className={`rounded-3xl border p-4 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md ${
+                  selectedCategory === type.category
+                    ? 'border-slate-950 bg-slate-950 text-white'
+                    : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+                }`}
+              >
+                <TypeIcon
+                  className={`h-6 w-6 ${selectedCategory === type.category ? 'text-white' : 'text-slate-600'}`}
+                  strokeWidth={1.8}
+                />
+                <h2 className="mt-4 text-sm font-semibold">{type.label}</h2>
+                <p className={`mt-1 text-xs leading-5 ${selectedCategory === type.category ? 'text-slate-300' : 'text-slate-500'}`}>
+                  {type.description}
+                </p>
+              </button>
+            )
+          })}
+        </section>
+
+        <div className="mb-6 flex flex-wrap items-center justify-between gap-4">
+          <div className="flex gap-5 border-b border-slate-200">
+            {[
+              ['recommended', '精選模板'],
+              ['community', '社群模板'],
+              ['mine', '我的模板'],
+            ].map(([tab, label]) => (
+              <button
+                key={tab}
+                type="button"
+                onClick={() => setActiveTab(tab as typeof activeTab)}
+                className={`-mb-px border-b-2 px-1 pb-3 text-sm font-semibold transition ${
+                  activeTab === tab
+                    ? 'border-slate-950 text-slate-950'
+                    : 'border-transparent text-slate-400 hover:text-slate-700'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex min-w-0 flex-1 justify-end gap-3">
+            <div className="relative w-full max-w-md">
+              <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" strokeWidth={2} />
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="搜尋模板、作者或用途"
+                className="h-12 w-full rounded-2xl border border-slate-200 bg-white pl-11 pr-4 text-sm font-medium text-slate-700 shadow-sm outline-none transition placeholder:text-slate-400 focus:border-slate-300 focus:ring-4 focus:ring-slate-100"
+              />
+            </div>
+            <span className="hidden h-12 items-center rounded-2xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-500 shadow-sm md:inline-flex">
+              {templates.length} 個模板
+            </span>
+          </div>
+        </div>
+
+        {activeTab === 'mine' && userTemplates.length === 0 ? (
+          <section className="rounded-3xl border border-dashed border-slate-200 bg-white px-8 py-16 text-center shadow-sm">
+            <UploadCloud className="mx-auto mb-4 h-10 w-10 text-slate-300" strokeWidth={1.8} />
+            <h2 className="text-lg font-semibold text-slate-950">你還沒有自己的模板</h2>
+            <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-slate-500">
+              上傳常用 Markdown 版型後，下次就能像 Canva 一樣從自己的模板開始。
+            </p>
+            <button
+              type="button"
+              onClick={() => setIsUploadOpen(true)}
+              className="mt-6 rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+            >
+              上傳第一個模板
+            </button>
+          </section>
+        ) : templates.length === 0 ? (
+          <section className="rounded-3xl border border-dashed border-slate-200 bg-white px-8 py-16 text-center text-sm text-slate-500 shadow-sm">
+            找不到符合條件的模板。
+          </section>
+        ) : (
+          <section className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
+            {templates.map((template) => (
+              <article
+                key={template.id}
+                className="flex min-h-80 flex-col rounded-3xl border border-slate-200 bg-white p-5 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-lg hover:shadow-slate-200/70"
+              >
+                <div className="mb-5 rounded-2xl border border-slate-100 bg-slate-50 p-4">
+                  <div className="mb-3 flex items-center justify-between gap-3">
+                    <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-500 ring-1 ring-slate-200">
+                      {template.category}
+                    </span>
+                    <span className="text-xs font-semibold text-slate-400">{template.useCount ?? 0} 次套用</span>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="h-2 w-24 rounded-full bg-slate-200" />
+                    <div className="h-2 w-36 rounded-full bg-slate-200" />
+                    <div className="h-2 w-28 rounded-full bg-slate-200" />
+                  </div>
+                </div>
+                <h2 className="text-lg font-semibold tracking-tight text-slate-950">{template.title}</h2>
+                <p className="mt-2 line-clamp-3 text-sm leading-6 text-slate-500">{template.description}</p>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  {(template.tags ?? []).slice(0, 3).map((tag) => (
+                    <span key={tag} className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-500">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+                <div className="mt-auto flex items-center justify-between gap-3 pt-6">
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Creator</p>
+                    <p className="truncate text-sm font-semibold text-slate-700">{template.authorName ?? 'AutoLabReport'}</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onUseTemplate(template)}
+                    className="rounded-2xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+                  >
+                    套用
+                  </button>
+                </div>
+              </article>
+            ))}
+          </section>
         )}
       </div>
+
+      {isUploadOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 px-4 backdrop-blur-sm">
+          <form
+            onSubmit={submitTemplateUpload}
+            className="w-full max-w-3xl overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl shadow-slate-300/70"
+          >
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-7 py-6">
+              <div>
+                <h2 className="text-2xl font-semibold tracking-tight text-slate-950">上傳模板</h2>
+                <p className="mt-2 text-sm leading-6 text-slate-500">
+                  先存到「我的模板」。之後接上 Supabase 後，可以選擇公開到社群並保留署名。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setIsUploadOpen(false)
+                  resetTemplateDraft()
+                }}
+                className="grid h-10 w-10 place-items-center rounded-xl text-slate-400 transition hover:bg-slate-100 hover:text-slate-950"
+                aria-label="關閉"
+              >
+                <X className="h-5 w-5" strokeWidth={2} />
+              </button>
+            </div>
+            <div className="grid gap-4 px-7 py-6 md:grid-cols-2">
+              <label className="block">
+                <span className="text-sm font-semibold text-slate-700">模板標題</span>
+                <input
+                  value={templateDraft.title}
+                  onChange={(event) => updateTemplateDraft({ title: event.target.value })}
+                  placeholder="例如：普物光學結報"
+                  className="mt-2 h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium outline-none transition focus:border-slate-300 focus:ring-4 focus:ring-slate-100"
+                />
+              </label>
+              <label className="block">
+                <span className="text-sm font-semibold text-slate-700">文件類型</span>
+                <select
+                  value={templateDraft.category}
+                  onChange={(event) => updateTemplateDraft({ category: event.target.value })}
+                  className="mt-2 h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium outline-none transition focus:border-slate-300 focus:ring-4 focus:ring-slate-100"
+                >
+                  {templateTypes
+                    .filter((type) => type.category !== '全部')
+                    .map((type) => (
+                      <option key={type.category} value={type.category}>
+                        {type.label}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label className="block">
+                <span className="text-sm font-semibold text-slate-700">作者署名</span>
+                <input
+                  value={templateDraft.authorName}
+                  onChange={(event) => updateTemplateDraft({ authorName: event.target.value })}
+                  placeholder={userName}
+                  className="mt-2 h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium outline-none transition focus:border-slate-300 focus:ring-4 focus:ring-slate-100"
+                />
+              </label>
+              <label className="block">
+                <span className="text-sm font-semibold text-slate-700">簡短說明</span>
+                <input
+                  value={templateDraft.description}
+                  onChange={(event) => updateTemplateDraft({ description: event.target.value })}
+                  placeholder="這個模板適合什麼情境？"
+                  className="mt-2 h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium outline-none transition focus:border-slate-300 focus:ring-4 focus:ring-slate-100"
+                />
+              </label>
+              <label className="block md:col-span-2">
+                <span className="text-sm font-semibold text-slate-700">Markdown 模板內容</span>
+                <textarea
+                  value={templateDraft.content}
+                  onChange={(event) => updateTemplateDraft({ content: event.target.value })}
+                  placeholder="# 模板標題&#10;&#10;## 章節一&#10;&#10;## 章節二"
+                  className={`mt-2 h-64 w-full resize-none rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm leading-6 outline-none transition focus:border-slate-300 focus:bg-white focus:ring-4 focus:ring-slate-100 ${SCROLLBAR_HIDE}`}
+                />
+              </label>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-200 px-7 py-5">
+              <p className="text-sm text-slate-500">公開社群模板需要後端 `report_templates` 資料表與審核流程。</p>
+              <div className="flex gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsUploadOpen(false)
+                    resetTemplateDraft()
+                  }}
+                  className="rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-950"
+                >
+                  取消
+                </button>
+                <button
+                  type="submit"
+                  className="rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+                >
+                  儲存模板
+                </button>
+              </div>
+            </div>
+          </form>
+        </div>
+      )}
     </main>
   )
 }
@@ -3412,7 +3905,7 @@ function WorkspaceApp({
   const [billingConfig, setBillingConfig] = useState<BillingConfig | null>(null)
   const [bridgeToast, setBridgeToast] = useState<string | null>(null)
   const [shareCopied, setShareCopied] = useState(false)
-  const [collaborators, setCollaborators] = useState<CollaboratorPresence[]>([])
+  const [, setCollaborators] = useState<CollaboratorPresence[]>([])
   const [anonymousIdentity] = useState(getInitialAnonymousIdentity)
   const [aiSelectionMenu, setAiSelectionMenu] = useState<AiSelectionMenuState>({
     visible: false,
@@ -4640,7 +5133,7 @@ function WorkspaceApp({
     setBridgeToast('Markdown 檔案已匯入')
   }
 
-  async function createDocumentFromTemplate(template: (typeof DEFAULT_TEMPLATES)[number]) {
+  async function createDocumentFromTemplate(template: ReportTemplate) {
     if (databaseLoading) return
 
     if (supabase && shouldUseSupabaseDocuments) {
@@ -5650,23 +6143,6 @@ function WorkspaceApp({
                 )}
               </div>
             )}
-            <CollaboratorAvatarGroup collaborators={collaborators} />
-            <button
-              type="button"
-              onClick={() => void exportWordReport()}
-              disabled={isEditorEmpty || syncStatus === 'exporting' || syncStatus === 'exportingPdf'}
-              className="hidden rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-40 sm:inline-flex"
-            >
-              Word
-            </button>
-            <button
-              type="button"
-              onClick={() => void exportPdfReport()}
-              disabled={isEditorEmpty || syncStatus === 'exporting' || syncStatus === 'exportingPdf'}
-              className="hidden rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-40 sm:inline-flex"
-            >
-              PDF
-            </button>
             {user && (
               <button
                 type="button"
@@ -5681,7 +6157,7 @@ function WorkspaceApp({
               onClick={() => setIsAssistDrawerOpen(true)}
               className="inline-flex h-10 items-center gap-2 rounded-xl bg-slate-950 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
             >
-              Assist
+              AI Assist
             </button>
 
             <div ref={advancedMenuRef} className="relative">
@@ -5750,7 +6226,7 @@ function WorkspaceApp({
                     className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
                   >
                     <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
-                    Assist
+                    AI Assist
                   </button>
                   <button
                     type="button"
@@ -5997,7 +6473,11 @@ function WorkspaceApp({
           onRestoreVersion={restoreDocumentVersion}
         />
       ) : currentView === 'templates' ? (
-        <TemplatesView onUseTemplate={createDocumentFromTemplate} />
+        <TemplatesView
+          onUseTemplate={createDocumentFromTemplate}
+          onNotify={setBridgeToast}
+          userName={topbarUserName}
+        />
       ) : (
       <>
       <div className="flex border-b border-slate-200 bg-white p-2 lg:hidden">
@@ -6051,7 +6531,7 @@ function WorkspaceApp({
               className="inline-flex h-8 shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
             >
               <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
-              Assist
+              AI Assist
             </button>
           </div>
           <div className="relative min-h-[280px] flex-1 flex-grow bg-slate-50 font-mono leading-relaxed lg:min-h-0">
@@ -6096,10 +6576,10 @@ function WorkspaceApp({
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => setIsAssistDrawerOpen(true)}
                   className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 hover:text-slate-950"
-                  title="Assist"
+                  title="AI Assist"
                 >
                   <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
-                  Assist
+                  AI Assist
                 </button>
               </div>
             )}
@@ -6235,7 +6715,7 @@ function WorkspaceApp({
         <div className={`pointer-events-none fixed inset-0 z-50 ${isAssistDrawerOpen ? '' : 'hidden'}`}>
           <button
             type="button"
-            aria-label="關閉 Assist"
+            aria-label="關閉 AI Assist"
             onClick={() => {
               setActiveAssistTask(null)
               setIsAssistDrawerOpen(false)
@@ -6251,7 +6731,7 @@ function WorkspaceApp({
               <div className="border-b border-slate-200 px-5 py-5">
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <h2 className="text-lg font-semibold tracking-tight text-slate-950">Assist</h2>
+                    <h2 className="text-lg font-semibold tracking-tight text-slate-950">AI Assist</h2>
                     <p className="mt-1 text-sm text-slate-500">選一個任務，讓 AI 協助你完成下一步。</p>
                   </div>
                   <button
@@ -6360,7 +6840,7 @@ function WorkspaceApp({
             <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-7 py-6">
               <div>
                 <h2 className="text-2xl font-semibold tracking-tight text-slate-950">建立新文件</h2>
-                <p className="mt-2 text-sm text-slate-500">先選擇你要完成的任務，進入後再用 Assist 補內容。</p>
+                <p className="mt-2 text-sm text-slate-500">先選擇你要完成的任務，進入後再用 AI Assist 補內容。</p>
               </div>
               <button
                 type="button"
@@ -6866,11 +7346,23 @@ function App() {
     }
 
     setAuthLoading(true)
+    const oauthOptions =
+      provider === 'google'
+        ? {
+            redirectTo: window.location.origin,
+            scopes: 'https://www.googleapis.com/auth/drive.readonly',
+            queryParams: {
+              access_type: 'offline',
+              prompt: 'consent',
+            },
+          }
+        : {
+            redirectTo: window.location.origin,
+          }
+
     const { error } = await supabase.auth.signInWithOAuth({
       provider,
-      options: {
-        redirectTo: window.location.origin,
-      },
+      options: oauthOptions,
     })
 
     if (error) {

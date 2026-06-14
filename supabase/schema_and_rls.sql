@@ -50,7 +50,24 @@ create table if not exists public.user_ai_settings (
   outline_prompt text,
   summarize_prompt text,
   custom_prompt text,
+  prompt_library jsonb not null default '[]'::jsonb,
   extension_auto_return boolean not null default false,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.report_templates (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid references auth.users(id) on delete set null,
+  title text not null,
+  description text not null default '',
+  category text not null default '實驗報告',
+  content text not null default '',
+  author_name text not null default 'Anonymous',
+  author_avatar_url text,
+  visibility text not null default 'private' check (visibility in ('private', 'community')),
+  source text not null default 'user' check (source in ('system', 'user')),
+  use_count integer not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -94,20 +111,35 @@ alter table public.user_ai_settings add column if not exists expand_prompt text;
 alter table public.user_ai_settings add column if not exists outline_prompt text;
 alter table public.user_ai_settings add column if not exists summarize_prompt text;
 alter table public.user_ai_settings add column if not exists custom_prompt text;
+alter table public.user_ai_settings add column if not exists prompt_library jsonb not null default '[]'::jsonb;
 alter table public.user_ai_settings add column if not exists extension_auto_return boolean not null default false;
 alter table public.user_ai_settings add column if not exists updated_at timestamptz not null default now();
+
+alter table public.report_templates add column if not exists user_id uuid references auth.users(id) on delete set null;
+alter table public.report_templates add column if not exists description text not null default '';
+alter table public.report_templates add column if not exists category text not null default '實驗報告';
+alter table public.report_templates add column if not exists content text not null default '';
+alter table public.report_templates add column if not exists author_name text not null default 'Anonymous';
+alter table public.report_templates add column if not exists author_avatar_url text;
+alter table public.report_templates add column if not exists visibility text not null default 'private';
+alter table public.report_templates add column if not exists source text not null default 'user';
+alter table public.report_templates add column if not exists use_count integer not null default 0;
+alter table public.report_templates add column if not exists updated_at timestamptz not null default now();
 
 create index if not exists documents_user_id_idx on public.documents(user_id);
 create index if not exists documents_share_setting_idx on public.documents(share_setting);
 create index if not exists document_collaborators_document_id_idx on public.document_collaborators(document_id);
 create index if not exists document_collaborators_user_email_idx on public.document_collaborators(lower(user_email));
 create index if not exists ai_usage_logs_user_id_created_at_idx on public.ai_usage_logs(user_id, created_at desc);
+create index if not exists report_templates_user_id_idx on public.report_templates(user_id);
+create index if not exists report_templates_visibility_category_idx on public.report_templates(visibility, category);
 
 alter table public.profiles enable row level security;
 alter table public.documents enable row level security;
 alter table public.document_collaborators enable row level security;
 alter table public.user_ai_settings enable row level security;
 alter table public.ai_usage_logs enable row level security;
+alter table public.report_templates enable row level security;
 
 drop policy if exists "profiles_select_own" on public.profiles;
 create policy "profiles_select_own"
@@ -214,6 +246,41 @@ on public.user_ai_settings for all
 to authenticated
 using (auth.uid() = user_id)
 with check (auth.uid() = user_id);
+
+drop policy if exists "report_templates_select_owner_or_community" on public.report_templates;
+create policy "report_templates_select_owner_or_community"
+on public.report_templates for select
+to anon, authenticated
+using (
+  visibility = 'community'
+  or source = 'system'
+  or auth.uid() = user_id
+);
+
+drop policy if exists "report_templates_insert_own" on public.report_templates;
+create policy "report_templates_insert_own"
+on public.report_templates for insert
+to authenticated
+with check (
+  auth.uid() = user_id
+  and source = 'user'
+);
+
+drop policy if exists "report_templates_update_own" on public.report_templates;
+create policy "report_templates_update_own"
+on public.report_templates for update
+to authenticated
+using (auth.uid() = user_id)
+with check (
+  auth.uid() = user_id
+  and source = 'user'
+);
+
+drop policy if exists "report_templates_delete_own" on public.report_templates;
+create policy "report_templates_delete_own"
+on public.report_templates for delete
+to authenticated
+using (auth.uid() = user_id);
 
 drop policy if exists "ai_usage_logs_select_own" on public.ai_usage_logs;
 create policy "ai_usage_logs_select_own"
