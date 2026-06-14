@@ -15,13 +15,43 @@ import 'katex/dist/katex.min.css'
 import { createClient, type Provider, type User } from '@supabase/supabase-js'
 import {
   ArrowRight,
+  Beaker,
+  BookOpen,
+  Bot,
+  ChevronDown,
+  CircuitBoard,
+  Clock3,
+  Code2,
+  CalendarDays,
+  FileText,
+  FileCode2,
+  FilePlus2,
+  Filter,
+  FolderOpen,
+  FolderPlus,
+  GraduationCap,
+  Home,
+  Info,
+  LayoutTemplate,
+  Library,
+  LogOut,
   Mail,
+  MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
+  Pin,
+  PinOff,
   Plus,
+  Puzzle,
+  Search,
+  Settings,
+  Sparkles,
   Star,
   Trash2,
+  UploadCloud,
+  Users,
+  Zap,
 } from 'lucide-react'
 import type { editor } from 'monaco-editor'
 import ReactMarkdown from 'react-markdown'
@@ -350,6 +380,7 @@ type AnonymousIdentity = {
 
 type AppView =
   | 'dashboard'
+  | 'projects'
   | 'editor'
   | 'favorites'
   | 'templates'
@@ -389,8 +420,6 @@ type CollaboratorPresence = {
   isLocal: boolean
 }
 
-const TOOLBAR_ICON_BTN =
-  'rounded-md p-2 text-zinc-500 transition-all hover:bg-zinc-200/50 hover:text-zinc-800 active:scale-95 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100'
 const SUBTLE_BUTTON =
   'rounded-md border border-zinc-200 px-3 py-1.5 text-sm font-medium text-zinc-600 transition-all hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-50 dark:border-zinc-700 dark:text-zinc-300 dark:hover:bg-zinc-800'
 const SCROLLBAR_HIDE =
@@ -773,16 +802,74 @@ function DocumentSidebar({
   onSignOut: () => void
 }) {
   const [isProjectTreeOpen, setIsProjectTreeOpen] = useState(true)
-  const [isMoreOpen, setIsMoreOpen] = useState(false)
+  const [isMoreOpen, setIsMoreOpen] = useState(true)
+  const [pinnedItemIds, setPinnedItemIds] = useState<string[]>(['templates', 'ai-mode'])
   const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(
     () => new Set(documents.filter((document) => document.type === 'folder').map((document) => document.id)),
   )
   const visibleDocuments = documents.filter((document) => !document.isTrashed)
   const fileDocuments = visibleDocuments.filter((document) => document.type === 'file')
-  const favoriteDocuments = fileDocuments.filter((document) => document.isFavorite)
   const userName = getUserDisplayName(user)
   const avatarUrl = getUserAvatarUrl(user)
   const userInitial = getUserInitial(user)
+  const navButtonBase =
+    'group flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm font-medium transition-all duration-200'
+  const navButtonIdle =
+    'text-slate-500 hover:bg-white hover:text-slate-950 hover:shadow-sm hover:ring-1 hover:ring-slate-200/70'
+  const navButtonActive = 'bg-white text-slate-950 shadow-sm ring-1 ring-slate-200/80'
+  const pinItems = [
+    {
+      id: 'templates',
+      label: '模板中心',
+      icon: LayoutTemplate,
+      isActive: currentView === 'templates',
+      onClick: () => onChangeView('templates'),
+    },
+    {
+      id: 'ai-mode',
+      label: 'AI Mode',
+      icon: Bot,
+      isActive: currentView === 'settings',
+      onClick: () => onChangeView('settings'),
+    },
+    {
+      id: 'extensions',
+      label: '擴充功能',
+      icon: Puzzle,
+      isActive: false,
+      onClick: onOpenExtensionModal,
+    },
+    {
+      id: 'prompts',
+      label: '我的提示詞庫',
+      icon: Library,
+      isActive: false,
+      onClick: () => onChangeView('settings'),
+    },
+    {
+      id: 'trash',
+      label: '垃圾桶',
+      icon: Trash2,
+      isActive: currentView === 'trash',
+      onClick: () => onChangeView('trash'),
+    },
+    {
+      id: 'settings',
+      label: '設定',
+      icon: Settings,
+      isActive: currentView === 'settings',
+      onClick: () => onChangeView('settings'),
+    },
+    {
+      id: 'about',
+      label: '關於',
+      icon: Info,
+      isActive: false,
+      onClick: onOpenFeedback,
+    },
+  ]
+  const pinnedItems = pinItems.filter((item) => pinnedItemIds.includes(item.id))
+  const moreItems = pinItems.filter((item) => !pinnedItemIds.includes(item.id))
 
   function toggleFolder(folderId: string) {
     setExpandedFolderIds((current) => {
@@ -791,6 +878,12 @@ function DocumentSidebar({
       else next.add(folderId)
       return next
     })
+  }
+
+  function togglePinnedItem(itemId: string) {
+    setPinnedItemIds((current) =>
+      current.includes(itemId) ? current.filter((id) => id !== itemId) : [...current, itemId],
+    )
   }
 
   function getChildren(parentId: string | null) {
@@ -802,14 +895,65 @@ function DocumentSidebar({
       })
   }
 
+  function renderNavItem({
+    icon: Icon,
+    label,
+    isActive,
+    onClick,
+    pinState,
+    onTogglePin,
+  }: {
+    icon: typeof Home
+    label: string
+    isActive?: boolean
+    onClick: () => void
+    pinState?: 'pinned' | 'unpinned'
+    onTogglePin?: () => void
+  }) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className={`${navButtonBase} ${isActive ? navButtonActive : navButtonIdle}`}
+      >
+        <Icon className="h-4 w-4 shrink-0" strokeWidth={2} />
+        <span className="min-w-0 flex-1 truncate">{label}</span>
+        {pinState && onTogglePin && (
+          <span
+            role="button"
+            tabIndex={0}
+            title={pinState === 'pinned' ? '取消釘選' : '釘選'}
+            onClick={(event) => {
+              event.stopPropagation()
+              onTogglePin()
+            }}
+            onKeyDown={(event) => {
+              if (event.key !== 'Enter' && event.key !== ' ') return
+              event.preventDefault()
+              event.stopPropagation()
+              onTogglePin()
+            }}
+            className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-indigo-600 group-hover:opacity-100"
+          >
+            {pinState === 'pinned' ? (
+              <PinOff className="h-3.5 w-3.5" strokeWidth={2} />
+            ) : (
+              <Pin className="h-3.5 w-3.5" strokeWidth={2} />
+            )}
+          </span>
+        )}
+      </button>
+    )
+  }
+
   if (isCollapsed) {
     return (
-      <aside className="flex w-14 shrink-0 flex-col items-center border-r border-zinc-200 bg-zinc-100/50 py-3 transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950/70">
+      <aside className="flex w-16 shrink-0 flex-col items-center border-r border-slate-200/80 bg-slate-50 py-4 text-slate-500">
         <button
           type="button"
           title="展開工作區"
           onClick={onToggleCollapsed}
-          className={TOOLBAR_ICON_BTN}
+          className="grid h-10 w-10 place-items-center rounded-xl bg-white text-slate-700 shadow-sm ring-1 ring-slate-200 transition hover:text-slate-950"
         >
           <PanelLeftOpen className="h-[18px] w-[18px]" strokeWidth={2} />
         </button>
@@ -817,60 +961,47 @@ function DocumentSidebar({
           type="button"
           title="總覽"
           onClick={() => onChangeView('dashboard')}
-          className={`${TOOLBAR_ICON_BTN} mt-3`}
+          className="mt-4 grid h-10 w-10 place-items-center rounded-xl transition hover:bg-white hover:text-slate-950 hover:shadow-sm"
         >
-          🏠
+          <Home className="h-4 w-4" strokeWidth={2} />
         </button>
         <button
           type="button"
           title="項目"
           onClick={() => {
             setIsProjectTreeOpen(true)
-            onChangeView('editor')
+            onChangeView('projects')
           }}
-          className={TOOLBAR_ICON_BTN}
+          className="grid h-10 w-10 place-items-center rounded-xl transition hover:bg-white hover:text-slate-950 hover:shadow-sm"
         >
-          📁
+          <FolderOpen className="h-4 w-4" strokeWidth={2} />
         </button>
-        <button
-          type="button"
-          title="收藏夾"
-          onClick={() => onChangeView('favorites')}
-          className={TOOLBAR_ICON_BTN}
-        >
-          ⭐
-        </button>
-        <button
-          type="button"
-          title="模板市集"
-          onClick={() => onChangeView('templates')}
-          className={TOOLBAR_ICON_BTN}
-        >
-          ✨
-        </button>
+        {pinnedItems.map((item) => (
+          <button
+            key={item.id}
+            type="button"
+            title={item.label}
+            onClick={item.onClick}
+            className="grid h-10 w-10 place-items-center rounded-xl transition hover:bg-white hover:text-slate-950 hover:shadow-sm"
+          >
+            <item.icon className="h-4 w-4" strokeWidth={2} />
+          </button>
+        ))}
         <button
           type="button"
           title="新增報告"
           onClick={onCreateDocument}
-          className={`${TOOLBAR_ICON_BTN} mt-auto`}
+          className="mt-auto grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-lg shadow-indigo-500/20 transition hover:brightness-110"
         >
           <Plus className="h-[18px] w-[18px]" strokeWidth={2} />
         </button>
         <button
           type="button"
-          title="安裝擴充套件"
-          onClick={onOpenExtensionModal}
-          className={TOOLBAR_ICON_BTN}
-        >
-          🧩
-        </button>
-        <button
-          type="button"
           title="登出"
           onClick={onSignOut}
-          className={TOOLBAR_ICON_BTN}
+          className="mt-2 grid h-10 w-10 place-items-center rounded-xl transition hover:bg-white hover:text-slate-950 hover:shadow-sm"
         >
-          ⎋
+          <LogOut className="h-4 w-4" strokeWidth={2} />
         </button>
       </aside>
     )
@@ -885,10 +1016,10 @@ function DocumentSidebar({
     return (
       <div key={document.id}>
         <div
-          className={`group flex items-center gap-1 rounded-md py-1.5 pr-2 transition ${
+          className={`group flex items-center gap-1 rounded-xl py-1.5 pr-2 transition ${
             isActive && !isFolder
-              ? 'border border-zinc-200/50 bg-white font-medium text-zinc-900 shadow-sm dark:border-zinc-700/70 dark:bg-zinc-900 dark:text-zinc-100'
-              : 'text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
+              ? 'bg-white font-medium text-slate-950 shadow-sm ring-1 ring-slate-200/80'
+              : 'text-slate-500 hover:bg-white hover:text-slate-900 hover:shadow-sm'
           }`}
           style={{ paddingLeft: `${10 + depth * 22}px` }}
         >
@@ -901,7 +1032,11 @@ function DocumentSidebar({
             }}
             className="flex min-w-0 flex-1 items-center gap-1.5 truncate text-left text-sm font-medium"
           >
-            <span className="shrink-0">{isFolder ? (isExpanded ? '📂' : '📁') : '📄'}</span>
+            {isFolder ? (
+              <FolderOpen className="h-4 w-4 shrink-0" strokeWidth={2} />
+            ) : (
+              <FileText className="h-4 w-4 shrink-0" strokeWidth={2} />
+            )}
             <span className="truncate">{document.title}</span>
           </button>
           {isFolder ? (
@@ -912,7 +1047,7 @@ function DocumentSidebar({
                 setExpandedFolderIds((current) => new Set(current).add(document.id))
                 onCreateDocumentInFolder(document.id)
               }}
-              className="rounded p-1 text-zinc-400 opacity-0 transition hover:bg-zinc-200/70 hover:text-blue-600 group-hover:opacity-100 dark:hover:bg-zinc-700 dark:hover:text-blue-300"
+              className="rounded-lg p-1 text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-indigo-600 group-hover:opacity-100"
             >
               <Plus className="h-4 w-4" strokeWidth={2} />
             </button>
@@ -921,7 +1056,7 @@ function DocumentSidebar({
               type="button"
               title={document.isFavorite ? '取消收藏' : '收藏'}
               onClick={() => onToggleFavorite(document.id)}
-              className="rounded p-1 text-zinc-400 transition hover:bg-zinc-200/70 hover:text-amber-500 dark:hover:bg-zinc-700"
+              className="rounded-lg p-1 text-slate-400 transition hover:bg-slate-100 hover:text-amber-500"
             >
               <Star
                 className={`h-4 w-4 ${document.isFavorite ? 'fill-amber-400 text-amber-400' : ''}`}
@@ -933,7 +1068,7 @@ function DocumentSidebar({
             type="button"
             title="重新命名"
             onClick={() => onRenameDocument(document.id)}
-            className="rounded p-1 text-zinc-400 opacity-0 transition hover:bg-zinc-200/70 hover:text-zinc-700 group-hover:opacity-100 dark:hover:bg-zinc-700 dark:hover:text-zinc-200"
+            className="rounded-lg p-1 text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-slate-900 group-hover:opacity-100"
           >
             <Pencil className="h-4 w-4" strokeWidth={2} />
           </button>
@@ -941,7 +1076,7 @@ function DocumentSidebar({
             type="button"
             title={isFolder ? '刪除資料夾' : '刪除檔案'}
             onClick={() => onDeleteDocument(document.id)}
-            className="rounded p-1 text-zinc-400 opacity-0 transition hover:bg-red-100 hover:text-red-600 group-hover:opacity-100 dark:hover:bg-red-950/50 dark:hover:text-red-300"
+            className="rounded-lg p-1 text-slate-400 opacity-0 transition hover:bg-red-50 hover:text-red-600 group-hover:opacity-100"
           >
             <Trash2 className="h-4 w-4" strokeWidth={2} />
           </button>
@@ -954,18 +1089,23 @@ function DocumentSidebar({
   }
 
   return (
-    <aside className="flex w-72 shrink-0 flex-col border-r border-zinc-200 bg-zinc-50 transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950/70">
+    <aside className="flex w-72 shrink-0 flex-col border-r border-slate-200/80 bg-slate-50 text-slate-700">
       <div className="flex items-center justify-between px-5 py-5">
-        <div>
-          <h2 className="text-sm font-semibold text-zinc-950 dark:text-zinc-100">AutoLabReport</h2>
-          <p className="text-xs text-zinc-500 dark:text-zinc-400">SaaS Workspace</p>
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-indigo-500 via-violet-500 to-fuchsia-500 text-white shadow-lg shadow-indigo-500/20">
+            <Sparkles className="h-5 w-5" strokeWidth={2.2} />
+          </div>
+          <div className="min-w-0">
+            <h2 className="truncate text-sm font-semibold tracking-tight text-slate-950">AutoLabReport</h2>
+            <p className="text-xs text-slate-400">Lab workspace</p>
+          </div>
         </div>
         <div className="flex items-center gap-1">
           <button
             type="button"
             title="收合工作區"
             onClick={onToggleCollapsed}
-            className={TOOLBAR_ICON_BTN}
+            className="grid h-9 w-9 place-items-center rounded-xl text-slate-400 transition hover:bg-white hover:text-slate-900 hover:shadow-sm"
           >
             <PanelLeftClose className="h-[18px] w-[18px]" strokeWidth={2} />
           </button>
@@ -976,99 +1116,75 @@ function DocumentSidebar({
         <button
           type="button"
           onClick={onCreateDocument}
-          className="flex w-full items-center justify-center gap-2 rounded-xl bg-zinc-900 px-4 py-3 text-sm font-semibold text-white shadow-sm transition-all hover:bg-zinc-800 active:scale-[0.99] dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+          className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 transition-all hover:brightness-110 active:scale-[0.99]"
         >
           <Plus className="h-4 w-4" strokeWidth={2.2} />
           建立新報告
         </button>
       </div>
 
-      <nav className="space-y-1 px-3 pb-3">
-        <button
-          type="button"
-          onClick={() => onChangeView('dashboard')}
-          className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm font-medium transition ${
-            currentView === 'dashboard'
-              ? 'border border-zinc-200/50 bg-white font-medium text-zinc-900 shadow-sm dark:border-zinc-700/70 dark:bg-zinc-900 dark:text-zinc-100'
-              : 'text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
-          }`}
-        >
-          <span className="w-5 text-center">🏠</span>
-          首頁
-        </button>
-        <button
-          type="button"
-          onClick={() => {
-            setIsProjectTreeOpen((current) => !current)
-            onChangeView('editor')
-          }}
-          className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm font-medium transition ${
-            currentView === 'editor'
-              ? 'border border-zinc-200/50 bg-white font-medium text-zinc-900 shadow-sm dark:border-zinc-700/70 dark:bg-zinc-900 dark:text-zinc-100'
-              : 'text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
-          }`}
-        >
-          <span className="w-5 text-center">📁</span>
-          <span className="flex-1">項目</span>
-          <span className="text-xs text-zinc-400">{isProjectTreeOpen ? '⌄' : '›'}</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => onChangeView('favorites')}
-          className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm font-medium transition ${
-            currentView === 'favorites'
-              ? 'border border-zinc-200/50 bg-white font-medium text-zinc-900 shadow-sm dark:border-zinc-700/70 dark:bg-zinc-900 dark:text-zinc-100'
-              : 'text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
-          }`}
-        >
-          <span className="w-5 text-center">⭐</span>
-          <span className="flex-1">收藏夾</span>
-          <span className="text-xs text-zinc-400">{favoriteDocuments.length}</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => onChangeView('templates')}
-          className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm font-medium transition ${
-            currentView === 'templates'
-              ? 'border border-zinc-200/50 bg-white font-medium text-zinc-900 shadow-sm dark:border-zinc-700/70 dark:bg-zinc-900 dark:text-zinc-100'
-              : 'text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
-          }`}
-        >
-          <span className="w-5 text-center">✨</span>
-          探索模板
-        </button>
-        <button
-          type="button"
-          onClick={() => onChangeView('quality')}
-          className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm font-medium transition ${
-            currentView === 'quality'
-              ? 'border border-zinc-200/50 bg-white font-medium text-zinc-900 shadow-sm dark:border-zinc-700/70 dark:bg-zinc-900 dark:text-zinc-100'
-              : 'text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
-          }`}
-        >
-          <span className="w-5 text-center">✓</span>
-          報告檢查
-        </button>
-        <button
-          type="button"
-          onClick={() => onChangeView('history')}
-          className={`flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm font-medium transition ${
-            currentView === 'history'
-              ? 'border border-zinc-200/50 bg-white font-medium text-zinc-900 shadow-sm dark:border-zinc-700/70 dark:bg-zinc-900 dark:text-zinc-100'
-              : 'text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100'
-          }`}
-        >
-          <span className="w-5 text-center">↺</span>
-          版本歷史
-        </button>
-        <button
-          type="button"
-          onClick={onOpenExtensionModal}
-          className="flex w-full items-center gap-2 rounded-md px-3 py-2.5 text-left text-sm font-medium text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100"
-        >
-          <span className="w-5 text-center">🧩</span>
-          安裝擴充套件
-        </button>
+      <nav className="space-y-6 px-3 pb-3">
+        <section className="space-y-1">
+          {renderNavItem({
+            icon: Home,
+            label: '首頁',
+            isActive: currentView === 'dashboard',
+            onClick: () => onChangeView('dashboard'),
+          })}
+          {renderNavItem({
+            icon: FolderOpen,
+            label: '項目',
+            isActive: currentView === 'projects',
+            onClick: () => {
+              setIsProjectTreeOpen((current) => !current)
+              onChangeView('projects')
+            },
+          })}
+        </section>
+
+        <section className="space-y-2">
+          <div className="px-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Pinned</div>
+          <div className="space-y-1">
+            {pinnedItems.map((item) =>
+              renderNavItem({
+                icon: item.icon,
+                label: item.label,
+                isActive: item.isActive,
+                onClick: item.onClick,
+                pinState: 'pinned',
+                onTogglePin: () => togglePinnedItem(item.id),
+              }),
+            )}
+          </div>
+        </section>
+
+        <section className="space-y-2">
+          <button
+            type="button"
+            onClick={() => setIsMoreOpen((current) => !current)}
+            className="flex w-full items-center justify-between px-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400 transition hover:text-slate-600"
+          >
+            <span>More</span>
+            <ChevronDown
+              className={`h-3.5 w-3.5 transition-transform ${isMoreOpen ? 'rotate-180' : ''}`}
+              strokeWidth={2}
+            />
+          </button>
+          {isMoreOpen && (
+            <div className="space-y-1">
+              {moreItems.map((item) =>
+                renderNavItem({
+                  icon: item.icon,
+                  label: item.label,
+                  isActive: item.isActive,
+                  onClick: item.onClick,
+                  pinState: 'unpinned',
+                  onTogglePin: () => togglePinnedItem(item.id),
+                }),
+              )}
+            </div>
+          )}
+        </section>
       </nav>
 
       <div className={`min-h-0 flex-1 overflow-auto px-3 py-3 ${SCROLLBAR_HIDE}`}>
@@ -1076,32 +1192,32 @@ function DocumentSidebar({
           <>
             <div className="mb-3 flex items-center justify-between px-2">
               <div>
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-zinc-400">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
                   項目
                 </h3>
-                <p className="text-[11px] text-zinc-400">{fileDocuments.length} 份報告</p>
+                <p className="text-[11px] text-slate-400">{fileDocuments.length} 份報告</p>
               </div>
               <div className="flex items-center gap-1">
                 <button
                   type="button"
                   title="建立新資料夾"
                   onClick={onCreateFolder}
-                  className={TOOLBAR_ICON_BTN}
+                  className="grid h-8 w-8 place-items-center rounded-lg text-slate-400 transition hover:bg-white hover:text-slate-950 hover:shadow-sm"
                 >
-                  📁
+                  <FolderPlus className="h-4 w-4" strokeWidth={2} />
                 </button>
                 <button
                   type="button"
                   title="建立新報告"
                   onClick={onCreateDocument}
-                  className={TOOLBAR_ICON_BTN}
+                  className="grid h-8 w-8 place-items-center rounded-lg text-slate-400 transition hover:bg-white hover:text-slate-950 hover:shadow-sm"
                 >
                   <Plus className="h-[18px] w-[18px]" strokeWidth={2} />
                 </button>
               </div>
             </div>
             <section>
-              <h3 className="mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-zinc-400">
+              <h3 className="mb-2 px-2 text-xs font-semibold uppercase tracking-wider text-slate-400">
                 全部
               </h3>
               <div className="space-y-1">{getChildren(null).map((document) => renderDocumentNode(document))}</div>
@@ -1110,63 +1226,8 @@ function DocumentSidebar({
         )}
       </div>
 
-      <div className="relative border-t border-zinc-200/60 p-3 dark:border-zinc-800">
-        <button
-          type="button"
-          onClick={() => setIsMoreOpen((current) => !current)}
-          className="flex w-full items-center justify-between rounded-md px-3 py-2 text-sm font-medium text-zinc-500 transition-colors hover:bg-zinc-200/50 hover:text-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-800/70 dark:hover:text-zinc-100"
-        >
-          <span>更多</span>
-          <span>⋯</span>
-        </button>
-        {isMoreOpen && (
-          <div className="absolute bottom-14 left-3 right-3 rounded-xl border border-zinc-200/60 bg-white p-2 shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
-            <button
-              type="button"
-              onClick={() => {
-                setIsMoreOpen(false)
-                onChangeView('trash')
-              }}
-              className="w-full rounded-lg px-3 py-2 text-left text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
-            >
-              🗑️ 垃圾桶
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setIsMoreOpen(false)
-                onOpenFeedback()
-              }}
-              className="w-full rounded-lg px-3 py-2 text-left text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
-            >
-              💡 意見回饋
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setIsMoreOpen(false)
-                onChangeView('billing')
-              }}
-              className="w-full rounded-lg px-3 py-2 text-left text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
-            >
-              💳 方案與用量
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setIsMoreOpen(false)
-                onChangeView('settings')
-              }}
-              className="w-full rounded-lg px-3 py-2 text-left text-sm font-medium text-zinc-600 transition-colors hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
-            >
-              ⚙️ 設定
-            </button>
-          </div>
-        )}
-      </div>
-
-      <div className="border-t border-zinc-200/60 p-3 dark:border-zinc-800">
-        <div className="flex items-center gap-3 rounded-xl bg-white p-3 shadow-sm ring-1 ring-zinc-200/60 dark:bg-zinc-900 dark:ring-zinc-800">
+      <div className="border-t border-slate-200/80 p-3">
+        <div className="flex items-center gap-3 rounded-2xl bg-white p-3 shadow-sm ring-1 ring-slate-200/80">
           {avatarUrl ? (
             <img
               src={avatarUrl}
@@ -1175,13 +1236,13 @@ function DocumentSidebar({
               referrerPolicy="no-referrer"
             />
           ) : (
-            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-zinc-900 text-sm font-semibold text-white dark:bg-zinc-100 dark:text-zinc-950">
+            <div className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-950 text-sm font-semibold text-white">
               {userInitial}
             </div>
           )}
           <div className="min-w-0 flex-1">
-            <p className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">{userName}</p>
-            <p className="truncate text-xs text-zinc-500 dark:text-zinc-400">
+            <p className="truncate text-sm font-semibold text-slate-950">{userName}</p>
+            <p className="truncate text-xs text-slate-400">
               {user?.email ?? '已登入'}
             </p>
           </div>
@@ -1189,7 +1250,7 @@ function DocumentSidebar({
             type="button"
             onClick={onSignOut}
             title="登出"
-            className="rounded-lg px-2 py-1.5 text-xs font-medium text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 dark:text-zinc-400 dark:hover:bg-zinc-800 dark:hover:text-zinc-100"
+            className="rounded-lg px-2 py-1.5 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-950"
           >
             登出
           </button>
@@ -1416,6 +1477,13 @@ function getSharedDocumentIdFromLocation(): string | null {
   const editorMatch = window.location.pathname.match(/^\/editor\/([^/]+)/)
   if (editorMatch?.[1]) return decodeURIComponent(editorMatch[1])
   return new URLSearchParams(window.location.search).get('docId')
+}
+
+function getInitialAppView(initialSharedDocument?: Document | null): AppView {
+  if (initialSharedDocument) return 'editor'
+  if (typeof window === 'undefined') return 'dashboard'
+  if (window.location.pathname === '/dashboard/projects') return 'projects'
+  return 'dashboard'
 }
 
 function getAuthenticatedAwarenessUser(user: User) {
@@ -1844,13 +1912,7 @@ function BillingView({
 }
 
 function DashboardView({
-  documents,
-  onOpenDocument,
   onCreateDocument,
-  onRenameDocument,
-  onShareDocument,
-  onToggleFavorite,
-  onDeleteDocument,
   favoriteOnly = false,
   isLoading = false,
 }: {
@@ -1864,31 +1926,253 @@ function DashboardView({
   favoriteOnly?: boolean
   isLoading?: boolean
 }) {
-  const [openMenuId, setOpenMenuId] = useState<string | null>(null)
-  const openMenuRef = useRef<HTMLDivElement | null>(null)
-  const fileDocuments = documents.filter(
-    (document) => document.type === 'file' && !document.isTrashed && (!favoriteOnly || document.isFavorite),
+  const quickStarts = [
+    {
+      title: '空白報告',
+      icon: FilePlus2,
+      tint: 'from-white to-slate-100',
+      iconTone: 'text-slate-800',
+      onClick: onCreateDocument,
+    },
+    {
+      title: '光電與電路實驗',
+      icon: CircuitBoard,
+      tint: 'from-sky-50 to-cyan-100/70',
+      iconTone: 'text-cyan-700',
+      onClick: onCreateDocument,
+    },
+    {
+      title: 'STEAM 教案設計',
+      icon: GraduationCap,
+      tint: 'from-violet-50 to-indigo-100/70',
+      iconTone: 'text-indigo-700',
+      onClick: onCreateDocument,
+    },
+    {
+      title: '專題論文',
+      icon: FileText,
+      tint: 'from-amber-50 to-orange-100/70',
+      iconTone: 'text-orange-700',
+      onClick: onCreateDocument,
+    },
+    {
+      title: '閱讀心得',
+      icon: BookOpen,
+      tint: 'from-emerald-50 to-teal-100/70',
+      iconTone: 'text-emerald-700',
+      onClick: onCreateDocument,
+    },
+  ]
+  const recentMockDocuments = [
+    {
+      id: 'photoelectric-lab',
+      title: '光電效應實驗報告',
+      editedAt: '今天 14:20',
+      type: '實驗報告',
+      icon: Zap,
+      accent: 'from-cyan-100 to-blue-100',
+    },
+    {
+      id: 'circuit-analysis',
+      title: 'RC 電路暫態分析',
+      editedAt: '昨天 21:08',
+      type: '數據分析',
+      icon: CircuitBoard,
+      accent: 'from-indigo-100 to-violet-100',
+    },
+    {
+      id: 'chemistry-table',
+      title: '滴定數據整理表',
+      editedAt: '6 月 12 日',
+      type: '化學實驗',
+      icon: Beaker,
+      accent: 'from-emerald-100 to-lime-100',
+    },
+    {
+      id: 'research-outline',
+      title: '專題研究緒論草稿',
+      editedAt: '6 月 10 日',
+      type: '專題論文',
+      icon: FileText,
+      accent: 'from-orange-100 to-rose-100',
+    },
+    {
+      id: 'steam-plan',
+      title: 'STEAM 光學教案設計',
+      editedAt: '6 月 8 日',
+      type: '教案設計',
+      icon: GraduationCap,
+      accent: 'from-violet-100 to-fuchsia-100',
+    },
+    {
+      id: 'reading-notes',
+      title: '科學史閱讀心得',
+      editedAt: '6 月 5 日',
+      type: '閱讀心得',
+      icon: BookOpen,
+      accent: 'from-slate-100 to-zinc-200',
+    },
+  ]
+
+  return (
+    <main className={`min-h-0 flex-1 overflow-auto bg-slate-50 ${SCROLLBAR_HIDE}`}>
+      <div className="mx-auto max-w-7xl px-6 py-10 sm:px-8 lg:px-10">
+        <div className="mb-10">
+          <p className="mb-3 inline-flex items-center gap-2 rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-500 shadow-sm ring-1 ring-slate-200">
+            <Clock3 className="h-3.5 w-3.5" strokeWidth={2} />
+            {favoriteOnly ? 'Pinned workspace' : 'Dashboard home'}
+          </p>
+          <h1 className="text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl">
+            今天你想推進什麼進度？
+          </h1>
+        </div>
+
+        <section className="mb-12">
+          <div className="mb-4 flex items-center justify-between">
+            <h2 className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-400">快速啟動列</h2>
+            {isLoading && <span className="text-sm font-medium text-slate-400">處理中...</span>}
+          </div>
+          <div className="flex gap-4 overflow-x-auto pb-2">
+            {quickStarts.map((item) => (
+              <button
+                key={item.title}
+                type="button"
+                onClick={item.onClick}
+                disabled={isLoading}
+                className={`group flex h-32 w-32 shrink-0 flex-col items-start justify-between rounded-3xl border border-slate-200 bg-gradient-to-br ${item.tint} p-5 text-left shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-xl hover:shadow-slate-200/70 disabled:cursor-not-allowed disabled:opacity-60 sm:h-36 sm:w-36`}
+              >
+                <item.icon className={`h-8 w-8 ${item.iconTone} transition-transform duration-300 group-hover:scale-110`} strokeWidth={1.9} />
+                <span className="text-sm font-semibold leading-snug text-slate-900">{item.title}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section>
+          <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="text-xl font-semibold tracking-tight text-slate-950">最近使用</h2>
+              <p className="mt-1 text-sm text-slate-500">從最近的報告、教案與草稿繼續開始。</p>
+            </div>
+            <label className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-600 shadow-sm">
+              <Filter className="h-4 w-4 text-slate-400" strokeWidth={2} />
+              <select
+                aria-label="篩選類型"
+                className="bg-transparent pr-6 text-sm font-medium text-slate-700 outline-none"
+                defaultValue="all"
+              >
+                <option value="all">全部類型</option>
+                <option value="lab">實驗報告</option>
+                <option value="paper">專題論文</option>
+                <option value="lesson">教案設計</option>
+                <option value="notes">閱讀心得</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-6">
+            {recentMockDocuments.map((document) => (
+              <article
+                key={document.id}
+                className="group overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-xl hover:shadow-slate-200/70"
+              >
+                <div className={`flex aspect-[4/3] items-center justify-center bg-gradient-to-br ${document.accent}`}>
+                  <div className="grid h-16 w-16 place-items-center rounded-2xl bg-white/75 text-slate-700 shadow-sm ring-1 ring-white/80 backdrop-blur">
+                    <document.icon className="h-8 w-8" strokeWidth={1.8} />
+                  </div>
+                </div>
+                <div className="border-t border-slate-100 p-4">
+                  <p className="mb-2 inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">
+                    {document.type}
+                  </p>
+                  <h3 className="line-clamp-2 min-h-10 text-sm font-semibold leading-5 text-slate-950">
+                    {document.title}
+                  </h3>
+                  <p className="mt-3 text-xs font-medium text-slate-400">最後編輯：{document.editedAt}</p>
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+      </div>
+    </main>
   )
-  const recentDocuments = [...fileDocuments].sort((left, right) => {
-    const leftTime = new Date(left.updatedAt ?? left.createdAt).getTime()
-    const rightTime = new Date(right.updatedAt ?? right.createdAt).getTime()
-    return rightTime - leftTime
-  })
-  const pageKicker = favoriteOnly ? 'Favorites' : 'Dashboard'
-  const pageTitle = favoriteOnly ? '收藏夾' : '早安，準備好撰寫今天的實驗結報了嗎？'
-  const sectionTitle = favoriteOnly ? '已收藏檔案' : '近期編輯檔案'
-  const emptyTitle = favoriteOnly ? '尚未收藏任何報告' : '目前沒有報告'
-  const emptyDescription = favoriteOnly
-    ? '在文件卡片或檔案樹點擊星號，即可把常用報告收進收藏夾。'
-    : '點擊右上角建立第一份報告吧！'
+}
+
+type ProjectTab = 'all' | 'shared' | 'snippets'
+
+function ProjectsView() {
+  const [activeTab, setActiveTab] = useState<ProjectTab>('all')
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null)
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  const tabs: Array<{ id: ProjectTab; label: string }> = [
+    { id: 'all', label: '全部文件' },
+    { id: 'shared', label: '與我共用' },
+    { id: 'snippets', label: '程式碼片段庫' },
+  ]
+  const projectItems = [
+    {
+      id: 'photoelectric-report',
+      tab: 'all',
+      title: '光電效應實驗報告',
+      owner: 'Lucas Shelby',
+      updatedAt: '今天 14:20',
+      icon: FileText,
+      tone: 'text-indigo-600 bg-indigo-50',
+    },
+    {
+      id: 'rc-circuit',
+      tab: 'all',
+      title: 'RC 電路暫態分析',
+      owner: 'Lucas Shelby',
+      updatedAt: '昨天 21:08',
+      icon: CircuitBoard,
+      tone: 'text-cyan-700 bg-cyan-50',
+    },
+    {
+      id: 'shared-lab-template',
+      tab: 'shared',
+      title: '普通物理實驗共用模板',
+      owner: 'Ming Chen',
+      updatedAt: '6 月 12 日',
+      icon: Users,
+      tone: 'text-violet-700 bg-violet-50',
+    },
+    {
+      id: 'error-python-snippet',
+      tab: 'snippets',
+      title: '誤差分析 Python 繪圖片段',
+      owner: 'Lucas Shelby',
+      updatedAt: '6 月 10 日',
+      icon: FileCode2,
+      tone: 'text-emerald-700 bg-emerald-50',
+    },
+    {
+      id: 'markdown-table-snippet',
+      tab: 'snippets',
+      title: 'Markdown 表格清理片段',
+      owner: 'Lucas Shelby',
+      updatedAt: '6 月 8 日',
+      icon: Code2,
+      tone: 'text-slate-700 bg-slate-100',
+    },
+  ] satisfies Array<{
+    id: string
+    tab: ProjectTab
+    title: string
+    owner: string
+    updatedAt: string
+    icon: typeof FileText
+    tone: string
+  }>
+  const visibleItems =
+    activeTab === 'all'
+      ? projectItems.filter((item) => item.tab === 'all')
+      : projectItems.filter((item) => item.tab === activeTab)
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
-      if (
-        openMenuRef.current &&
-        event.target instanceof Node &&
-        !openMenuRef.current.contains(event.target)
-      ) {
+      if (menuRef.current && event.target instanceof Node && !menuRef.current.contains(event.target)) {
         setOpenMenuId(null)
       }
     }
@@ -1898,206 +2182,114 @@ function DashboardView({
   }, [])
 
   return (
-    <main className={`min-h-0 flex-1 overflow-auto bg-zinc-50 transition-colors duration-300 dark:bg-zinc-950 ${SCROLLBAR_HIDE}`}>
-      <div className="mx-auto max-w-6xl px-8 py-12">
-        <div className="mb-8 flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p className="mb-2 text-sm font-medium text-zinc-500 dark:text-zinc-400">
-              {pageKicker}
-            </p>
-            <h1 className="mb-8 text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">
-              {pageTitle}
-            </h1>
+    <main className={`min-h-0 flex-1 overflow-auto bg-slate-50 ${SCROLLBAR_HIDE}`}>
+      <div className="mx-auto max-w-7xl px-6 py-8 sm:px-8 lg:px-10">
+        <section className="mb-8">
+          <div className="mb-4">
+            <h1 className="text-3xl font-semibold tracking-tight text-slate-950">項目</h1>
+            <p className="mt-2 text-sm text-slate-500">集中管理報告、共用文件與常用程式碼片段。</p>
           </div>
-          {!favoriteOnly && (
-            <button
-              type="button"
-              onClick={onCreateDocument}
-              disabled={isLoading}
-              className="rounded-lg bg-zinc-950 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
-            >
-              {isLoading ? '處理中...' : '新增報告'}
-            </button>
-          )}
-        </div>
-
-        <section>
-          <div className="mb-3 flex items-center justify-between">
-            <h2 className="text-sm font-semibold uppercase tracking-wider text-zinc-500 dark:text-zinc-400">
-              {sectionTitle}
-            </h2>
-            <span className="text-sm text-zinc-400">{fileDocuments.length} 份文件</span>
-          </div>
-          {recentDocuments.length === 0 ? (
-            <div className="rounded-2xl border border-dashed border-zinc-200 bg-white px-8 py-16 text-center shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-zinc-100 text-2xl dark:bg-zinc-800">
-                📄
+          <div className="group flex h-32 items-center justify-center rounded-3xl border border-dashed border-slate-300 bg-white/70 px-6 text-center shadow-sm transition-all duration-300 hover:border-indigo-300 hover:bg-indigo-50/40 hover:shadow-md">
+            <div className="flex flex-col items-center gap-3">
+              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-slate-100 text-slate-500 transition-colors group-hover:bg-white group-hover:text-indigo-600">
+                <UploadCloud className="h-6 w-6" strokeWidth={1.9} />
               </div>
-              <h3 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">{emptyTitle}</h3>
-              <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
-                {emptyDescription}
+              <p className="text-sm font-semibold text-slate-700">
+                拖曳 Word / PDF 檔案至此，AI 自動解析為 Markdown
               </p>
-              {!favoriteOnly && (
+            </div>
+          </div>
+        </section>
+
+        <section className="rounded-3xl border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-200 px-6">
+            <div className="flex gap-8">
+              {tabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`relative py-4 text-sm font-semibold transition-colors ${
+                    activeTab === tab.id ? 'text-indigo-600' : 'text-slate-500 hover:text-slate-950'
+                  }`}
+                >
+                  {tab.label}
+                  <span
+                    className={`absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-indigo-600 transition-all duration-300 ${
+                      activeTab === tab.id ? 'opacity-100' : 'opacity-0'
+                    }`}
+                  />
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="divide-y divide-slate-100">
+            {visibleItems.map((item) => (
+              <article
+                key={item.id}
+                className="group grid grid-cols-[minmax(0,1.6fr)_minmax(8rem,0.7fr)_minmax(8rem,0.7fr)_3rem] items-center gap-4 px-6 py-4 transition-colors duration-200 hover:bg-slate-50"
+              >
                 <button
                   type="button"
-                  onClick={onCreateDocument}
-                  disabled={isLoading}
-                  className="mt-6 rounded-xl bg-zinc-950 px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-zinc-100 dark:text-zinc-950 dark:hover:bg-white"
+                  onClick={() => setOpenMenuId(null)}
+                  className="flex min-w-0 items-center gap-3 text-left"
                 >
-                  {isLoading ? '處理中...' : '建立第一份報告'}
+                  <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-2xl ${item.tone}`}>
+                    <item.icon className="h-5 w-5" strokeWidth={1.9} />
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block truncate text-sm font-semibold text-slate-950">{item.title}</span>
+                    <span className="mt-0.5 block text-xs text-slate-400">Markdown asset</span>
+                  </span>
                 </button>
-              )}
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
-              {recentDocuments.map((document) => {
-                const previewText = getDocumentPreview(document)
-
-                return (
-                  <article
-                    key={document.id}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => onOpenDocument(document.id)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault()
-                        onOpenDocument(document.id)
-                      }
-                    }}
-                    className="group relative flex min-h-80 cursor-pointer flex-col overflow-hidden rounded-2xl border border-zinc-200/60 bg-white text-left shadow-sm transition-all duration-300 hover:-translate-y-1 hover:border-zinc-300 hover:shadow-md dark:border-zinc-800 dark:bg-zinc-900 dark:hover:border-zinc-700"
+                <div className="hidden items-center gap-2 text-sm font-medium text-slate-500 md:flex">
+                  <Users className="h-4 w-4 text-slate-300" strokeWidth={2} />
+                  {item.owner}
+                </div>
+                <div className="hidden items-center gap-2 text-sm font-medium text-slate-500 md:flex">
+                  <CalendarDays className="h-4 w-4 text-slate-300" strokeWidth={2} />
+                  {item.updatedAt}
+                </div>
+                <div ref={openMenuId === item.id ? menuRef : null} className="relative justify-self-end">
+                  <button
+                    type="button"
+                    onClick={() => setOpenMenuId((current) => (current === item.id ? null : item.id))}
+                    className="grid h-9 w-9 place-items-center rounded-xl text-slate-400 transition hover:bg-white hover:text-slate-950 hover:shadow-sm"
+                    aria-label="文件操作"
+                    title="文件操作"
                   >
-                    <button
-                      type="button"
-                      title={document.isFavorite ? '取消收藏' : '收藏'}
-                      aria-label={document.isFavorite ? '取消收藏' : '收藏'}
-                      onClick={(event) => {
-                        event.stopPropagation()
-                        onToggleFavorite(document.id)
-                      }}
-                      disabled={isLoading}
-                      className="absolute right-4 top-4 z-10 rounded-full bg-white/90 p-2 text-zinc-400 shadow-sm ring-1 ring-zinc-200/70 transition hover:scale-105 hover:text-amber-500 dark:bg-zinc-900/90 dark:ring-zinc-700"
-                    >
-                      <Star
-                        className={`h-4 w-4 ${
-                          document.isFavorite ? 'fill-amber-400 text-amber-400' : ''
-                        }`}
-                        strokeWidth={2}
-                      />
-                    </button>
-
-                    <div className="flex min-h-52 shrink-0 items-center justify-center bg-zinc-50 px-8 py-8 dark:bg-zinc-900/60">
-                      <div className="h-36 w-full max-w-48 overflow-hidden rounded-xl border border-zinc-200/60 bg-white p-5 shadow-[0_10px_30px_rgba(0,0,0,0.04)] dark:border-zinc-800 dark:bg-zinc-950">
-                        {previewText ? (
-                          <div className="h-full rounded-lg bg-zinc-50 p-3 dark:bg-zinc-900">
-                            <p className="line-clamp-6 text-xs leading-5 text-zinc-400 dark:text-zinc-500">
-                              {previewText}
-                            </p>
-                          </div>
-                        ) : (
-                          <div className="space-y-2.5">
-                            <div className="mb-4 flex items-center gap-2">
-                              <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-zinc-100 text-xl dark:bg-zinc-800">
-                                📄
-                              </div>
-                              <div className="h-3 w-20 rounded-full bg-zinc-200/80 dark:bg-zinc-700" />
-                            </div>
-                            <div className="h-2.5 rounded-full bg-zinc-200/70 dark:bg-zinc-700" />
-                            <div className="h-2.5 w-11/12 rounded-full bg-zinc-200/60 dark:bg-zinc-700" />
-                            <div className="h-2.5 w-9/12 rounded-full bg-zinc-200/60 dark:bg-zinc-700" />
-                            <div className="mt-4 h-10 rounded-lg bg-zinc-100 dark:bg-zinc-800" />
-                          </div>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="relative min-h-28 shrink-0 border-t border-zinc-100 bg-white p-5 pb-10 pr-12 dark:border-zinc-800 dark:bg-zinc-900">
-                    <div className="flex min-w-0 items-start gap-3">
-                      <div className="min-w-0 flex-1">
-                        <h3 className="mb-2 truncate text-lg font-semibold leading-snug text-zinc-800 dark:text-zinc-50">
-                          {document.title}
-                        </h3>
-                        <p className="text-sm leading-relaxed text-zinc-500 dark:text-zinc-400">
-                          最後修改：{formatDocumentTime(document.updatedAt ?? document.createdAt)}
-                        </p>
-                      </div>
-                    </div>
-                    <div
-                      ref={openMenuId === document.id ? openMenuRef : null}
-                      className="absolute bottom-4 right-4"
-                    >
+                    <MoreHorizontal className="h-5 w-5" strokeWidth={2} />
+                  </button>
+                  {openMenuId === item.id && (
+                    <div className="absolute right-0 top-full z-20 mt-2 w-44 overflow-hidden rounded-2xl border border-slate-200 bg-white py-2 text-sm shadow-xl shadow-slate-200/70">
                       <button
                         type="button"
-                        className="rounded-full px-2 py-1 text-lg leading-none text-zinc-400 transition-colors hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
-                        onClick={(event) => {
-                          event.stopPropagation()
-                          setOpenMenuId((current) => (current === document.id ? null : document.id))
-                        }}
-                        title="更多操作"
-                        aria-label="更多操作"
+                        onClick={() => setOpenMenuId(null)}
+                        className="w-full px-4 py-2.5 text-left font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-950"
                       >
-                        ⋯
+                        開啟
                       </button>
-                      {openMenuId === document.id && (
-                        <div className="absolute bottom-full right-0 z-50 mb-2 w-56 overflow-hidden rounded-xl border border-zinc-200 bg-white py-2 text-sm shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              setOpenMenuId(null)
-                              onRenameDocument(document.id)
-                            }}
-                            disabled={isLoading}
-                            className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
-                          >
-                            📄 重新命名
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              setOpenMenuId(null)
-                              onShareDocument(document.id)
-                            }}
-                            disabled={isLoading}
-                            className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
-                          >
-                            ✨ 分享產生連結
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              setOpenMenuId(null)
-                              onToggleFavorite(document.id)
-                            }}
-                            disabled={isLoading}
-                            className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-zinc-700 transition-colors hover:bg-zinc-50 dark:text-zinc-200 dark:hover:bg-zinc-800"
-                          >
-                            {document.isFavorite ? '⭐ 取消收藏' : '⭐ 加入收藏'}
-                          </button>
-                          <div className="my-2 h-px bg-zinc-100 dark:bg-zinc-800" />
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation()
-                              setOpenMenuId(null)
-                              onDeleteDocument(document.id)
-                            }}
-                            disabled={isLoading}
-                            className="flex w-full items-center gap-3 px-4 py-2.5 text-left font-medium text-red-600 transition-colors hover:bg-red-50 dark:text-red-300 dark:hover:bg-red-950/40"
-                          >
-                            🗑️ 刪除此報告
-                          </button>
-                        </div>
-                      )}
+                      <button
+                        type="button"
+                        onClick={() => setOpenMenuId(null)}
+                        className="w-full px-4 py-2.5 text-left font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-950"
+                      >
+                        重新命名
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setOpenMenuId(null)}
+                        className="w-full px-4 py-2.5 text-left font-medium text-red-600 transition hover:bg-red-50"
+                      >
+                        移至垃圾桶
+                      </button>
                     </div>
-                  </div>
-                  </article>
-                )
-              })}
-            </div>
-          )}
+                  )}
+                </div>
+              </article>
+            ))}
+          </div>
         </section>
       </div>
     </main>
@@ -2644,12 +2836,10 @@ function LandingPage({
 function WorkspaceApp({
   user,
   onSignOut,
-  onRequestAuth,
   initialSharedDocument,
 }: {
   user: User | null
   onSignOut: () => void
-  onRequestAuth: () => void
   initialSharedDocument?: Document | null
 }) {
   const [initialWorkspace] = useState(() => {
@@ -2666,7 +2856,7 @@ function WorkspaceApp({
     readDocumentVersions(DOCUMENT_VERSIONS_STORAGE_KEY),
   )
   const [activeDocumentId, setActiveDocumentId] = useState(initialWorkspace.activeDocumentId)
-  const [currentView, setCurrentView] = useState<AppView>(initialSharedDocument ? 'editor' : 'dashboard')
+  const [currentView, setCurrentView] = useState<AppView>(() => getInitialAppView(initialSharedDocument))
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(Boolean(initialSharedDocument))
   const activeDocument =
     documents.find((document) => document.id === activeDocumentId && document.type === 'file' && !document.isTrashed) ??
@@ -2682,6 +2872,7 @@ function WorkspaceApp({
   const [isShareModalOpen, setIsShareModalOpen] = useState(false)
   const [isExtensionModalOpen, setIsExtensionModalOpen] = useState(false)
   const [isAdvancedMenuOpen, setIsAdvancedMenuOpen] = useState(false)
+  const [isAssistDrawerOpen, setIsAssistDrawerOpen] = useState(false)
   const [mobileEditorPane, setMobileEditorPane] = useState<'edit' | 'preview'>('edit')
   const [collaboratorEmail, setCollaboratorEmail] = useState('')
   const [documentCollaborators, setDocumentCollaborators] = useState<DocumentCollaborator[]>([])
@@ -2746,6 +2937,15 @@ function WorkspaceApp({
         : [],
     [activeDocument, documentVersions],
   )
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || currentView === 'editor') return
+
+    const nextPath = currentView === 'projects' ? '/dashboard/projects' : '/dashboard'
+    if (window.location.pathname !== nextPath) {
+      window.history.replaceState(null, '', nextPath)
+    }
+  }, [currentView])
 
   const applyLoadedDocument = useCallback((document: Document) => {
     setActiveDocumentId(document.id)
@@ -3635,112 +3835,6 @@ function WorkspaceApp({
     applyEditorEdit(snippet, cursorOffset)
   }
 
-  function getSelectedEditorText() {
-    const ed = editorRef.current
-    const selection = ed?.getSelection()
-    const model = ed?.getModel()
-    if (!ed || !selection || !model) return ''
-
-    return model.getValueInRange(selection)
-  }
-
-  function wrapSelection(prefix: string, suffix = prefix, placeholder = '文字') {
-    const selectedText = getSelectedEditorText()
-    const nextText = `${prefix}${selectedText || placeholder}${suffix}`
-    const cursorOffset = selectedText ? nextText.length : prefix.length
-    applyEditorEdit(nextText, cursorOffset)
-  }
-
-  function prefixSelectionLines(prefix: string, placeholder = '文字') {
-    const selectedText = getSelectedEditorText()
-    const sourceText = selectedText || placeholder
-    const nextText = sourceText
-      .split(/\r?\n/)
-      .map((line) => `${prefix}${line}`)
-      .join('\n')
-    applyEditorEdit(nextText, selectedText ? undefined : prefix.length)
-  }
-
-  function runEditorCommand(command: string) {
-    const ed = editorRef.current
-    if (!ed) return
-    ed.trigger('markdown-toolbar', command, null)
-    ed.focus()
-  }
-
-  function insertMarkdownSnippet(kind: string) {
-    if (!canEditActiveDocumentRef.current) {
-      setBridgeToast('此文件目前為唯讀模式，無法修改內容')
-      return
-    }
-
-    if (kind === 'undo') {
-      runEditorCommand('undo')
-      return
-    }
-    if (kind === 'redo') {
-      runEditorCommand('redo')
-      return
-    }
-    if (kind === 'bold') {
-      wrapSelection('**', '**', '粗體文字')
-      return
-    }
-    if (kind === 'italic') {
-      wrapSelection('*', '*', '斜體文字')
-      return
-    }
-    if (kind === 'strike') {
-      wrapSelection('~~', '~~', '刪除線文字')
-      return
-    }
-    if (kind === 'heading') {
-      prefixSelectionLines('## ', '標題')
-      return
-    }
-    if (kind === 'code') {
-      wrapSelection('`', '`', 'code')
-      return
-    }
-    if (kind === 'quote') {
-      prefixSelectionLines('> ', '引用文字')
-      return
-    }
-    if (kind === 'bullet') {
-      prefixSelectionLines('- ', '清單項目')
-      return
-    }
-    if (kind === 'ordered') {
-      const selectedText = getSelectedEditorText()
-      const lines = (selectedText || '清單項目').split(/\r?\n/)
-      applyEditorEdit(lines.map((line, index) => `${index + 1}. ${line}`).join('\n'), selectedText ? undefined : 3)
-      return
-    }
-    if (kind === 'check') {
-      prefixSelectionLines('- [ ] ', '待辦事項')
-      return
-    }
-    if (kind === 'link') {
-      insertAtCursor('[連結文字](https://example.com)', 1)
-      return
-    }
-    if (kind === 'image') {
-      insertAtCursor('![圖片說明](https://example.com/image.png)', 2)
-      return
-    }
-    if (kind === 'table') {
-      insertAtCursor('| 欄位 A | 欄位 B |\n|---|---|\n|  |  |')
-      return
-    }
-    if (kind === 'hr') {
-      insertAtCursor('\n---\n')
-      return
-    }
-    if (kind === 'comment') {
-      insertAtCursor('<!-- 註解 -->', 5)
-    }
-  }
-
   function handleEditorPaste(event: ClipboardEvent) {
     if (!canEditActiveDocumentRef.current) return
 
@@ -4512,10 +4606,38 @@ function WorkspaceApp({
   }
 
   const isGenerating = syncStatus === 'pending' || syncStatus === 'rendering'
-  const shouldShowSidebar = Boolean(user && (currentView !== 'editor' || !isSidebarCollapsed))
+  const shouldShowSidebar = Boolean(user && currentView !== 'editor')
+  const topbarAvatarUrl = getUserAvatarUrl(user)
+  const topbarUserName = getUserDisplayName(user)
+  const topbarUserInitial = getUserInitial(user)
+  const isAiConnected =
+    aiSettings.preferredProvider === 'extension' ||
+    (aiSettings.preferredProvider === 'user_api_key' && aiSettings.userApiProvider !== 'none')
+  const assistTasks = [
+    {
+      title: '生成報告',
+      description: '只有原始資料也可以開始，幫你整理成可寫的報告骨架。',
+      onClick: () => setIsOutlineModalOpen(true),
+    },
+    {
+      title: '整理內容',
+      description: '把貼上的 ChatGPT 或 Gemini 內容整理成清楚段落。',
+      onClick: () => requestAiEdit('rewrite'),
+    },
+    {
+      title: '檢查問題',
+      description: '交作業前檢查公式、缺漏、數據與段落完整度。',
+      onClick: () => setCurrentView('quality'),
+    },
+    {
+      title: '改為 Word 格式',
+      description: '讓表格、標題與段落更適合複製或匯出到 Word。',
+      onClick: handleSmartFormat,
+    },
+  ]
 
   return (
-    <div className="flex h-full min-h-screen bg-zinc-50 font-sans text-zinc-800 transition-colors duration-300 dark:bg-zinc-950 dark:text-zinc-100">
+    <div className="flex h-full min-h-screen bg-slate-50 font-sans text-slate-800">
       {shouldShowSidebar && (
         <DocumentSidebar
           documents={documents}
@@ -4540,19 +4662,17 @@ function WorkspaceApp({
 
       <div className="flex min-w-0 flex-1 flex-col">
       {currentView === 'editor' ? (
-        <header className="sticky top-0 z-40 flex h-14 shrink-0 items-center justify-between gap-3 border-b border-zinc-800 bg-[#242529] px-4 text-zinc-100 shadow-sm">
-          <div className="flex min-w-0 flex-1 items-center gap-2">
-            {user && isSidebarCollapsed && (
-              <button
-                type="button"
-                onClick={() => setIsSidebarCollapsed(false)}
-                className="inline-flex items-center gap-2 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white"
-                title="顯示工作區"
-              >
-                <PanelLeftOpen className="h-4 w-4" strokeWidth={2} />
-                <span className="hidden sm:inline">工作區</span>
-              </button>
-            )}
+        <header className="sticky top-0 z-40 flex h-16 shrink-0 items-center justify-between gap-4 border-b border-slate-200 bg-white px-5 text-slate-700 shadow-sm">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <button
+              type="button"
+              onClick={() => setCurrentView('projects')}
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-slate-500 transition hover:bg-slate-100 hover:text-slate-950"
+              title="返回項目"
+              aria-label="返回項目"
+            >
+              <ArrowRight className="h-4 w-4 rotate-180" strokeWidth={2} />
+            </button>
             {isTitleEditing ? (
               <input
                 value={titleDraft}
@@ -4568,7 +4688,7 @@ function WorkspaceApp({
                     setIsTitleEditing(false)
                   }
                 }}
-                className="w-full max-w-md rounded-lg border border-white/10 bg-zinc-900 px-3 py-1.5 text-sm font-semibold text-zinc-100 outline-none transition focus:border-violet-400 focus:ring-2 focus:ring-violet-400/20"
+                className="w-full max-w-md rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-950 outline-none transition focus:border-indigo-200 focus:ring-4 focus:ring-indigo-100"
               />
             ) : (
               <button
@@ -4578,9 +4698,9 @@ function WorkspaceApp({
                   setTitleDraft(activeDocument?.title ?? '')
                   setIsTitleEditing(true)
                 }}
-                className={`max-w-md truncate rounded-lg px-2 py-1 text-left text-sm font-semibold text-zinc-100 transition-colors ${
+                className={`max-w-md truncate rounded-xl px-2 py-1.5 text-left text-sm font-semibold text-slate-950 transition-colors ${
                   isActiveDocumentOwner
-                    ? 'hover:bg-white/10'
+                    ? 'hover:bg-slate-100'
                     : 'cursor-default'
                 }`}
                 title={isActiveDocumentOwner ? '點擊重新命名' : '只有擁有者可以重新命名'}
@@ -4588,54 +4708,31 @@ function WorkspaceApp({
                 {activeDocument?.title ?? '未命名報告'}
               </button>
             )}
+            {isReadOnlyMode ? (
+              <span className="text-sm font-medium text-amber-600">唯讀模式</span>
+            ) : null}
+            {syncStatus === 'exporting' && (
+              <span className="text-sm font-medium text-amber-600">正在打包 Word</span>
+            )}
+            {syncStatus === 'exportingPdf' && (
+              <span className="text-sm font-medium text-amber-600">正在編譯 PDF</span>
+            )}
+            {isGenerating && <span className="text-sm font-medium text-amber-600">同步中</span>}
+            {syncStatus === 'synced' && !isGenerating && !isEditorEmpty && (
+              <span className="text-sm font-medium text-slate-400">已儲存</span>
+            )}
+            {syncStatus === 'error' && (
+              <span className="text-sm font-medium text-red-500">同步失敗</span>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
             <CollaboratorAvatarGroup collaborators={collaborators} />
-            {isReadOnlyMode && (
-              <span className="rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-xs font-semibold text-amber-700 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200">
-                唯讀模式
-              </span>
-            )}
-            {syncStatus === 'exporting' && (
-              <span className="text-xs font-medium text-amber-500">正在打包 Word</span>
-            )}
-            {syncStatus === 'exportingPdf' && (
-              <span className="text-xs font-medium text-amber-500">正在編譯 PDF</span>
-            )}
-            {isGenerating && <span className="text-xs font-medium text-amber-500">同步中</span>}
-            {syncStatus === 'synced' && !isGenerating && !isEditorEmpty && (
-              <span className="text-xs font-medium text-emerald-600">已同步</span>
-            )}
-            {syncStatus === 'error' && (
-              <span className="text-xs font-medium text-red-500">同步失敗</span>
-            )}
-            <button
-              type="button"
-              onClick={() => setCurrentView('settings')}
-              className="hidden rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white md:inline-flex"
-            >
-              AI 設定
-            </button>
-            <button
-              type="button"
-              onClick={() => setCurrentView('quality')}
-              className="hidden rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white lg:inline-flex"
-            >
-              報告檢查
-            </button>
-            <button
-              type="button"
-              onClick={() => setCurrentView('history')}
-              className="hidden rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white lg:inline-flex"
-            >
-              版本
-            </button>
             <button
               type="button"
               onClick={() => void exportWordReport()}
               disabled={isEditorEmpty || syncStatus === 'exporting' || syncStatus === 'exportingPdf'}
-              className="hidden rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40 xl:inline-flex"
+              className="hidden rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-40 sm:inline-flex"
             >
               Word
             </button>
@@ -4643,56 +4740,56 @@ function WorkspaceApp({
               type="button"
               onClick={() => void exportPdfReport()}
               disabled={isEditorEmpty || syncStatus === 'exporting' || syncStatus === 'exportingPdf'}
-              className="hidden rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40 xl:inline-flex"
+              className="hidden rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-40 sm:inline-flex"
             >
               PDF
             </button>
-            {user ? (
-              <button
-                type="button"
-                onClick={shareCurrentDocument}
-                className="rounded-md bg-violet-600 px-3.5 py-1.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-violet-500"
-              >
-                ✨ 分享
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={onRequestAuth}
-                className="rounded-md bg-violet-600 px-3.5 py-1.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-violet-500"
-              >
-                註冊 / 登入
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => setIsAssistDrawerOpen(true)}
+              className="inline-flex h-10 items-center gap-2 rounded-xl bg-slate-950 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+            >
+              ✨ Assist
+            </button>
 
             <div ref={advancedMenuRef} className="relative">
               <button
                 type="button"
                 onClick={() => setIsAdvancedMenuOpen((current) => !current)}
-                className="rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-lg leading-none text-zinc-200 transition hover:bg-white/10 hover:text-white"
+                className="grid h-10 w-10 place-items-center rounded-xl text-slate-400 transition hover:bg-slate-100 hover:text-slate-950"
                 title="進階操作"
               >
                 ⋯
               </button>
               {isAdvancedMenuOpen && (
-                <div className="absolute right-0 top-full z-50 mt-2 w-72 overflow-hidden rounded-xl border border-zinc-700 bg-[#1e1e1e] py-2 text-sm text-zinc-300 shadow-2xl">
+                <div className="absolute right-0 top-full z-50 mt-2 w-72 overflow-hidden rounded-2xl border border-slate-200 bg-white py-2 text-sm text-slate-600 shadow-2xl shadow-slate-200/70">
                   <button
                     type="button"
                     onClick={downloadMarkdownReport}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-white/10 hover:text-white"
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
                   >
-                    <span>📥</span>
                     下載為 Markdown
                   </button>
+                  {user && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAdvancedMenuOpen(false)
+                        void shareCurrentDocument()
+                      }}
+                      className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
+                    >
+                      分享連結
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
                       setIsAdvancedMenuOpen(false)
                       saveActiveDocumentVersion()
                     }}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-white/10 hover:text-white"
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
                   >
-                    <span>↺</span>
                     儲存版本快照
                   </button>
                   <button
@@ -4701,9 +4798,8 @@ function WorkspaceApp({
                       setIsAdvancedMenuOpen(false)
                       setCurrentView('quality')
                     }}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-white/10 hover:text-white"
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
                   >
-                    <span>✓</span>
                     報告完整度檢查
                   </button>
                   <button
@@ -4712,9 +4808,8 @@ function WorkspaceApp({
                       setIsAdvancedMenuOpen(false)
                       exportWordReport()
                     }}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-white/10 hover:text-white"
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
                   >
-                    <span>📄</span>
                     匯出為 Word (.docx)
                   </button>
                   <button
@@ -4723,27 +4818,24 @@ function WorkspaceApp({
                       setIsAdvancedMenuOpen(false)
                       exportPdfReport()
                     }}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-white/10 hover:text-white"
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
                   >
-                    <span>🖨️</span>
                     匯出為 PDF
                   </button>
                   <button
                     type="button"
                     onClick={syncWithGithub}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-white/10 hover:text-white"
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
                   >
-                    <span>🔄</span>
                     與 GitHub 同步
                   </button>
-                  <div className="my-2 h-px bg-zinc-700" />
+                  <div className="my-2 h-px bg-slate-100" />
                   <button
                     type="button"
                     onClick={deleteActiveDocument}
                     disabled={!isActiveDocumentOwner}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium text-red-300 transition-colors hover:bg-white/10 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium text-red-600 transition-colors hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-40"
                   >
-                    <span>🗑️</span>
                     刪除此報告
                   </button>
                 </div>
@@ -4752,104 +4844,54 @@ function WorkspaceApp({
           </div>
         </header>
       ) : (
-        <header className="sticky top-0 z-40 flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-zinc-200 bg-zinc-50/80 px-5 py-4 backdrop-blur-md transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950/80">
-          <div>
-            <h1 className="text-xl font-semibold tracking-tight">AutoLabReport</h1>
-            <p className="mt-0.5 text-sm text-zinc-500 dark:text-zinc-400">
-              {activeDocument?.title ?? '未命名報告'} · Word 化工具列 · 所見即所得匯出
-            </p>
+        <header className="sticky top-0 z-40 flex h-16 shrink-0 items-center justify-between gap-4 border-b border-slate-200/80 bg-slate-50/85 px-5 backdrop-blur-xl">
+          <div className="relative min-w-0 flex-1 max-w-xl">
+            <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" strokeWidth={2} />
+            <input
+              type="search"
+              aria-label="全域搜尋"
+              placeholder="搜尋報告、模板或設定..."
+              className="h-11 w-full rounded-2xl border border-slate-200/80 bg-white pl-11 pr-4 text-sm font-medium text-slate-700 shadow-sm shadow-slate-200/60 outline-none transition placeholder:text-slate-400 focus:border-indigo-200 focus:shadow-md focus:shadow-indigo-100/60 focus:ring-4 focus:ring-indigo-100/70"
+            />
           </div>
-          <div className="flex flex-wrap items-center gap-3">
+          <div className="flex shrink-0 items-center gap-3">
             {syncStatus === 'exporting' && (
-              <span className="text-sm font-medium text-amber-400">⚡ 正在打包 Word 檔...</span>
+              <span className="hidden text-sm font-medium text-amber-500 lg:inline">正在打包 Word</span>
             )}
             {syncStatus === 'exportingPdf' && (
-              <span className="text-sm font-medium text-amber-400">⚡ 正在編譯 PDF...</span>
+              <span className="hidden text-sm font-medium text-amber-500 lg:inline">正在編譯 PDF</span>
             )}
             {isGenerating && (
-              <span className="text-sm font-medium text-amber-400">⚡ 報告動態生成中...</span>
+              <span className="hidden text-sm font-medium text-amber-500 lg:inline">報告同步中</span>
             )}
             {syncStatus === 'synced' && !isGenerating && !isEditorEmpty && (
-              <span className="text-sm font-medium text-emerald-400">✅ 預覽已同步</span>
+              <span className="hidden text-sm font-medium text-emerald-600 lg:inline">已同步</span>
             )}
             {syncStatus === 'error' && (
-              <span className="text-sm font-medium text-red-400">預覽同步失敗</span>
+              <span className="hidden text-sm font-medium text-red-500 lg:inline">同步失敗</span>
+            )}
+            <button
+              type="button"
+              onClick={createNewDocument}
+              className="inline-flex h-11 items-center gap-2 rounded-2xl bg-gradient-to-r from-indigo-500 to-violet-600 px-4 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 transition hover:brightness-110 active:scale-[0.99]"
+            >
+              <Plus className="h-4 w-4" strokeWidth={2.2} />
+              <span className="hidden sm:inline">建立新報告</span>
+            </button>
+            {topbarAvatarUrl ? (
+              <img
+                src={topbarAvatarUrl}
+                alt={topbarUserName}
+                className="h-10 w-10 rounded-full object-cover ring-2 ring-white"
+                referrerPolicy="no-referrer"
+              />
+            ) : (
+              <div className="grid h-10 w-10 place-items-center rounded-full bg-slate-950 text-sm font-semibold text-white ring-2 ring-white">
+                {topbarUserInitial}
+              </div>
             )}
           </div>
         </header>
-      )}
-
-      {currentView === 'editor' && (
-        <div
-          className={`z-30 flex h-10 shrink-0 items-center gap-1 overflow-x-auto border-b border-zinc-800 bg-[#303138] px-3 text-zinc-300 ${SCROLLBAR_HIDE}`}
-          role="toolbar"
-          aria-label="Markdown 格式工具列"
-        >
-          {[
-            ['undo', '↶', '復原'],
-            ['redo', '↷', '重做'],
-            ['divider-1', '', ''],
-            ['bold', 'B', '粗體'],
-            ['italic', 'I', '斜體'],
-            ['strike', 'S', '刪除線'],
-            ['heading', 'H', '標題'],
-            ['code', '</>', '程式碼'],
-            ['quote', '”', '引用'],
-            ['bullet', '•', '項目清單'],
-            ['ordered', '1.', '編號清單'],
-            ['check', '☑', '待辦清單'],
-            ['divider-2', '', ''],
-            ['link', '🔗', '連結'],
-            ['image', '▧', '圖片'],
-            ['table', '▦', '表格'],
-            ['hr', '—', '分隔線'],
-            ['comment', '○', '註解'],
-          ].map(([kind, label, title]) =>
-            kind.startsWith('divider') ? (
-              <span key={kind} className="mx-1 h-5 w-px shrink-0 bg-zinc-600" />
-            ) : (
-              <button
-                key={kind}
-                type="button"
-                title={title}
-                aria-label={title}
-                disabled={!canEditActiveDocument}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => insertMarkdownSnippet(kind)}
-                className="flex h-8 min-w-8 shrink-0 items-center justify-center rounded-md px-2 text-sm font-semibold text-zinc-300 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-35"
-              >
-                {label}
-              </button>
-            ),
-          )}
-          <span className="min-w-3 flex-1" />
-          <button
-            type="button"
-            title="切換 AI 模式、插件橋接或自備 API Key"
-            onClick={() => setCurrentView('settings')}
-            className="hidden h-8 shrink-0 items-center rounded-md border border-white/10 bg-white/5 px-3 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white md:inline-flex"
-          >
-            AI 設定
-          </button>
-          <button
-            type="button"
-            title="生成報告大綱"
-            onClick={() => setIsOutlineModalOpen(true)}
-            disabled={!canEditActiveDocument || Boolean(aiTaskLoading)}
-            className="hidden h-8 shrink-0 items-center rounded-md border border-white/10 bg-white/5 px-3 text-sm font-semibold text-zinc-200 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-35 sm:inline-flex"
-          >
-            生成大綱
-          </button>
-          <button
-            type="button"
-            title="智慧排版修復"
-            onClick={handleSmartFormat}
-            disabled={isEditorEmpty || !canEditActiveDocument || Boolean(aiTaskLoading)}
-            className="hidden h-8 shrink-0 items-center rounded-md bg-violet-600 px-3 text-sm font-semibold text-white transition hover:bg-violet-500 disabled:cursor-not-allowed disabled:opacity-40 sm:inline-flex"
-          >
-            智慧排版
-          </button>
-        </div>
       )}
 
       {currentView === 'dashboard' ? (
@@ -4875,6 +4917,8 @@ function WorkspaceApp({
           favoriteOnly
           isLoading={databaseLoading}
         />
+      ) : currentView === 'projects' ? (
+        <ProjectsView />
       ) : currentView === 'trash' ? (
         <TrashView
           documents={documents}
@@ -4913,7 +4957,7 @@ function WorkspaceApp({
         <TemplatesView onUseTemplate={createDocumentFromTemplate} />
       ) : (
       <>
-      <div className="flex border-b border-zinc-200 bg-white p-2 dark:border-zinc-800 dark:bg-zinc-950 lg:hidden">
+      <div className="flex border-b border-slate-200 bg-white p-2 lg:hidden">
         {([
           ['edit', '編輯'],
           ['preview', '預覽'],
@@ -4924,24 +4968,24 @@ function WorkspaceApp({
             onClick={() => setMobileEditorPane(pane)}
             className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition ${
               mobileEditorPane === pane
-                ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-950'
-                : 'text-zinc-500 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-900'
+                ? 'bg-slate-950 text-white'
+                : 'text-slate-500 hover:bg-slate-100'
             }`}
           >
             {label}
           </button>
         ))}
       </div>
-      <main className="grid min-h-0 flex-1 grid-cols-1 bg-[#1f2023] lg:grid-cols-2">
+      <main className="relative grid min-h-0 flex-1 grid-cols-1 bg-slate-50 lg:grid-cols-2">
         <section
-          className={`min-h-0 flex-grow flex-col border-b border-zinc-800 transition-colors duration-300 lg:flex lg:border-b-0 lg:border-r ${
+          className={`min-h-0 flex-grow flex-col border-b border-slate-200 bg-slate-50 transition-colors duration-300 lg:flex lg:border-b-0 lg:border-r ${
             mobileEditorPane === 'edit' ? 'flex' : 'hidden'
           }`}
         >
-          <div className="relative min-h-[280px] flex-1 flex-grow bg-[#1f2023] font-mono leading-relaxed lg:min-h-0">
+          <div className="relative min-h-[280px] flex-1 flex-grow bg-slate-50 font-mono leading-relaxed lg:min-h-0">
             {aiSelectionMenu.visible && (
               <div
-                className="absolute z-50 flex items-center gap-1 rounded-lg border border-zinc-200/60 bg-white px-1.5 py-1.5 text-sm shadow-xl transition-colors duration-200 dark:border-zinc-700 dark:bg-zinc-950"
+                className="absolute z-50 flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-1.5 py-1.5 text-sm shadow-xl shadow-slate-200/80 transition-colors duration-200"
                 style={{
                   top: aiSelectionMenu.top,
                   left: aiSelectionMenu.left,
@@ -4951,19 +4995,19 @@ function WorkspaceApp({
                   type="button"
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => requestAiEdit('rewrite')}
-                  className="rounded-md px-3 py-1.5 font-medium text-purple-700 transition hover:bg-purple-50 dark:text-purple-200 dark:hover:bg-purple-950/60"
+                  className="rounded-lg px-3 py-1.5 font-medium text-slate-700 transition hover:bg-slate-100"
                   title="潤飾重寫選取文字"
                 >
-                  ✨ 潤飾重寫
+                  潤飾重寫
                 </button>
                 <button
                   type="button"
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => requestAiEdit('expand')}
-                  className="rounded-md px-3 py-1.5 font-medium text-blue-700 transition hover:bg-blue-50 dark:text-blue-200 dark:hover:bg-blue-950/60"
+                  className="rounded-lg px-3 py-1.5 font-medium text-slate-700 transition hover:bg-slate-100"
                   title="擴寫選取文字"
                 >
-                  📈 擴寫內容
+                  擴寫內容
                 </button>
               </div>
             )}
@@ -4977,7 +5021,7 @@ function WorkspaceApp({
               <MarkdownEditor
                 height="100%"
                 defaultLanguage="markdown"
-                theme="vs-dark"
+                theme="vs"
                 value={markdown}
                 onMount={(ed) => {
                   editorRef.current = ed
@@ -5010,13 +5054,26 @@ function WorkspaceApp({
                   readOnly: !canEditActiveDocument,
                   domReadOnly: !canEditActiveDocument,
                   readOnlyMessage: { value: '此文件目前為唯讀模式' },
+                  lineNumbers: 'off',
                   minimap: { enabled: false },
                   wordWrap: 'on',
-                  fontSize: 14,
-                  lineHeight: 24,
-                  fontFamily:
-                    'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace',
+                  fontSize: 16,
+                  lineHeight: 28,
+                  fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
                   scrollBeyondLastLine: false,
+                  overviewRulerBorder: false,
+                  overviewRulerLanes: 0,
+                  hideCursorInOverviewRuler: true,
+                  glyphMargin: false,
+                  folding: false,
+                  lineDecorationsWidth: 0,
+                  lineNumbersMinChars: 0,
+                  renderLineHighlight: 'none',
+                  scrollbar: {
+                    verticalScrollbarSize: 8,
+                    horizontalScrollbarSize: 8,
+                  },
+                  padding: { top: 48, bottom: 48 },
                   placeholder: '在此貼上 ChatGPT / Gemini 產生的實驗報告...',
                 }}
               />
@@ -5029,26 +5086,22 @@ function WorkspaceApp({
             mobileEditorPane === 'preview' ? 'flex' : 'hidden'
           }`}
         >
-          <div className="border-b border-zinc-200 bg-white px-4 py-2.5 text-xs font-medium uppercase tracking-wider text-zinc-500">
-            預覽區 — 所見即所得
-          </div>
           <div
             ref={previewRef}
             className={`preview-pane flex-1 overflow-auto bg-white px-8 py-10 transition-colors duration-300 lg:px-14 ${SCROLLBAR_HIDE}`}
           >
             {renderError ? (
-              <p className="text-sm text-red-400">預覽錯誤：{renderError}</p>
+              <p className="text-sm text-red-500">預覽錯誤：{renderError}</p>
             ) : isEditorEmpty ? (
-              <div className="mx-auto flex h-full min-h-[420px] max-w-4xl flex-col items-center justify-center rounded-xl border border-dashed border-zinc-200 bg-white px-12 py-16 text-center">
-                <div className="mb-4 text-5xl">🤖</div>
-                <p className="max-w-md text-base leading-relaxed text-zinc-600">
-                  歡迎使用 AutoLabReport！請將 LLM 生成的實驗報告貼在左側，或使用上方工具列排版，我們將自動為您生成精美排版與數據圖表。
+              <div className="mx-auto flex h-full min-h-[420px] max-w-4xl flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white px-12 py-16 text-center">
+                <p className="max-w-md text-base leading-relaxed text-slate-500">
+                  開始在左側撰寫或貼上內容，右側會即時形成乾淨的報告預覽。
                 </p>
               </div>
             ) : preview ? (
               <div
                 id="pdf-preview-content"
-                className="pdf-export-surface markdown-preview prose prose-zinc mx-auto min-h-[calc(100vh-9rem)] max-w-4xl bg-white px-4 py-8 text-zinc-900 transition-colors duration-300 prose-headings:font-semibold prose-p:leading-loose lg:px-10 lg:py-12"
+                className="pdf-export-surface markdown-preview prose prose-slate mx-auto min-h-[calc(100vh-9rem)] max-w-4xl bg-white px-4 py-8 text-slate-900 transition-colors duration-300 prose-headings:font-semibold prose-p:leading-loose lg:px-10 lg:py-12"
               >
                 <ReactMarkdown
                   remarkPlugins={REMARK_PLUGINS}
@@ -5065,6 +5118,82 @@ function WorkspaceApp({
           </div>
         </section>
       </main>
+
+      {currentView === 'editor' && (
+        <div className={`pointer-events-none fixed inset-0 z-50 ${isAssistDrawerOpen ? '' : 'hidden'}`}>
+          <button
+            type="button"
+            aria-label="關閉 Assist"
+            onClick={() => setIsAssistDrawerOpen(false)}
+            className="pointer-events-auto absolute inset-0 bg-slate-950/10 backdrop-blur-[1px]"
+          />
+          <aside
+            className={`pointer-events-auto absolute bottom-0 right-0 top-0 w-full max-w-[350px] border-l border-slate-200 bg-white shadow-2xl shadow-slate-300/60 transition-transform duration-300 ${
+              isAssistDrawerOpen ? 'translate-x-0' : 'translate-x-full'
+            }`}
+          >
+            <div className="flex h-full flex-col">
+              <div className="border-b border-slate-200 px-5 py-5">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h2 className="text-lg font-semibold tracking-tight text-slate-950">Assist</h2>
+                    <p className="mt-1 text-sm text-slate-500">選一個任務，讓 AI 協助你完成下一步。</p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIsAssistDrawerOpen(false)}
+                    className="grid h-8 w-8 place-items-center rounded-xl text-slate-400 transition hover:bg-slate-100 hover:text-slate-950"
+                    aria-label="關閉"
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="mt-5 flex items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3 ring-1 ring-slate-200">
+                  <span
+                    className={`h-2.5 w-2.5 rounded-full ${
+                      isAiConnected ? 'bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.12)]' : 'bg-amber-400 shadow-[0_0_0_4px_rgba(251,191,36,0.14)]'
+                    }`}
+                  />
+                  <div>
+                    <p className="text-sm font-semibold text-slate-800">
+                      {isAiConnected ? 'AI 已連接' : '範例模式'}
+                    </p>
+                    <p className="text-xs text-slate-500">
+                      {isAiConnected ? 'API 或插件目前可用。' : '可先體驗流程，不消耗 AI。'}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="min-h-0 flex-1 space-y-3 overflow-auto px-5 py-5">
+                {assistTasks.map((task) => (
+                  <button
+                    key={task.title}
+                    type="button"
+                    onClick={() => {
+                      setIsAssistDrawerOpen(false)
+                      task.onClick()
+                    }}
+                    disabled={
+                      (task.title === '整理內容' || task.title === '改為 Word 格式') &&
+                      (isEditorEmpty || !canEditActiveDocument || Boolean(aiTaskLoading))
+                    }
+                    className="group w-full rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-lg hover:shadow-slate-200/70 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-semibold text-slate-950">{task.title}</h3>
+                        <p className="mt-1 text-sm leading-6 text-slate-500">{task.description}</p>
+                      </div>
+                      <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-slate-500" strokeWidth={2} />
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </aside>
+        </div>
+      )}
       </>
       )}
       </div>
@@ -5535,9 +5664,6 @@ function App() {
       <WorkspaceApp
         user={null}
         initialSharedDocument={publicSharedDocument}
-        onRequestAuth={() => {
-          window.location.href = '/'
-        }}
         onSignOut={() => {
           window.location.href = '/'
         }}
@@ -5559,9 +5685,6 @@ function App() {
   return (
     <WorkspaceApp
       user={user}
-      onRequestAuth={() => {
-        window.location.href = '/'
-      }}
       onSignOut={signOut}
     />
   )

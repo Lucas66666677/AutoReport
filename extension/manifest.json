@@ -1,21 +1,55 @@
 {
   "manifest_version": 3,
   "name": "AutoLabReport Bridge",
-  "version": "1.0",
-  "description": "Send selected or latest ChatGPT markdown content to AutoLabReport.",
-  "permissions": ["activeTab", "scripting", "tabs"],
+  "version": "1.1",
+  "description": "Bridge AutoLabReport with ChatGPT, Gemini, Claude, Grok, DeepSeek and other AI writing apps.",
+  "permissions": ["activeTab", "scripting", "storage", "tabs"],
   "host_permissions": [
     "*://chatgpt.com/*",
+    "*://www.chatgpt.com/*",
+    "*://gemini.google.com/*",
+    "*://claude.ai/*",
+    "*://grok.com/*",
+    "*://x.com/*",
+    "*://chat.deepseek.com/*",
+    "*://www.deepseek.com/*",
+    "*://www.perplexity.ai/*",
+    "*://perplexity.ai/*",
+    "*://copilot.microsoft.com/*",
     "http://localhost/*",
     "http://127.0.0.1/*",
     "*://*.vercel.app/*"
   ],
+  "action": {
+    "default_title": "AutoLabReport Bridge",
+    "default_popup": "popup.html"
+  },
+  "commands": {
+    "send-latest-to-autolab": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+S"
+      },
+      "description": "Send selected or latest AI response to AutoLabReport"
+    }
+  },
   "background": {
     "service_worker": "background.js"
   },
   "content_scripts": [
     {
-      "matches": ["*://chatgpt.com/*"],
+      "matches": [
+        "*://chatgpt.com/*",
+        "*://www.chatgpt.com/*",
+        "*://gemini.google.com/*",
+        "*://claude.ai/*",
+        "*://grok.com/*",
+        "*://x.com/*",
+        "*://chat.deepseek.com/*",
+        "*://www.deepseek.com/*",
+        "*://www.perplexity.ai/*",
+        "*://perplexity.ai/*",
+        "*://copilot.microsoft.com/*"
+      ],
       "js": ["content.js"],
       "run_at": "document_idle"
     },

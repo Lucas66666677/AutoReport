@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AutoLabReport Bridge</title>
+    <style>
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        width: 390px;
+        margin: 0;
+        background: #fafafa;
+        color: #18181b;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      main {
+        padding: 18px;
+      }
+
+      header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 16px;
+        letter-spacing: -0.02em;
+      }
+
+      .subtitle {
+        margin: 3px 0 0;
+        color: #71717a;
+        font-size: 12px;
+      }
+
+      .card {
+        border: 1px solid #e4e4e7;
+        border-radius: 16px;
+        background: #fff;
+        padding: 14px;
+        box-shadow: 0 10px 30px rgba(24, 24, 27, 0.04);
+        margin-bottom: 12px;
+      }
+
+      .status-grid {
+        display: grid;
+        gap: 8px;
+      }
+
+      .status-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        border-radius: 12px;
+        background: #f4f4f5;
+        padding: 10px 12px;
+      }
+
+      .status-label {
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .status-value {
+        max-width: 210px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: #71717a;
+        font-size: 12px;
+      }
+
+      .dot {
+        display: inline-block;
+        width: 7px;
+        height: 7px;
+        border-radius: 999px;
+        margin-right: 6px;
+        background: #ef4444;
+      }
+
+      .dot.ok {
+        background: #22c55e;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 6px;
+        color: #52525b;
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      input,
+      select,
+      textarea {
+        width: 100%;
+        border: 1px solid #e4e4e7;
+        border-radius: 12px;
+        background: #fafafa;
+        color: #18181b;
+        font: 12px/1.5 inherit;
+        outline: none;
+        padding: 10px 11px;
+      }
+
+      textarea {
+        min-height: 96px;
+        resize: vertical;
+      }
+
+      input:focus,
+      select:focus,
+      textarea:focus {
+        border-color: #a1a1aa;
+        background: #fff;
+        box-shadow: 0 0 0 3px rgba(24, 24, 27, 0.08);
+      }
+
+      .field {
+        margin-top: 12px;
+      }
+
+      .actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 12px;
+      }
+
+      button {
+        border: 0;
+        border-radius: 12px;
+        cursor: pointer;
+        font: 700 12px inherit;
+        padding: 10px 12px;
+        transition:
+          transform 0.15s ease,
+          background 0.15s ease,
+          opacity 0.15s ease;
+      }
+
+      button:active {
+        transform: scale(0.98);
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.55;
+      }
+
+      .primary {
+        flex: 1;
+        background: #18181b;
+        color: #fff;
+      }
+
+      .primary:hover {
+        background: #27272a;
+      }
+
+      .secondary {
+        background: #f4f4f5;
+        color: #3f3f46;
+      }
+
+      .secondary:hover {
+        background: #e4e4e7;
+      }
+
+      .hint {
+        margin: 8px 0 0;
+        color: #71717a;
+        font-size: 11px;
+        line-height: 1.5;
+      }
+
+      .toast {
+        min-height: 18px;
+        color: #16a34a;
+        font-size: 12px;
+        font-weight: 700;
+        margin-top: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <h1>AutoLabReport Bridge</h1>
+          <p class="subtitle">多 AI 網頁寫作橋接器</p>
+        </div>
+      </header>
+
+      <section class="card">
+        <div class="status-grid">
+          <div class="status-row">
+            <span class="status-label"><span id="aiDot" class="dot"></span>AI 頁籤</span>
+            <span id="aiStatus" class="status-value">檢查中...</span>
+          </div>
+          <div class="status-row">
+            <span class="status-label"><span id="autoLabDot" class="dot"></span>AutoLabReport</span>
+            <span id="autoLabStatus" class="status-value">檢查中...</span>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="sendLatestButton" class="primary" type="button">抓取最新 AI 回覆</button>
+          <button id="refreshButton" class="secondary" type="button">刷新</button>
+        </div>
+        <p class="hint">快捷鍵：Ctrl + Shift + S。若有反白文字，會優先送出反白文字。</p>
+      </section>
+
+      <section class="card">
+        <label for="preferredAiHost">偏好 AI 頁籤</label>
+        <select id="preferredAiHost">
+          <option value="auto">自動偵測目前開啟的 AI</option>
+          <option value="chatgpt">ChatGPT</option>
+          <option value="gemini">Gemini</option>
+          <option value="claude">Claude</option>
+          <option value="grok">Grok</option>
+          <option value="deepseek">DeepSeek</option>
+          <option value="perplexity">Perplexity</option>
+          <option value="copilot">Copilot</option>
+        </select>
+
+        <div class="field">
+          <label for="targetUrlPatterns">AutoLabReport 目標網址關鍵字</label>
+          <input id="targetUrlPatterns" type="text" />
+          <p class="hint">用逗號分隔，例如：localhost:5173, autolabreport, .vercel.app</p>
+        </div>
+
+        <div class="field">
+          <label>
+            <input id="autoReturn" type="checkbox" style="width:auto;margin-right:6px" />
+            AI 回覆穩定後自動送回 AutoLabReport
+          </label>
+        </div>
+      </section>
+
+      <section class="card">
+        <label for="rewritePrompt">潤飾重寫 Prompt</label>
+        <textarea id="rewritePrompt"></textarea>
+        <p class="hint">可使用 {{text}} 代表選取文字，{{action}} 代表操作名稱。</p>
+
+        <div class="field">
+          <label for="expandPrompt">擴寫內容 Prompt</label>
+          <textarea id="expandPrompt"></textarea>
+        </div>
+
+        <div class="field">
+          <label for="customPrompt">自訂處理 Prompt</label>
+          <textarea id="customPrompt"></textarea>
+        </div>
+
+        <div class="actions">
+          <button id="saveButton" class="primary" type="button">儲存設定</button>
+          <button id="resetButton" class="secondary" type="button">還原預設</button>
+        </div>
+        <div id="toast" class="toast"></div>
+      </section>
+    </main>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

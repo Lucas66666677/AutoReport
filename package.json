@@ -1,4 +1,7 @@
 {
+  "scripts": {
+    "check:deploy": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-check.ps1 -RunBuild"
+  },
   "dependencies": {
     "mermaid": "^11.15.0",
     "y-protocols": "^1.0.7",
