@@ -15,21 +15,23 @@ import 'katex/dist/katex.min.css'
 import { createClient, type Provider, type User } from '@supabase/supabase-js'
 import {
   ArrowRight,
+  Archive,
   Beaker,
-  BookOpen,
+  Bold,
   Bot,
   ChevronDown,
-  CircuitBoard,
   Clock3,
   Code2,
+  Copy,
   CalendarDays,
+  FileClock,
   FileText,
   FileCode2,
   FilePlus2,
   Filter,
   FolderOpen,
   FolderPlus,
-  GraduationCap,
+  Heading2,
   Home,
   Info,
   LayoutTemplate,
@@ -39,6 +41,7 @@ import {
   MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
+  PanelRightOpen,
   Pencil,
   Pin,
   PinOff,
@@ -46,12 +49,13 @@ import {
   Puzzle,
   Search,
   Settings,
+  Share2,
   Sparkles,
   Star,
+  Table2,
   Trash2,
   UploadCloud,
   Users,
-  Zap,
 } from 'lucide-react'
 import type { editor } from 'monaco-editor'
 import ReactMarkdown from 'react-markdown'
@@ -1482,7 +1486,11 @@ function getSharedDocumentIdFromLocation(): string | null {
 function getInitialAppView(initialSharedDocument?: Document | null): AppView {
   if (initialSharedDocument) return 'editor'
   if (typeof window === 'undefined') return 'dashboard'
+  if (window.location.pathname === '/dashboard/home' || window.location.pathname === '/dashboard') return 'dashboard'
   if (window.location.pathname === '/dashboard/projects') return 'projects'
+  if (window.location.pathname === '/dashboard/settings') return 'settings'
+  if (window.location.pathname === '/dashboard/templates') return 'templates'
+  if (window.location.pathname === '/dashboard/trash') return 'trash'
   return 'dashboard'
 }
 
@@ -1912,7 +1920,10 @@ function BillingView({
 }
 
 function DashboardView({
+  documents,
+  onOpenDocument,
   onCreateDocument,
+  onShareDocument,
   favoriteOnly = false,
   isLoading = false,
 }: {
@@ -1926,91 +1937,56 @@ function DashboardView({
   favoriteOnly?: boolean
   isLoading?: boolean
 }) {
+  const fileDocuments = documents.filter(
+    (document) => document.type === 'file' && !document.isTrashed && (!favoriteOnly || document.isFavorite),
+  )
+  const recentDocuments = [...fileDocuments]
+    .sort((left, right) => {
+      const leftTime = new Date(left.updatedAt ?? left.createdAt).getTime()
+      const rightTime = new Date(right.updatedAt ?? right.createdAt).getTime()
+      return rightTime - leftTime
+    })
+    .slice(0, 8)
   const quickStarts = [
     {
-      title: '空白報告',
+      title: '從空白報告開始',
+      description: '建立乾淨的新稿',
       icon: FilePlus2,
       tint: 'from-white to-slate-100',
       iconTone: 'text-slate-800',
       onClick: onCreateDocument,
     },
     {
-      title: '光電與電路實驗',
-      icon: CircuitBoard,
+      title: '匯入 Word/PDF',
+      description: '轉成 Markdown',
+      icon: UploadCloud,
       tint: 'from-sky-50 to-cyan-100/70',
       iconTone: 'text-cyan-700',
       onClick: onCreateDocument,
     },
     {
-      title: 'STEAM 教案設計',
-      icon: GraduationCap,
+      title: '貼上 AI 生成內容',
+      description: '整理亂格式',
+      icon: Sparkles,
       tint: 'from-violet-50 to-indigo-100/70',
       iconTone: 'text-indigo-700',
       onClick: onCreateDocument,
     },
     {
-      title: '專題論文',
-      icon: FileText,
+      title: '整理實驗數據',
+      description: '表格與分析',
+      icon: Beaker,
       tint: 'from-amber-50 to-orange-100/70',
       iconTone: 'text-orange-700',
       onClick: onCreateDocument,
     },
     {
-      title: '閱讀心得',
-      icon: BookOpen,
+      title: '套用課堂模板',
+      description: '從範本開始',
+      icon: LayoutTemplate,
       tint: 'from-emerald-50 to-teal-100/70',
       iconTone: 'text-emerald-700',
       onClick: onCreateDocument,
-    },
-  ]
-  const recentMockDocuments = [
-    {
-      id: 'photoelectric-lab',
-      title: '光電效應實驗報告',
-      editedAt: '今天 14:20',
-      type: '實驗報告',
-      icon: Zap,
-      accent: 'from-cyan-100 to-blue-100',
-    },
-    {
-      id: 'circuit-analysis',
-      title: 'RC 電路暫態分析',
-      editedAt: '昨天 21:08',
-      type: '數據分析',
-      icon: CircuitBoard,
-      accent: 'from-indigo-100 to-violet-100',
-    },
-    {
-      id: 'chemistry-table',
-      title: '滴定數據整理表',
-      editedAt: '6 月 12 日',
-      type: '化學實驗',
-      icon: Beaker,
-      accent: 'from-emerald-100 to-lime-100',
-    },
-    {
-      id: 'research-outline',
-      title: '專題研究緒論草稿',
-      editedAt: '6 月 10 日',
-      type: '專題論文',
-      icon: FileText,
-      accent: 'from-orange-100 to-rose-100',
-    },
-    {
-      id: 'steam-plan',
-      title: 'STEAM 光學教案設計',
-      editedAt: '6 月 8 日',
-      type: '教案設計',
-      icon: GraduationCap,
-      accent: 'from-violet-100 to-fuchsia-100',
-    },
-    {
-      id: 'reading-notes',
-      title: '科學史閱讀心得',
-      editedAt: '6 月 5 日',
-      type: '閱讀心得',
-      icon: BookOpen,
-      accent: 'from-slate-100 to-zinc-200',
     },
   ]
 
@@ -2039,10 +2015,13 @@ function DashboardView({
                 type="button"
                 onClick={item.onClick}
                 disabled={isLoading}
-                className={`group flex h-32 w-32 shrink-0 flex-col items-start justify-between rounded-3xl border border-slate-200 bg-gradient-to-br ${item.tint} p-5 text-left shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-xl hover:shadow-slate-200/70 disabled:cursor-not-allowed disabled:opacity-60 sm:h-36 sm:w-36`}
+                className={`group flex h-36 w-40 shrink-0 flex-col items-start justify-between rounded-2xl border border-slate-200 bg-gradient-to-br ${item.tint} p-5 text-left shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-lg hover:shadow-slate-200/70 disabled:cursor-not-allowed disabled:opacity-60`}
               >
                 <item.icon className={`h-8 w-8 ${item.iconTone} transition-transform duration-300 group-hover:scale-110`} strokeWidth={1.9} />
-                <span className="text-sm font-semibold leading-snug text-slate-900">{item.title}</span>
+                <span>
+                  <span className="block text-sm font-semibold leading-snug text-slate-900">{item.title}</span>
+                  <span className="mt-1 block text-xs font-medium text-slate-500">{item.description}</span>
+                </span>
               </button>
             ))}
           </div>
@@ -2070,105 +2049,161 @@ function DashboardView({
             </label>
           </div>
 
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-6">
-            {recentMockDocuments.map((document) => (
-              <article
+          {recentDocuments.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-slate-200 bg-white px-8 py-14 text-center shadow-sm">
+              <FileText className="mx-auto mb-4 h-10 w-10 text-slate-300" strokeWidth={1.8} />
+              <h3 className="text-base font-semibold text-slate-950">還沒有最近文件</h3>
+              <p className="mt-2 text-sm text-slate-500">先建立一份報告，之後會在這裡快速回到工作。</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:grid-cols-6">
+              {recentDocuments.map((document) => (
+                <article
                 key={document.id}
-                className="group overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-xl hover:shadow-slate-200/70"
+                role="button"
+                tabIndex={0}
+                onClick={() => onOpenDocument(document.id)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault()
+                    onOpenDocument(document.id)
+                  }
+                }}
+                className="group overflow-hidden rounded-2xl border border-slate-200 bg-white text-left shadow-sm transition-all duration-300 hover:-translate-y-1 hover:shadow-lg hover:shadow-slate-200/70"
               >
-                <div className={`flex aspect-[4/3] items-center justify-center bg-gradient-to-br ${document.accent}`}>
+                <div className="flex aspect-[4/3] items-center justify-center bg-gradient-to-br from-slate-100 to-slate-200">
                   <div className="grid h-16 w-16 place-items-center rounded-2xl bg-white/75 text-slate-700 shadow-sm ring-1 ring-white/80 backdrop-blur">
-                    <document.icon className="h-8 w-8" strokeWidth={1.8} />
+                    <FileText className="h-8 w-8" strokeWidth={1.8} />
                   </div>
                 </div>
                 <div className="border-t border-slate-100 p-4">
                   <p className="mb-2 inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-500">
-                    {document.type}
+                    {document.isFavorite ? '收藏' : '報告'}
                   </p>
                   <h3 className="line-clamp-2 min-h-10 text-sm font-semibold leading-5 text-slate-950">
                     {document.title}
                   </h3>
-                  <p className="mt-3 text-xs font-medium text-slate-400">最後編輯：{document.editedAt}</p>
+                  <div className="mt-3 flex items-center justify-between gap-2">
+                    <p className="truncate text-xs font-medium text-slate-400">
+                      最後編輯：{formatDocumentTime(document.updatedAt ?? document.createdAt)}
+                    </p>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        void onShareDocument(document.id)
+                      }}
+                      className="rounded-lg p-1 text-slate-300 transition hover:bg-slate-100 hover:text-slate-600"
+                      aria-label="分享"
+                    >
+                      <Share2 className="h-4 w-4" strokeWidth={2} />
+                    </button>
+                  </div>
                 </div>
               </article>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </section>
       </div>
     </main>
   )
 }
 
-type ProjectTab = 'all' | 'shared' | 'snippets'
+type ProjectTab = 'files' | 'imports' | 'snippets' | 'shared'
 
-function ProjectsView() {
-  const [activeTab, setActiveTab] = useState<ProjectTab>('all')
+function ProjectsView({
+  documents,
+  onOpenDocument,
+  onRenameDocument,
+  onShareDocument,
+  onToggleFavorite,
+  onDeleteDocument,
+  onDuplicateDocument,
+  onCreateDocument,
+}: {
+  documents: Document[]
+  onOpenDocument: (id: string) => void
+  onRenameDocument: (id: string) => void
+  onShareDocument: (id: string) => void
+  onToggleFavorite: (id: string) => void
+  onDeleteDocument: (id: string) => void
+  onDuplicateDocument: (id: string) => void
+  onCreateDocument: () => void
+}) {
+  const [activeTab, setActiveTab] = useState<ProjectTab>('files')
   const [openMenuId, setOpenMenuId] = useState<string | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const tabs: Array<{ id: ProjectTab; label: string }> = [
-    { id: 'all', label: '全部文件' },
-    { id: 'shared', label: '與我共用' },
-    { id: 'snippets', label: '程式碼片段庫' },
+    { id: 'files', label: '文件' },
+    { id: 'imports', label: '匯入檔案' },
+    { id: 'snippets', label: '片段庫' },
+    { id: 'shared', label: '共用' },
   ]
-  const projectItems = [
-    {
-      id: 'photoelectric-report',
-      tab: 'all',
-      title: '光電效應實驗報告',
-      owner: 'Lucas Shelby',
-      updatedAt: '今天 14:20',
-      icon: FileText,
-      tone: 'text-indigo-600 bg-indigo-50',
-    },
-    {
-      id: 'rc-circuit',
-      tab: 'all',
-      title: 'RC 電路暫態分析',
-      owner: 'Lucas Shelby',
-      updatedAt: '昨天 21:08',
-      icon: CircuitBoard,
-      tone: 'text-cyan-700 bg-cyan-50',
-    },
-    {
-      id: 'shared-lab-template',
-      tab: 'shared',
-      title: '普通物理實驗共用模板',
-      owner: 'Ming Chen',
-      updatedAt: '6 月 12 日',
-      icon: Users,
-      tone: 'text-violet-700 bg-violet-50',
-    },
+  const fileDocuments = documents
+    .filter((document) => document.type === 'file' && !document.isTrashed)
+    .sort((left, right) => {
+      const leftTime = new Date(left.updatedAt ?? left.createdAt).getTime()
+      const rightTime = new Date(right.updatedAt ?? right.createdAt).getTime()
+      return rightTime - leftTime
+    })
+  const sharedDocuments = fileDocuments.filter((document) => document.shareSetting !== 'private')
+  const snippets = [
     {
       id: 'error-python-snippet',
-      tab: 'snippets',
       title: '誤差分析 Python 繪圖片段',
       owner: 'Lucas Shelby',
       updatedAt: '6 月 10 日',
+      status: '草稿',
       icon: FileCode2,
-      tone: 'text-emerald-700 bg-emerald-50',
     },
     {
       id: 'markdown-table-snippet',
-      tab: 'snippets',
       title: 'Markdown 表格清理片段',
       owner: 'Lucas Shelby',
       updatedAt: '6 月 8 日',
+      status: '已匯出',
       icon: Code2,
-      tone: 'text-slate-700 bg-slate-100',
     },
-  ] satisfies Array<{
-    id: string
-    tab: ProjectTab
-    title: string
-    owner: string
-    updatedAt: string
-    icon: typeof FileText
-    tone: string
-  }>
-  const visibleItems =
-    activeTab === 'all'
-      ? projectItems.filter((item) => item.tab === 'all')
-      : projectItems.filter((item) => item.tab === activeTab)
+  ]
+  const conversionRecords = [
+    {
+      title: '光學實驗原始 Word',
+      status: '已轉換',
+      time: '今天 13:42',
+    },
+    {
+      title: '數據表 PDF',
+      status: '需檢查',
+      time: '昨天 20:11',
+    },
+  ]
+  const visibleDocuments =
+    activeTab === 'shared' ? sharedDocuments : activeTab === 'files' || activeTab === 'imports' ? fileDocuments : []
+  const visibleSnippets = activeTab === 'snippets' ? snippets : []
+
+  function getDocumentStatus(document: Document) {
+    if (document.shareSetting !== 'private') return '已共用'
+    if ((document.content ?? '').length > 1200) return '已匯出'
+    if ((document.content ?? '').trim().length < 80) return '草稿'
+    return '需檢查'
+  }
+
+  function getStatusStyle(status: string) {
+    if (status === '已匯出' || status === '已轉換') return 'bg-emerald-50 text-emerald-700 ring-emerald-100'
+    if (status === '需檢查') return 'bg-amber-50 text-amber-700 ring-amber-100'
+    if (status === '已共用') return 'bg-indigo-50 text-indigo-700 ring-indigo-100'
+    return 'bg-slate-100 text-slate-600 ring-slate-200'
+  }
+
+  const emptyMessage =
+    activeTab === 'shared'
+      ? '目前沒有共用文件'
+      : activeTab === 'snippets'
+        ? '目前沒有片段'
+        : '目前沒有文件'
+
+  const hasRows = visibleDocuments.length > 0 || visibleSnippets.length > 0
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -2184,14 +2219,23 @@ function ProjectsView() {
   return (
     <main className={`min-h-0 flex-1 overflow-auto bg-slate-50 ${SCROLLBAR_HIDE}`}>
       <div className="mx-auto max-w-7xl px-6 py-8 sm:px-8 lg:px-10">
-        <section className="mb-8">
-          <div className="mb-4">
-            <h1 className="text-3xl font-semibold tracking-tight text-slate-950">項目</h1>
-            <p className="mt-2 text-sm text-slate-500">集中管理報告、共用文件與常用程式碼片段。</p>
+        <section className="mb-6">
+          <div className="mb-4 flex flex-wrap items-end justify-between gap-4">
+            <div>
+              <h1 className="text-3xl font-semibold tracking-tight text-slate-950">項目</h1>
+              <p className="mt-2 text-sm text-slate-500">集中管理報告、匯入檔案、共用文件與常用片段。</p>
+            </div>
+            <button
+              type="button"
+              onClick={onCreateDocument}
+              className="rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+            >
+              新增文件
+            </button>
           </div>
-          <div className="group flex h-32 items-center justify-center rounded-3xl border border-dashed border-slate-300 bg-white/70 px-6 text-center shadow-sm transition-all duration-300 hover:border-indigo-300 hover:bg-indigo-50/40 hover:shadow-md">
+          <div className="group flex h-32 items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-white/70 px-6 text-center shadow-sm transition-all duration-300 hover:border-slate-400 hover:bg-white hover:shadow-md">
             <div className="flex flex-col items-center gap-3">
-              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-slate-100 text-slate-500 transition-colors group-hover:bg-white group-hover:text-indigo-600">
+              <div className="grid h-12 w-12 place-items-center rounded-2xl bg-slate-100 text-slate-500 transition-colors group-hover:bg-slate-50 group-hover:text-slate-800">
                 <UploadCloud className="h-6 w-6" strokeWidth={1.9} />
               </div>
               <p className="text-sm font-semibold text-slate-700">
@@ -2201,7 +2245,24 @@ function ProjectsView() {
           </div>
         </section>
 
-        <section className="rounded-3xl border border-slate-200 bg-white shadow-sm">
+        <section className="mb-6 grid gap-3 md:grid-cols-2">
+          {conversionRecords.map((record) => (
+            <div key={record.title} className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="grid h-10 w-10 place-items-center rounded-xl bg-slate-100 text-slate-500">
+                <FileClock className="h-5 w-5" strokeWidth={1.8} />
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold text-slate-950">{record.title}</p>
+                <p className="text-xs text-slate-400">{record.time}</p>
+              </div>
+              <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${getStatusStyle(record.status)}`}>
+                {record.status}
+              </span>
+            </div>
+          ))}
+        </section>
+
+        <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-200 px-6">
             <div className="flex gap-8">
               {tabs.map((tab) => (
@@ -2210,12 +2271,12 @@ function ProjectsView() {
                   type="button"
                   onClick={() => setActiveTab(tab.id)}
                   className={`relative py-4 text-sm font-semibold transition-colors ${
-                    activeTab === tab.id ? 'text-indigo-600' : 'text-slate-500 hover:text-slate-950'
+                    activeTab === tab.id ? 'text-slate-950' : 'text-slate-500 hover:text-slate-950'
                   }`}
                 >
                   {tab.label}
                   <span
-                    className={`absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-indigo-600 transition-all duration-300 ${
+                    className={`absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-slate-950 transition-all duration-300 ${
                       activeTab === tab.id ? 'opacity-100' : 'opacity-0'
                     }`}
                   />
@@ -2225,68 +2286,99 @@ function ProjectsView() {
           </div>
 
           <div className="divide-y divide-slate-100">
-            {visibleItems.map((item) => (
+            {!hasRows && (
+              <div className="px-6 py-12 text-center text-sm font-medium text-slate-400">{emptyMessage}</div>
+            )}
+            {visibleDocuments.map((document) => {
+              const status = getDocumentStatus(document)
+              return (
+                <article
+                  key={document.id}
+                  className="group grid grid-cols-[minmax(0,1.6fr)_minmax(7rem,0.55fr)_minmax(8rem,0.7fr)_minmax(6rem,0.5fr)_3rem] items-center gap-4 px-6 py-4 transition-colors duration-200 hover:bg-slate-50"
+                >
+                  <button
+                    type="button"
+                    onClick={() => onOpenDocument(document.id)}
+                    className="flex min-w-0 items-center gap-3 text-left"
+                  >
+                    <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-slate-100 text-slate-600">
+                      <FileText className="h-5 w-5" strokeWidth={1.9} />
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-semibold text-slate-950">{document.title}</span>
+                      <span className="mt-0.5 block text-xs text-slate-400">Markdown report</span>
+                    </span>
+                  </button>
+                  <div className="hidden items-center gap-2 text-sm font-medium text-slate-500 md:flex">
+                    <Users className="h-4 w-4 text-slate-300" strokeWidth={2} />
+                    {document.shareSetting !== 'private' ? '共用文件' : '我'}
+                  </div>
+                  <div className="hidden items-center gap-2 text-sm font-medium text-slate-500 md:flex">
+                    <CalendarDays className="h-4 w-4 text-slate-300" strokeWidth={2} />
+                    {formatDocumentTime(document.updatedAt ?? document.createdAt)}
+                  </div>
+                  <span className={`hidden rounded-full px-2.5 py-1 text-center text-xs font-semibold ring-1 md:inline-flex ${getStatusStyle(status)}`}>
+                    {status}
+                  </span>
+                  <div ref={openMenuId === document.id ? menuRef : null} className="relative justify-self-end">
+                    <button
+                      type="button"
+                      onClick={() => setOpenMenuId((current) => (current === document.id ? null : document.id))}
+                      className="grid h-9 w-9 place-items-center rounded-xl text-slate-400 transition hover:bg-white hover:text-slate-950 hover:shadow-sm"
+                      aria-label="文件操作"
+                      title="文件操作"
+                    >
+                      <MoreHorizontal className="h-5 w-5" strokeWidth={2} />
+                    </button>
+                    {openMenuId === document.id && (
+                      <div className="absolute right-0 top-full z-20 mt-2 w-48 overflow-hidden rounded-2xl border border-slate-200 bg-white py-2 text-sm shadow-xl shadow-slate-200/70">
+                        <button type="button" onClick={() => onOpenDocument(document.id)} className="flex w-full items-center gap-2 px-4 py-2.5 text-left font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-950">
+                          <FileText className="h-4 w-4" /> 開啟
+                        </button>
+                        <button type="button" onClick={() => { setOpenMenuId(null); onRenameDocument(document.id) }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-950">
+                          <Pencil className="h-4 w-4" /> 重新命名
+                        </button>
+                        <button type="button" onClick={() => { setOpenMenuId(null); onDuplicateDocument(document.id) }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-950">
+                          <Copy className="h-4 w-4" /> 複製
+                        </button>
+                        <button type="button" onClick={() => { setOpenMenuId(null); onToggleFavorite(document.id) }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-950">
+                          <Archive className="h-4 w-4" /> 移動
+                        </button>
+                        <button type="button" onClick={() => { setOpenMenuId(null); void onShareDocument(document.id) }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-950">
+                          <Share2 className="h-4 w-4" /> 分享
+                        </button>
+                        <div className="my-1 h-px bg-slate-100" />
+                        <button type="button" onClick={() => { setOpenMenuId(null); onDeleteDocument(document.id) }} className="flex w-full items-center gap-2 px-4 py-2.5 text-left font-medium text-red-600 transition hover:bg-red-50">
+                          <Trash2 className="h-4 w-4" /> 刪除
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </article>
+              )
+            })}
+            {visibleSnippets.map((item) => (
               <article
                 key={item.id}
-                className="group grid grid-cols-[minmax(0,1.6fr)_minmax(8rem,0.7fr)_minmax(8rem,0.7fr)_3rem] items-center gap-4 px-6 py-4 transition-colors duration-200 hover:bg-slate-50"
+                className="group grid grid-cols-[minmax(0,1.6fr)_minmax(7rem,0.55fr)_minmax(8rem,0.7fr)_minmax(6rem,0.5fr)_3rem] items-center gap-4 px-6 py-4 transition-colors duration-200 hover:bg-slate-50"
               >
-                <button
-                  type="button"
-                  onClick={() => setOpenMenuId(null)}
-                  className="flex min-w-0 items-center gap-3 text-left"
-                >
-                  <span className={`grid h-10 w-10 shrink-0 place-items-center rounded-2xl ${item.tone}`}>
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-slate-100 text-slate-600">
                     <item.icon className="h-5 w-5" strokeWidth={1.9} />
                   </span>
                   <span className="min-w-0">
                     <span className="block truncate text-sm font-semibold text-slate-950">{item.title}</span>
-                    <span className="mt-0.5 block text-xs text-slate-400">Markdown asset</span>
+                    <span className="mt-0.5 block text-xs text-slate-400">Reusable snippet</span>
                   </span>
+                </div>
+                <div className="hidden text-sm font-medium text-slate-500 md:block">{item.owner}</div>
+                <div className="hidden text-sm font-medium text-slate-500 md:block">{item.updatedAt}</div>
+                <span className={`hidden rounded-full px-2.5 py-1 text-center text-xs font-semibold ring-1 md:inline-flex ${getStatusStyle(item.status)}`}>
+                  {item.status}
+                </span>
+                <button type="button" className="grid h-9 w-9 place-items-center justify-self-end rounded-xl text-slate-400 transition hover:bg-white hover:text-slate-950 hover:shadow-sm">
+                  <MoreHorizontal className="h-5 w-5" strokeWidth={2} />
                 </button>
-                <div className="hidden items-center gap-2 text-sm font-medium text-slate-500 md:flex">
-                  <Users className="h-4 w-4 text-slate-300" strokeWidth={2} />
-                  {item.owner}
-                </div>
-                <div className="hidden items-center gap-2 text-sm font-medium text-slate-500 md:flex">
-                  <CalendarDays className="h-4 w-4 text-slate-300" strokeWidth={2} />
-                  {item.updatedAt}
-                </div>
-                <div ref={openMenuId === item.id ? menuRef : null} className="relative justify-self-end">
-                  <button
-                    type="button"
-                    onClick={() => setOpenMenuId((current) => (current === item.id ? null : item.id))}
-                    className="grid h-9 w-9 place-items-center rounded-xl text-slate-400 transition hover:bg-white hover:text-slate-950 hover:shadow-sm"
-                    aria-label="文件操作"
-                    title="文件操作"
-                  >
-                    <MoreHorizontal className="h-5 w-5" strokeWidth={2} />
-                  </button>
-                  {openMenuId === item.id && (
-                    <div className="absolute right-0 top-full z-20 mt-2 w-44 overflow-hidden rounded-2xl border border-slate-200 bg-white py-2 text-sm shadow-xl shadow-slate-200/70">
-                      <button
-                        type="button"
-                        onClick={() => setOpenMenuId(null)}
-                        className="w-full px-4 py-2.5 text-left font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-950"
-                      >
-                        開啟
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setOpenMenuId(null)}
-                        className="w-full px-4 py-2.5 text-left font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-950"
-                      >
-                        重新命名
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setOpenMenuId(null)}
-                        className="w-full px-4 py-2.5 text-left font-medium text-red-600 transition hover:bg-red-50"
-                      >
-                        移至垃圾桶
-                      </button>
-                    </div>
-                  )}
-                </div>
               </article>
             ))}
           </div>
@@ -2873,6 +2965,7 @@ function WorkspaceApp({
   const [isExtensionModalOpen, setIsExtensionModalOpen] = useState(false)
   const [isAdvancedMenuOpen, setIsAdvancedMenuOpen] = useState(false)
   const [isAssistDrawerOpen, setIsAssistDrawerOpen] = useState(false)
+  const [activeAssistTask, setActiveAssistTask] = useState<string | null>(null)
   const [mobileEditorPane, setMobileEditorPane] = useState<'edit' | 'preview'>('edit')
   const [collaboratorEmail, setCollaboratorEmail] = useState('')
   const [documentCollaborators, setDocumentCollaborators] = useState<DocumentCollaborator[]>([])
@@ -2941,7 +3034,14 @@ function WorkspaceApp({
   useEffect(() => {
     if (typeof window === 'undefined' || currentView === 'editor') return
 
-    const nextPath = currentView === 'projects' ? '/dashboard/projects' : '/dashboard'
+    const routeByView: Partial<Record<AppView, string>> = {
+      dashboard: '/dashboard/home',
+      projects: '/dashboard/projects',
+      settings: '/dashboard/settings',
+      templates: '/dashboard/templates',
+      trash: '/dashboard/trash',
+    }
+    const nextPath = routeByView[currentView] ?? '/dashboard/home'
     if (window.location.pathname !== nextPath) {
       window.history.replaceState(null, '', nextPath)
     }
@@ -3835,6 +3935,31 @@ function WorkspaceApp({
     applyEditorEdit(snippet, cursorOffset)
   }
 
+  function getSelectedEditorText() {
+    const ed = editorRef.current
+    const selection = ed?.getSelection()
+    const model = ed?.getModel()
+    if (!ed || !selection || !model) return ''
+
+    return model.getValueInRange(selection)
+  }
+
+  function wrapSelection(prefix: string, suffix = prefix, placeholder = '文字') {
+    const selectedText = getSelectedEditorText()
+    const nextText = `${prefix}${selectedText || placeholder}${suffix}`
+    const cursorOffset = selectedText ? nextText.length : prefix.length
+    applyEditorEdit(nextText, cursorOffset)
+  }
+
+  function headingSelection() {
+    const selectedText = getSelectedEditorText() || '標題'
+    const nextText = selectedText
+      .split(/\r?\n/)
+      .map((line) => `## ${line}`)
+      .join('\n')
+    applyEditorEdit(nextText, selectedText ? undefined : 3)
+  }
+
   function handleEditorPaste(event: ClipboardEvent) {
     if (!canEditActiveDocumentRef.current) return
 
@@ -3993,6 +4118,15 @@ function WorkspaceApp({
 
   function createDocumentInFolder(parentId: string) {
     void createDocumentForParent(parentId)
+  }
+
+  function duplicateDocument(id: string) {
+    const sourceDocument = documents.find((document) => document.id === id && document.type === 'file' && !document.isTrashed)
+    if (!sourceDocument) return
+
+    const nextDocument = createDocument(`${sourceDocument.title} Copy`, sourceDocument.content, sourceDocument.parentId)
+    setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
+    setBridgeToast('已建立副本')
   }
 
   function selectDocument(id: string) {
@@ -4617,24 +4751,33 @@ function WorkspaceApp({
     {
       title: '生成報告',
       description: '只有原始資料也可以開始，幫你整理成可寫的報告骨架。',
+      question: '你現在有什麼？',
+      options: ['實驗數據', '老師要求', '已寫草稿', '不知道，幫我開始'],
       onClick: () => setIsOutlineModalOpen(true),
     },
     {
       title: '整理內容',
       description: '把貼上的 ChatGPT 或 Gemini 內容整理成清楚段落。',
+      question: '要整理成哪種格式？',
+      options: ['正式結報', '課堂作業', '條列重整', '保留原文語氣'],
       onClick: () => requestAiEdit('rewrite'),
     },
     {
       title: '檢查問題',
       description: '交作業前檢查公式、缺漏、數據與段落完整度。',
+      question: '要檢查哪些地方？',
+      options: ['數據缺漏', '公式單位', '段落完整度', '引用與格式'],
       onClick: () => setCurrentView('quality'),
     },
     {
       title: '改為 Word 格式',
       description: '讓表格、標題與段落更適合複製或匯出到 Word。',
+      question: '要優先修正什麼？',
+      options: ['標題層級', '表格格式', '段落間距', '全部整理'],
       onClick: handleSmartFormat,
     },
   ]
+  const activeAssistTaskConfig = assistTasks.find((task) => task.title === activeAssistTask) ?? null
 
   return (
     <div className="flex h-full min-h-screen bg-slate-50 font-sans text-slate-800">
@@ -4673,6 +4816,7 @@ function WorkspaceApp({
             >
               <ArrowRight className="h-4 w-4 rotate-180" strokeWidth={2} />
             </button>
+            <span className="hidden text-sm font-medium text-slate-400 sm:inline">Projects /</span>
             {isTitleEditing ? (
               <input
                 value={titleDraft}
@@ -4744,6 +4888,15 @@ function WorkspaceApp({
             >
               PDF
             </button>
+            {user && (
+              <button
+                type="button"
+                onClick={() => void shareCurrentDocument()}
+                className="hidden rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-950 sm:inline-flex"
+              >
+                Share
+              </button>
+            )}
             <button
               type="button"
               onClick={() => setIsAssistDrawerOpen(true)}
@@ -4918,7 +5071,16 @@ function WorkspaceApp({
           isLoading={databaseLoading}
         />
       ) : currentView === 'projects' ? (
-        <ProjectsView />
+        <ProjectsView
+          documents={documents}
+          onOpenDocument={selectDocument}
+          onRenameDocument={renameDocument}
+          onShareDocument={shareDocument}
+          onToggleFavorite={toggleDocumentFavorite}
+          onDeleteDocument={deleteDocument}
+          onDuplicateDocument={duplicateDocument}
+          onCreateDocument={createNewDocument}
+        />
       ) : currentView === 'trash' ? (
         <TrashView
           documents={documents}
@@ -4994,20 +5156,40 @@ function WorkspaceApp({
                 <button
                   type="button"
                   onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => requestAiEdit('rewrite')}
-                  className="rounded-lg px-3 py-1.5 font-medium text-slate-700 transition hover:bg-slate-100"
-                  title="潤飾重寫選取文字"
+                  onClick={() => wrapSelection('**', '**', '粗體文字')}
+                  className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
+                  title="粗體"
                 >
-                  潤飾重寫
+                  <Bold className="h-4 w-4" strokeWidth={2} />
                 </button>
                 <button
                   type="button"
                   onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => requestAiEdit('expand')}
-                  className="rounded-lg px-3 py-1.5 font-medium text-slate-700 transition hover:bg-slate-100"
-                  title="擴寫選取文字"
+                  onClick={headingSelection}
+                  className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
+                  title="標題"
                 >
-                  擴寫內容
+                  <Heading2 className="h-4 w-4" strokeWidth={2} />
+                </button>
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => insertAtCursor('| 欄位 A | 欄位 B |\n|---|---|\n|  |  |')}
+                  className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
+                  title="表格"
+                >
+                  <Table2 className="h-4 w-4" strokeWidth={2} />
+                </button>
+                <span className="mx-1 h-5 w-px bg-slate-200" />
+                <button
+                  type="button"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => setIsAssistDrawerOpen(true)}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 hover:text-slate-950"
+                  title="Assist"
+                >
+                  <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
+                  Assist
                 </button>
               </div>
             )}
@@ -5124,7 +5306,10 @@ function WorkspaceApp({
           <button
             type="button"
             aria-label="關閉 Assist"
-            onClick={() => setIsAssistDrawerOpen(false)}
+            onClick={() => {
+              setActiveAssistTask(null)
+              setIsAssistDrawerOpen(false)
+            }}
             className="pointer-events-auto absolute inset-0 bg-slate-950/10 backdrop-blur-[1px]"
           />
           <aside
@@ -5141,7 +5326,10 @@ function WorkspaceApp({
                   </div>
                   <button
                     type="button"
-                    onClick={() => setIsAssistDrawerOpen(false)}
+                    onClick={() => {
+                      setActiveAssistTask(null)
+                      setIsAssistDrawerOpen(false)
+                    }}
                     className="grid h-8 w-8 place-items-center rounded-xl text-slate-400 transition hover:bg-slate-100 hover:text-slate-950"
                     aria-label="關閉"
                   >
@@ -5165,30 +5353,68 @@ function WorkspaceApp({
                 </div>
               </div>
 
-              <div className="min-h-0 flex-1 space-y-3 overflow-auto px-5 py-5">
-                {assistTasks.map((task) => (
-                  <button
-                    key={task.title}
-                    type="button"
-                    onClick={() => {
-                      setIsAssistDrawerOpen(false)
-                      task.onClick()
-                    }}
-                    disabled={
-                      (task.title === '整理內容' || task.title === '改為 Word 格式') &&
-                      (isEditorEmpty || !canEditActiveDocument || Boolean(aiTaskLoading))
-                    }
-                    className="group w-full rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-lg hover:shadow-slate-200/70 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <div className="flex items-start justify-between gap-3">
-                      <div>
-                        <h3 className="text-sm font-semibold text-slate-950">{task.title}</h3>
-                        <p className="mt-1 text-sm leading-6 text-slate-500">{task.description}</p>
+              <div className="min-h-0 flex-1 overflow-auto px-5 py-5">
+                {activeAssistTaskConfig ? (
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveAssistTask(null)}
+                      className="mb-4 text-sm font-semibold text-slate-400 transition hover:text-slate-700"
+                    >
+                      ← 返回任務
+                    </button>
+                    <h3 className="text-base font-semibold text-slate-950">{activeAssistTaskConfig.title}</h3>
+                    <p className="mt-2 text-sm leading-6 text-slate-500">{activeAssistTaskConfig.description}</p>
+                    <div className="mt-6">
+                      <p className="mb-3 text-sm font-semibold text-slate-700">{activeAssistTaskConfig.question}</p>
+                      <div className="grid gap-2">
+                        {activeAssistTaskConfig.options.map((option) => (
+                          <button
+                            key={option}
+                            type="button"
+                            className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-left text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
+                          >
+                            {option}
+                          </button>
+                        ))}
                       </div>
-                      <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-slate-500" strokeWidth={2} />
                     </div>
-                  </button>
-                ))}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAssistDrawerOpen(false)
+                        setActiveAssistTask(null)
+                        activeAssistTaskConfig.onClick()
+                      }}
+                      disabled={
+                        (activeAssistTaskConfig.title === '整理內容' || activeAssistTaskConfig.title === '改為 Word 格式') &&
+                        (isEditorEmpty || !canEditActiveDocument || Boolean(aiTaskLoading))
+                      }
+                      className="mt-6 w-full rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      開始處理
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {assistTasks.map((task) => (
+                      <button
+                        key={task.title}
+                        type="button"
+                        onClick={() => setActiveAssistTask(task.title)}
+                        className="group w-full rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-lg hover:shadow-slate-200/70"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <h3 className="text-sm font-semibold text-slate-950">{task.title}</h3>
+                            <p className="mt-1 text-sm leading-6 text-slate-500">{task.description}</p>
+                          </div>
+                          <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-slate-300 transition group-hover:translate-x-0.5 group-hover:text-slate-500" strokeWidth={2} />
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </aside>
