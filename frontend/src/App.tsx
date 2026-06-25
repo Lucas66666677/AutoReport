@@ -311,6 +311,26 @@ type DocumentPermission = 'owner' | 'edit' | 'view' | 'none'
 type AiProvider = 'built_in' | 'extension' | 'user_api_key'
 type UserApiProvider = 'none' | 'openai' | 'gemini' | 'anthropic' | 'deepseek'
 type AiAction = 'outline' | 'rewrite' | 'expand' | 'format' | 'summarize' | 'custom'
+type AgentMode = 'review' | 'complete_section' | 'format' | 'chart' | 'final_check' | 'multi_step'
+
+type AgentChecklistItem = {
+  label: string
+  status: 'pass' | 'warn' | 'fail'
+  note: string
+}
+
+type AgentResult = {
+  mode: AgentMode
+  title: string
+  plan: string[]
+  findings: string[]
+  checklist: AgentChecklistItem[]
+  questions: string[]
+  proposed_markdown?: string | null
+  patch_summary?: string | null
+  model?: string | null
+  remaining_quota?: number | null
+}
 
 type PromptLibraryItem = {
   id: string
@@ -521,6 +541,50 @@ const DEFAULT_AI_SETTINGS: AiSettings = {
   promptLibrary: [],
   extensionAutoReturn: false,
 }
+
+const AGENT_MODE_CONFIG: Array<{
+  mode: AgentMode
+  title: string
+  description: string
+  actionLabel: string
+}> = [
+  {
+    mode: 'review',
+    title: '報告審閱',
+    description: '檢查結構缺失、語氣、結論、表格標題、公式解釋與圖表編號。',
+    actionLabel: '審閱全文',
+  },
+  {
+    mode: 'complete_section',
+    title: '報告補全',
+    description: '根據全文上下文補目前章節，適合結果分析、討論與結論。',
+    actionLabel: '補全章節',
+  },
+  {
+    mode: 'format',
+    title: '格式整理',
+    description: '統一標題層級、表格格式、空行、單位寫法與 Markdown 格式。',
+    actionLabel: '整理格式',
+  },
+  {
+    mode: 'chart',
+    title: '圖表 Agent',
+    description: '根據資料表建議圖表，插入可執行 Python 繪圖 code block。',
+    actionLabel: '生成圖表',
+  },
+  {
+    mode: 'final_check',
+    title: '提交前檢查',
+    description: '用 checklist 檢查摘要、目的、原理、方法、數據、討論、結論、參考資料。',
+    actionLabel: '開始檢查',
+  },
+  {
+    mode: 'multi_step',
+    title: '多步寫作',
+    description: '給一個目標，Agent 先計畫、追問缺失資料，再分階段生成草稿。',
+    actionLabel: '規劃寫作',
+  },
+]
 
 function createPromptLibraryItem(): PromptLibraryItem {
   const now = new Date().toISOString()
@@ -3896,7 +3960,12 @@ function WorkspaceApp({
   const [isAdvancedMenuOpen, setIsAdvancedMenuOpen] = useState(false)
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false)
   const [isAssistDrawerOpen, setIsAssistDrawerOpen] = useState(false)
+  const [isAgentDrawerOpen, setIsAgentDrawerOpen] = useState(false)
   const [activeAssistTask, setActiveAssistTask] = useState<string | null>(null)
+  const [agentMode, setAgentMode] = useState<AgentMode>('review')
+  const [agentGoal, setAgentGoal] = useState('')
+  const [agentResult, setAgentResult] = useState<AgentResult | null>(null)
+  const [agentLoading, setAgentLoading] = useState(false)
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
   const [mobileEditorPane, setMobileEditorPane] = useState<'edit' | 'preview'>('edit')
   const [collaboratorEmail, setCollaboratorEmail] = useState('')
@@ -4860,6 +4929,84 @@ function WorkspaceApp({
     } finally {
       setAiTaskLoading(null)
     }
+  }
+
+  async function runAgentTask(mode = agentMode) {
+    if (isEditorEmpty) {
+      setBridgeToast('請先貼上或撰寫報告內容')
+      return
+    }
+
+    const provider: Exclude<AiProvider, 'extension'> =
+      aiSettings.preferredProvider === 'extension' ? 'built_in' : aiSettings.preferredProvider
+
+    if (provider === 'user_api_key' && (!aiSettings.userApiKey.trim() || aiSettings.userApiProvider === 'none')) {
+      setBridgeToast('請先到 AI 設定填入 API Provider 與 API Key')
+      return
+    }
+
+    setAgentLoading(true)
+    setAgentResult(null)
+    try {
+      const authHeaders = await getAuthHeaders()
+      const res = await fetch(`${API_BASE_URL}/api/agent/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({
+          provider,
+          mode,
+          goal: agentGoal,
+          document_markdown: markdown,
+          selected_text: getSelectedEditorText(),
+          document_id: activeDocumentId,
+          api_provider: provider === 'user_api_key' ? aiSettings.userApiProvider : undefined,
+          api_key: provider === 'user_api_key' ? aiSettings.userApiKey : undefined,
+          model: aiSettings.defaultModel || undefined,
+        }),
+      })
+
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`
+        try {
+          const err = (await res.json()) as { detail?: string }
+          if (err.detail) detail = err.detail
+        } catch {
+          /* response may not be JSON */
+        }
+        throw new Error(detail)
+      }
+
+      const data = (await res.json()) as AgentResult
+      setAgentResult(data)
+      if (typeof data.remaining_quota === 'number') {
+        setAiQuota((currentQuota) =>
+          currentQuota ? { ...currentQuota, remaining: data.remaining_quota ?? currentQuota.remaining } : currentQuota,
+        )
+        void refreshAiQuota()
+      }
+      setBridgeToast('Agent 已完成分析')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Agent 執行失敗'
+      setBridgeToast(`Agent 執行失敗：${message}`)
+    } finally {
+      setAgentLoading(false)
+    }
+  }
+
+  function applyAgentResult() {
+    const nextMarkdown = agentResult?.proposed_markdown?.trim()
+    if (!nextMarkdown) {
+      setBridgeToast('這次 Agent 沒有提供可套用的 Markdown')
+      return
+    }
+    if (!canEditActiveDocument) {
+      setBridgeToast('此文件目前為唯讀模式，無法套用 Agent 修改')
+      return
+    }
+
+    saveActiveDocumentVersion('Agent 修改前自動備份')
+    syncEditorValue(nextMarkdown.endsWith('\n') ? nextMarkdown : `${nextMarkdown}\n`)
+    setBridgeToast('已套用 Agent 修改，原版本已備份')
   }
 
   async function requestAiEdit(action: 'rewrite' | 'expand') {
@@ -5920,6 +6067,8 @@ function WorkspaceApp({
     },
   ]
   const activeAssistTaskConfig = assistTasks.find((task) => task.title === activeAssistTask) ?? null
+  const activeAgentModeConfig = AGENT_MODE_CONFIG.find((config) => config.mode === agentMode) ?? AGENT_MODE_CONFIG[0]
+  const agentCanApply = Boolean(agentResult?.proposed_markdown?.trim()) && canEditActiveDocument
   const editorToolbarGroups = [
     [
       { label: '復原', icon: Undo2, action: () => triggerEditorCommand('undo') },
@@ -6171,6 +6320,13 @@ function WorkspaceApp({
             >
               AI Assist
             </button>
+            <button
+              type="button"
+              onClick={() => setIsAgentDrawerOpen(true)}
+              className="inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
+            >
+              AI Agent
+            </button>
 
             <div ref={advancedMenuRef} className="relative">
               <button
@@ -6233,12 +6389,12 @@ function WorkspaceApp({
                     type="button"
                     onClick={() => {
                       setIsAdvancedMenuOpen(false)
-                      setIsAssistDrawerOpen(true)
+                      setIsAgentDrawerOpen(true)
                     }}
                     className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
                   >
                     <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
-                    AI Assist
+                    AI Agent
                   </button>
                   <button
                     type="button"
@@ -6838,6 +6994,204 @@ function WorkspaceApp({
                   </div>
                 )}
               </div>
+            </div>
+          </aside>
+        </div>
+      )}
+
+      {currentView === 'editor' && (
+        <div className={`pointer-events-none fixed inset-0 z-50 ${isAgentDrawerOpen ? '' : 'hidden'}`}>
+          <button
+            type="button"
+            aria-label="關閉 AI Agent"
+            onClick={() => setIsAgentDrawerOpen(false)}
+            className="pointer-events-auto absolute inset-0 bg-slate-950/10 backdrop-blur-[1px]"
+          />
+          <aside
+            className={`pointer-events-auto absolute bottom-0 right-0 top-0 flex w-full max-w-[440px] flex-col border-l border-slate-200 bg-white shadow-2xl shadow-slate-300/60 transition-transform duration-300 ${
+              isAgentDrawerOpen ? 'translate-x-0' : 'translate-x-full'
+            }`}
+          >
+            <header className="shrink-0 border-b border-slate-200 px-5 py-5">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="text-lg font-semibold tracking-tight text-slate-950">AI Agent</h2>
+                  <p className="mt-1 text-sm leading-6 text-slate-500">
+                    讓 AI 先計畫與檢查，再由你確認是否套用修改。
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setIsAgentDrawerOpen(false)}
+                  className="grid h-8 w-8 place-items-center rounded-xl text-slate-400 transition hover:bg-slate-100 hover:text-slate-950"
+                  aria-label="關閉"
+                >
+                  ×
+                </button>
+              </div>
+              <div className="mt-4 rounded-2xl bg-slate-50 p-3 text-xs leading-5 text-slate-500 ring-1 ring-slate-200">
+                {aiSettings.preferredProvider === 'extension'
+                  ? 'Agent 需要讀取全文，會改用內建 AI；插件模式仍保留給 Assist。'
+                  : '會使用目前 AI 設定；若後端沒有 API Key，會先使用規則版 Agent。'}
+              </div>
+            </header>
+
+            <div className={`min-h-0 flex-1 overflow-auto px-5 py-5 ${SCROLLBAR_HIDE}`}>
+              <section>
+                <div className="grid gap-2">
+                  {AGENT_MODE_CONFIG.map((config) => (
+                    <button
+                      key={config.mode}
+                      type="button"
+                      onClick={() => {
+                        setAgentMode(config.mode)
+                        setAgentResult(null)
+                      }}
+                      className={`rounded-2xl border p-4 text-left transition hover:-translate-y-0.5 hover:shadow-md ${
+                        agentMode === config.mode
+                          ? 'border-slate-950 bg-slate-950 text-white shadow-md'
+                          : 'border-slate-200 bg-white text-slate-900'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <h3 className="text-sm font-semibold">{config.title}</h3>
+                        <span
+                          className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                            agentMode === config.mode ? 'bg-white/15 text-white' : 'bg-slate-100 text-slate-500'
+                          }`}
+                        >
+                          {config.actionLabel}
+                        </span>
+                      </div>
+                      <p className={`mt-1 text-sm leading-6 ${agentMode === config.mode ? 'text-white/72' : 'text-slate-500'}`}>
+                        {config.description}
+                      </p>
+                    </button>
+                  ))}
+                </div>
+
+                <label className="mt-5 block">
+                  <span className="text-sm font-semibold text-slate-700">Agent 目標</span>
+                  <textarea
+                    value={agentGoal}
+                    onChange={(event) => setAgentGoal(event.target.value)}
+                    placeholder={
+                      agentMode === 'multi_step'
+                        ? '例如：幫我完成這份普物結報，缺資料先問我。'
+                        : '可選：指定要檢查或補強的重點。'
+                    }
+                    className={`mt-2 h-24 w-full resize-none rounded-2xl border border-slate-200 bg-white p-4 text-sm leading-6 text-slate-900 outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-100 ${SCROLLBAR_HIDE}`}
+                  />
+                </label>
+
+                <button
+                  type="button"
+                  onClick={() => void runAgentTask(agentMode)}
+                  disabled={agentLoading || isEditorEmpty}
+                  className="mt-4 flex h-12 w-full items-center justify-center rounded-2xl bg-slate-950 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {agentLoading ? 'Agent 處理中...' : activeAgentModeConfig.actionLabel}
+                </button>
+              </section>
+
+              {agentResult && (
+                <section className="mt-6 space-y-5 border-t border-slate-200 pt-5">
+                  <div>
+                    <h3 className="text-base font-semibold text-slate-950">{agentResult.title}</h3>
+                    {agentResult.patch_summary && (
+                      <p className="mt-2 text-sm leading-6 text-slate-500">{agentResult.patch_summary}</p>
+                    )}
+                  </div>
+
+                  {agentResult.plan.length > 0 && (
+                    <div>
+                      <h4 className="mb-2 text-sm font-semibold text-slate-800">計畫</h4>
+                      <ol className="space-y-2">
+                        {agentResult.plan.map((item, index) => (
+                          <li key={`${item}-${index}`} className="rounded-xl bg-slate-50 px-3 py-2 text-sm leading-6 text-slate-600">
+                            {index + 1}. {item}
+                          </li>
+                        ))}
+                      </ol>
+                    </div>
+                  )}
+
+                  {agentResult.findings.length > 0 && (
+                    <div>
+                      <h4 className="mb-2 text-sm font-semibold text-slate-800">發現</h4>
+                      <div className="space-y-2">
+                        {agentResult.findings.map((item, index) => (
+                          <p key={`${item}-${index}`} className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm leading-6 text-slate-600">
+                            {item}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {agentResult.checklist.length > 0 && (
+                    <div>
+                      <h4 className="mb-2 text-sm font-semibold text-slate-800">Checklist</h4>
+                      <div className="space-y-2">
+                        {agentResult.checklist.map((item, index) => (
+                          <div key={`${item.label}-${index}`} className="rounded-xl border border-slate-200 bg-white px-3 py-2">
+                            <div className="flex items-center justify-between gap-3">
+                              <p className="text-sm font-semibold text-slate-800">{item.label}</p>
+                              <span
+                                className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
+                                  item.status === 'pass'
+                                    ? 'bg-emerald-50 text-emerald-700'
+                                    : item.status === 'fail'
+                                      ? 'bg-red-50 text-red-700'
+                                      : 'bg-amber-50 text-amber-700'
+                                }`}
+                              >
+                                {item.status}
+                              </span>
+                            </div>
+                            <p className="mt-1 text-sm leading-6 text-slate-500">{item.note}</p>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {agentResult.questions.length > 0 && (
+                    <div>
+                      <h4 className="mb-2 text-sm font-semibold text-slate-800">需要補充</h4>
+                      <div className="space-y-2">
+                        {agentResult.questions.map((item, index) => (
+                          <p key={`${item}-${index}`} className="rounded-xl bg-blue-50 px-3 py-2 text-sm leading-6 text-blue-800">
+                            {item}
+                          </p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {agentResult.proposed_markdown?.trim() && (
+                    <div>
+                      <div className="mb-2 flex items-center justify-between gap-3">
+                        <h4 className="text-sm font-semibold text-slate-800">可套用 Markdown</h4>
+                        <span className="text-xs font-medium text-slate-400">
+                          {agentResult.proposed_markdown.length} 字
+                        </span>
+                      </div>
+                      <pre className={`max-h-52 overflow-auto rounded-2xl bg-slate-950 p-4 text-xs leading-5 text-slate-100 ${SCROLLBAR_HIDE}`}>
+                        {agentResult.proposed_markdown}
+                      </pre>
+                      <button
+                        type="button"
+                        onClick={applyAgentResult}
+                        disabled={!agentCanApply}
+                        className="mt-3 flex h-11 w-full items-center justify-center rounded-2xl bg-blue-600 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        套用到目前文件
+                      </button>
+                    </div>
+                  )}
+                </section>
+              )}
             </div>
           </aside>
         </div>

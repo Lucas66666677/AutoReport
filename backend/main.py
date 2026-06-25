@@ -98,6 +98,47 @@ class AiRunResponse(BaseModel):
     remaining_quota: int | None = None
 
 
+AgentMode = Literal[
+    "review",
+    "complete_section",
+    "format",
+    "chart",
+    "final_check",
+    "multi_step",
+]
+
+
+class AgentRunRequest(BaseModel):
+    provider: Literal["built_in", "user_api_key"] = "built_in"
+    mode: AgentMode
+    goal: str = ""
+    document_markdown: str
+    selected_text: str | None = None
+    document_id: str | None = None
+    api_provider: Literal["openai", "gemini", "anthropic", "deepseek", "none"] | None = None
+    api_key: str | None = None
+    model: str | None = None
+
+
+class AgentChecklistItem(BaseModel):
+    label: str
+    status: Literal["pass", "warn", "fail"]
+    note: str
+
+
+class AgentRunResponse(BaseModel):
+    mode: AgentMode
+    title: str
+    plan: list[str]
+    findings: list[str]
+    checklist: list[AgentChecklistItem]
+    questions: list[str]
+    proposed_markdown: str | None = None
+    patch_summary: str | None = None
+    model: str | None = None
+    remaining_quota: int | None = None
+
+
 class BillingConfigResponse(BaseModel):
     enabled: bool
     pro_price_id_configured: bool
@@ -641,6 +682,282 @@ def _run_ai_provider(body: AiRunRequest) -> tuple[str, str | None]:
     raise HTTPException(status_code=400, detail="不支援的 AI provider")
 
 
+AGENT_MODE_LABELS: dict[str, str] = {
+    "review": "報告審閱 Agent",
+    "complete_section": "報告補全 Agent",
+    "format": "格式整理 Agent",
+    "chart": "圖表 Agent",
+    "final_check": "提交前檢查 Agent",
+    "multi_step": "多步寫作 Agent",
+}
+
+
+def _extract_markdown_headings(markdown: str) -> list[str]:
+    return re.findall(r"^#{1,6}\s+(.+)$", markdown, flags=re.MULTILINE)
+
+
+def _has_markdown_table(markdown: str) -> bool:
+    return bool(re.search(r"^\|.+\|\s*\n\|[\s:|-]+\|", markdown, flags=re.MULTILINE))
+
+
+def _has_python_block(markdown: str) -> bool:
+    return bool(PYTHON_BLOCK_RE.search(markdown))
+
+
+def _basic_report_checklist(markdown: str) -> list[dict[str, str]]:
+    headings_text = "\n".join(_extract_markdown_headings(markdown)).lower()
+    checks = [
+        ("摘要/概述", ["摘要", "abstract", "概述"]),
+        ("實驗目的", ["目的"]),
+        ("實驗原理", ["原理", "理論", "background"]),
+        ("實驗方法/步驟", ["方法", "步驟", "procedure", "method"]),
+        ("數據/結果", ["數據", "資料", "結果", "data", "result"]),
+        ("討論/誤差", ["討論", "誤差", "不確定度", "discussion", "error"]),
+        ("結論", ["結論", "conclusion"]),
+        ("參考資料", ["參考", "reference"]),
+    ]
+    items: list[dict[str, str]] = []
+    for label, keywords in checks:
+        ok = any(keyword.lower() in headings_text for keyword in keywords)
+        items.append(
+            {
+                "label": label,
+                "status": "pass" if ok else "fail",
+                "note": "已找到相關章節。" if ok else "未找到明確章節，建議補上或改成清楚標題。",
+            }
+        )
+
+    table_ok = _has_markdown_table(markdown)
+    items.append(
+        {
+            "label": "表格資料",
+            "status": "pass" if table_ok else "warn",
+            "note": "已偵測到 Markdown 表格。" if table_ok else "未偵測到表格；若有量測資料，建議用表格整理。",
+        }
+    )
+    return items
+
+
+def _normalize_agent_payload(raw: dict[str, Any], mode: AgentMode) -> AgentRunResponse:
+    def string_list(name: str) -> list[str]:
+        value = raw.get(name)
+        if not isinstance(value, list):
+            return []
+        return [str(item).strip() for item in value if str(item).strip()][:12]
+
+    checklist: list[AgentChecklistItem] = []
+    for item in raw.get("checklist") or []:
+        if not isinstance(item, dict):
+            continue
+        status = item.get("status")
+        if status not in {"pass", "warn", "fail"}:
+            status = "warn"
+        checklist.append(
+            AgentChecklistItem(
+                label=str(item.get("label") or "檢查項目").strip(),
+                status=status,
+                note=str(item.get("note") or "").strip(),
+            )
+        )
+
+    proposed = raw.get("proposed_markdown")
+    if not isinstance(proposed, str) or not proposed.strip():
+        proposed = None
+
+    return AgentRunResponse(
+        mode=mode,
+        title=str(raw.get("title") or AGENT_MODE_LABELS[mode]).strip(),
+        plan=string_list("plan"),
+        findings=string_list("findings"),
+        checklist=checklist,
+        questions=string_list("questions"),
+        proposed_markdown=proposed,
+        patch_summary=str(raw.get("patch_summary") or "").strip() or None,
+    )
+
+
+def _parse_agent_json(text: str, mode: AgentMode) -> AgentRunResponse:
+    cleaned = text.strip()
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, flags=re.DOTALL)
+    if fenced:
+        cleaned = fenced.group(1)
+    else:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start >= 0 and end > start:
+            cleaned = cleaned[start : end + 1]
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=502, detail=f"Agent 回傳不是有效 JSON：{exc}") from exc
+
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=502, detail="Agent 回傳格式錯誤")
+    return _normalize_agent_payload(parsed, mode)
+
+
+def _format_markdown_rules(markdown: str) -> str:
+    formatted = markdown.replace("\r\n", "\n").replace("\r", "\n")
+    formatted = re.sub(r"[ \t]+$", "", formatted, flags=re.MULTILINE)
+    formatted = re.sub(r"\n{3,}", "\n\n", formatted)
+    formatted = re.sub(r"^(#{1,6})([^\s#])", r"\1 \2", formatted, flags=re.MULTILINE)
+    formatted = apply_table_spacing(formatted)
+    return formatted.strip() + "\n"
+
+
+def apply_table_spacing(markdown: str) -> str:
+    lines = markdown.splitlines()
+    next_lines: list[str] = []
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|"):
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            next_lines.append("| " + " | ".join(cells) + " |")
+            continue
+        next_lines.append(line)
+    return "\n".join(next_lines)
+
+
+def _chart_snippet_from_document(markdown: str) -> str:
+    return (
+        "\n\n## 圖表分析\n\n"
+        "```python\n"
+        "import numpy as np\n"
+        "import matplotlib.pyplot as plt\n\n"
+        "# TODO: 將表格中的量測資料填入 x 與 y\n"
+        "x = np.array([1, 2, 3, 4])\n"
+        "y = np.array([0.9, 2.1, 2.9, 4.2])\n\n"
+        "coef = np.polyfit(x, y, 1)\n"
+        "fit = np.poly1d(coef)\n\n"
+        "plt.figure(figsize=(6, 4))\n"
+        "plt.scatter(x, y, label='量測值')\n"
+        "plt.plot(x, fit(x), label=f'線性擬合: y={coef[0]:.3f}x+{coef[1]:.3f}')\n"
+        "plt.xlabel('自變量')\n"
+        "plt.ylabel('應變量')\n"
+        "plt.title('量測資料與線性擬合')\n"
+        "plt.grid(True, alpha=0.3)\n"
+        "plt.legend()\n"
+        "plt.show()\n"
+        "```\n"
+    )
+
+
+def _fallback_agent_response(body: AgentRunRequest) -> AgentRunResponse:
+    markdown = body.document_markdown.strip()
+    selected = (body.selected_text or "").strip()
+    checklist = [
+        AgentChecklistItem(**item) for item in _basic_report_checklist(markdown)
+    ]
+    findings = [
+        item.note for item in checklist if item.status in {"warn", "fail"}
+    ][:8]
+    if not findings:
+        findings = ["整體章節已具備基礎完整度，下一步可加強數據解釋、誤差來源與結論收束。"]
+
+    title = AGENT_MODE_LABELS[body.mode]
+    proposed: str | None = None
+    patch_summary: str | None = None
+    questions: list[str] = []
+
+    if body.mode == "format":
+        proposed = _format_markdown_rules(markdown)
+        patch_summary = "已用規則整理標題空格、表格空白與多餘空行。"
+    elif body.mode == "chart":
+        proposed = markdown + _chart_snippet_from_document(markdown)
+        patch_summary = "已在文件末尾加入可執行的 Python 圖表區塊，請把示例 x/y 換成真實資料。"
+        if not _has_markdown_table(markdown):
+            findings.insert(0, "目前未偵測到 Markdown 表格，圖表程式先使用示例資料。")
+    elif body.mode == "complete_section":
+        source = selected or "目前章節"
+        addition = (
+            f"\n\n### 補充分析草稿\n\n"
+            f"根據{source[:40]}的內容，建議補上量測條件、主要趨勢、誤差來源與理論值比較。"
+            "請將具體數據填入後，再把此段調整為正式結果分析。\n"
+        )
+        proposed = markdown + addition
+        patch_summary = "已加入結果分析草稿，保留待填數據位置。"
+        questions = ["有哪些原始量測值、理論值或老師指定要討論的誤差項？"]
+    elif body.mode == "multi_step":
+        proposed = markdown
+        missing_sections = [item.label for item in checklist if item.status == "fail"]
+        if missing_sections:
+            proposed += "\n\n## 待補章節\n\n" + "\n".join(f"- {item}" for item in missing_sections) + "\n"
+        patch_summary = "已根據缺失章節建立多步寫作待辦。"
+        questions = [
+            "這份報告的實驗題目、課程名稱和提交格式是什麼？",
+            "是否有原始數據表、老師 rubric 或範例報告？",
+        ]
+    elif body.mode == "review":
+        questions = ["是否要我下一步直接把 fail/warn 項目改成可提交草稿？"]
+    elif body.mode == "final_check":
+        questions = ["是否已確認數據、公式、圖片來源和參考資料格式符合老師要求？"]
+
+    return AgentRunResponse(
+        mode=body.mode,
+        title=title,
+        plan=[
+            "讀取目前 Markdown 全文與選取文字。",
+            "檢查章節、表格、公式、圖表與提交完整度。",
+            "輸出可確認的建議，必要時提供可套用 Markdown。",
+        ],
+        findings=findings,
+        checklist=checklist,
+        questions=questions,
+        proposed_markdown=proposed,
+        patch_summary=patch_summary,
+        model="fallback-agent-rule",
+    )
+
+
+def _build_agent_prompt(body: AgentRunRequest) -> str:
+    mode_instructions = {
+        "review": "審閱全文，找出結構缺失、語氣不學術、結論太弱、數據表缺標題、公式沒解釋、圖表沒編號等問題。除非非常必要，不要改全文。",
+        "complete_section": "根據全文上下文與選取內容，只補全使用者指定或最可能缺失的章節，避免重寫無關段落。",
+        "format": "整理 Markdown 格式：標題層級、圖表編號、表格格式、空行、單位寫法與學術語氣。可回傳完整整理後 Markdown。",
+        "chart": "根據文件中的表格或數據，建議合適圖表，並插入可執行 Python code block。若資料不足，使用 TODO 和示例資料。",
+        "final_check": "做提交前 checklist，檢查摘要、目的、原理、方法、數據、討論、結論、參考資料是否完整。",
+        "multi_step": "面對籠統目標時，先計畫、列缺失資料問題，再提供分階段可執行草稿。不要假造未知數據。",
+    }
+    output_schema = {
+        "title": "短標題",
+        "plan": ["步驟 1", "步驟 2"],
+        "findings": ["具體問題或建議"],
+        "checklist": [
+            {"label": "檢查項", "status": "pass|warn|fail", "note": "原因"}
+        ],
+        "questions": ["需要使用者補充的問題"],
+        "proposed_markdown": "可選；如果要修改文件，回傳完整 Markdown；不修改則為空字串",
+        "patch_summary": "可選；摘要本次建議修改",
+    }
+    return (
+        "你是 AutoLabReport 的 STEM 實驗報告 Agent。"
+        "只回傳有效 JSON，不要 markdown code fence，不要額外解釋。\n\n"
+        f"Agent 模式：{body.mode} - {mode_instructions[body.mode]}\n"
+        f"使用者目標：{body.goal or '未提供，請根據模式處理'}\n"
+        f"選取文字：\n{body.selected_text or ''}\n\n"
+        f"目前文件 Markdown：\n{body.document_markdown}\n\n"
+        f"JSON schema 範例：{json.dumps(output_schema, ensure_ascii=False)}"
+    )
+
+
+def _run_agent_provider(body: AgentRunRequest) -> tuple[AgentRunResponse, str | None]:
+    prompt = _build_agent_prompt(body)
+    ai_body = AiRunRequest(
+        provider=body.provider,
+        action="custom",
+        text=body.document_markdown,
+        prompt=prompt,
+        api_provider=body.api_provider,
+        api_key=body.api_key,
+        model=body.model,
+    )
+    text, model = _run_ai_provider(ai_body)
+    response = _parse_agent_json(text, body.mode)
+    response.model = model
+    return response, model
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok", "service": "AutoLabReport API"}
@@ -700,6 +1017,49 @@ def get_ai_quota(authorization: str | None = Header(default=None)):
     if user is None:
         raise HTTPException(status_code=401, detail="請先登入")
     return _get_ai_quota(user)
+
+
+@app.post("/api/agent/run", response_model=AgentRunResponse)
+def run_agent(body: AgentRunRequest, authorization: str | None = Header(default=None)):
+    markdown = body.document_markdown.strip()
+    if not markdown:
+        raise HTTPException(status_code=400, detail="請先提供目前文件內容")
+
+    user = _get_user_from_authorization(authorization)
+    quota: dict[str, Any] | None = None
+    model: str | None = None
+
+    try:
+        if body.provider == "built_in":
+            if user is None:
+                raise HTTPException(status_code=401, detail="Agent 需要登入後使用內建 AI")
+            quota = _get_ai_quota(user)
+            if quota["remaining"] <= 0:
+                raise HTTPException(status_code=402, detail="今日內建 AI 免費額度已用完")
+
+        has_llm_key = (
+            body.provider == "user_api_key"
+            and bool(body.api_key)
+            and body.api_provider not in {None, "none"}
+        ) or (
+            body.provider == "built_in"
+            and bool(os.getenv("AUTOLABREPORT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY"))
+        )
+
+        if has_llm_key:
+            response, model = _run_agent_provider(body)
+        else:
+            response = _fallback_agent_response(body)
+            model = response.model
+
+        if body.provider == "built_in" and user is not None:
+            quota = _consume_ai_quota(user)
+
+        response.remaining_quota = quota["remaining"] if quota else None
+        response.model = model
+        return response
+    except HTTPException:
+        raise
 
 
 @app.get("/api/billing/config", response_model=BillingConfigResponse)
