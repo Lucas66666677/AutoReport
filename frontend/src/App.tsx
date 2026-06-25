@@ -879,6 +879,15 @@ function mapDocumentCollaborator(row: DocumentCollaboratorRow): DocumentCollabor
   }
 }
 
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error) return error.message
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === 'string' && message.trim()) return message
+  }
+  return fallback
+}
+
 async function getDocumentYDoc(documentId: string): Promise<YDoc> {
   const existingDoc = documentYDocs.get(documentId)
   if (existingDoc) return existingDoc
@@ -4085,7 +4094,7 @@ function WorkspaceApp({
 
         return nextDocuments
       } catch (err) {
-        const message = err instanceof Error ? err.message : '資料庫讀取失敗'
+        const message = getErrorMessage(err, '資料庫讀取失敗')
         setBridgeToast(`資料庫同步失敗：${message}`)
         return [] as Document[]
       } finally {
@@ -4574,8 +4583,10 @@ function WorkspaceApp({
 
     const timer = window.setTimeout(async () => {
       const previewMarkdown = applyAutoNumbering(markdown)
-      setSyncStatus('rendering')
+      setPreview(previewMarkdown)
+      setSyncStatus('synced')
       setRenderError(null)
+      const abortTimer = window.setTimeout(() => controller.abort(), 6000)
       try {
         const res = await fetch(`${API_BASE_URL}/api/render`, {
           method: 'POST',
@@ -4593,10 +4604,11 @@ function WorkspaceApp({
         if (err instanceof Error && err.name === 'AbortError') {
           return
         }
-        const message = err instanceof Error ? err.message : '渲染失敗'
-        setRenderError(message)
-        setPreview('')
-        setSyncStatus('error')
+        setPreview(previewMarkdown)
+        setRenderError(null)
+        setSyncStatus('synced')
+      } finally {
+        window.clearTimeout(abortTimer)
       }
     }, RENDER_DEBOUNCE_MS)
 

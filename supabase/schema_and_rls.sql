@@ -134,6 +134,50 @@ create index if not exists ai_usage_logs_user_id_created_at_idx on public.ai_usa
 create index if not exists report_templates_user_id_idx on public.report_templates(user_id);
 create index if not exists report_templates_visibility_category_idx on public.report_templates(visibility, category);
 
+create or replace function public.is_document_owner(
+  p_document_id uuid,
+  p_user_id uuid
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.documents d
+    where d.id = p_document_id
+      and d.user_id = p_user_id
+  );
+$$;
+
+create or replace function public.is_document_collaborator(
+  p_document_id uuid,
+  p_user_email text,
+  p_required_role text default null
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = public
+as $$
+  select exists (
+    select 1
+    from public.document_collaborators dc
+    where dc.document_id = p_document_id
+      and lower(dc.user_email) = lower(coalesce(p_user_email, ''))
+      and (
+        p_required_role is null
+        or dc.role = p_required_role
+      )
+  );
+$$;
+
+grant execute on function public.is_document_owner(uuid, uuid) to anon, authenticated;
+grant execute on function public.is_document_collaborator(uuid, text, text) to anon, authenticated;
+
 alter table public.profiles enable row level security;
 alter table public.documents enable row level security;
 alter table public.document_collaborators enable row level security;
@@ -161,12 +205,7 @@ to anon, authenticated
 using (
   share_setting in ('view', 'edit')
   or auth.uid() = user_id
-  or exists (
-    select 1
-    from public.document_collaborators dc
-    where dc.document_id = documents.id
-      and lower(dc.user_email) = lower(coalesce((auth.jwt() ->> 'email'), ''))
-  )
+  or public.is_document_collaborator(documents.id, auth.jwt() ->> 'email')
 );
 
 drop policy if exists "documents_insert_owner" on public.documents;
@@ -182,24 +221,12 @@ to authenticated
 using (
   auth.uid() = user_id
   or share_setting = 'edit'
-  or exists (
-    select 1
-    from public.document_collaborators dc
-    where dc.document_id = documents.id
-      and dc.role = 'edit'
-      and lower(dc.user_email) = lower(coalesce((auth.jwt() ->> 'email'), ''))
-  )
+  or public.is_document_collaborator(documents.id, auth.jwt() ->> 'email', 'edit')
 )
 with check (
   auth.uid() = user_id
   or share_setting = 'edit'
-  or exists (
-    select 1
-    from public.document_collaborators dc
-    where dc.document_id = documents.id
-      and dc.role = 'edit'
-      and lower(dc.user_email) = lower(coalesce((auth.jwt() ->> 'email'), ''))
-  )
+  or public.is_document_collaborator(documents.id, auth.jwt() ->> 'email', 'edit')
 );
 
 drop policy if exists "documents_delete_owner" on public.documents;
@@ -214,11 +241,7 @@ on public.document_collaborators for select
 to authenticated
 using (
   lower(user_email) = lower(coalesce((auth.jwt() ->> 'email'), ''))
-  or exists (
-    select 1 from public.documents d
-    where d.id = document_collaborators.document_id
-      and d.user_id = auth.uid()
-  )
+  or public.is_document_owner(document_collaborators.document_id, auth.uid())
 );
 
 drop policy if exists "collaborators_owner_manage" on public.document_collaborators;
@@ -226,18 +249,10 @@ create policy "collaborators_owner_manage"
 on public.document_collaborators for all
 to authenticated
 using (
-  exists (
-    select 1 from public.documents d
-    where d.id = document_collaborators.document_id
-      and d.user_id = auth.uid()
-  )
+  public.is_document_owner(document_collaborators.document_id, auth.uid())
 )
 with check (
-  exists (
-    select 1 from public.documents d
-    where d.id = document_collaborators.document_id
-      and d.user_id = auth.uid()
-  )
+  public.is_document_owner(document_collaborators.document_id, auth.uid())
 );
 
 drop policy if exists "ai_settings_owner_all" on public.user_ai_settings;
