@@ -32,6 +32,8 @@ def _configure_matplotlib_cjk() -> None:
 _configure_matplotlib_cjk()
 
 import numpy as np
+from dotenv import load_dotenv
+from openai import OpenAI
 import pypandoc
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -53,6 +55,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+load_dotenv(Path(__file__).with_name(".env"))
+
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 FREE_DAILY_AI_QUOTA = int(os.getenv("FREE_DAILY_AI_QUOTA", "3"))
@@ -60,6 +64,62 @@ PRO_DAILY_AI_QUOTA = int(os.getenv("PRO_DAILY_AI_QUOTA", "300"))
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_PRO_PRICE_ID = os.getenv("STRIPE_PRO_PRICE_ID")
 STRIPE_CUSTOMER_PORTAL_URL = os.getenv("STRIPE_CUSTOMER_PORTAL_URL")
+
+# Built-in AI dual engine configuration. Put these in backend/.env locally
+# or in your production backend environment variables:
+# GROQ_API_KEY=...
+# GROQ_MODEL=llama-3.3-70b-versatile
+# GROQ_MODELS=llama-3.3-70b-versatile,llama-3.1-8b-instant
+# GEMINI_API_KEY=...
+# GEMINI_MODEL=gemini-2.0-flash
+# GEMINI_MODELS=gemini-2.0-flash,gemini-1.5-flash
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+
+def _parse_model_list(*values: str | None, default: str) -> list[str]:
+    models: list[str] = []
+    for value in values:
+        if not value:
+            continue
+        for item in re.split(r"[,;\s]+", value):
+            model = item.strip()
+            if model and model not in models:
+                models.append(model)
+    return models or [default]
+
+
+GROQ_MODELS = _parse_model_list(
+    os.getenv("GROQ_MODEL"),
+    os.getenv("GROQ_MODELS"),
+    os.getenv("GROQ_FALLBACK_MODELS"),
+    default="llama-3.3-70b-versatile",
+)
+GEMINI_MODELS = _parse_model_list(
+    os.getenv("GEMINI_MODEL"),
+    os.getenv("GEMINI_MODELS"),
+    os.getenv("GEMINI_FALLBACK_MODELS"),
+    default="gemini-2.0-flash",
+)
+
+groq_client = (
+    OpenAI(
+        api_key=GROQ_API_KEY,
+        base_url="https://api.groq.com/openai/v1",
+        timeout=45,
+    )
+    if GROQ_API_KEY
+    else None
+)
+gemini_client = (
+    OpenAI(
+        api_key=GEMINI_API_KEY,
+        base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+        timeout=45,
+    )
+    if GEMINI_API_KEY
+    else None
+)
 
 PYTHON_BLOCK_RE = re.compile(r"```python\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
 
@@ -617,6 +677,67 @@ def _run_openai_compatible(
     return result["choices"][0]["message"]["content"].strip()
 
 
+def _run_openai_client_chat(client: OpenAI, prompt: str, model: str) -> str:
+    response = client.chat.completions.create(
+        model=model,
+        messages=[
+            {
+                "role": "system",
+                "content": "You are AutoLabReport's academic Markdown writing assistant.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.4,
+    )
+    content = response.choices[0].message.content
+    if not content:
+        raise RuntimeError("AI provider returned an empty response")
+    return content.strip()
+
+
+def _run_builtin_dual_engine(prompt: str) -> tuple[str, str]:
+    if groq_client is None and gemini_client is None:
+        raise RuntimeError("Built-in AI is not configured")
+
+    if groq_client is not None:
+        for model in GROQ_MODELS:
+            try:
+                return _run_openai_client_chat(groq_client, prompt, model), f"groq:{model}"
+            except Exception as exc:
+                logger.warning(
+                    "Groq built-in AI failed for model %s; trying next fallback. error=%s",
+                    model,
+                    exc,
+                    exc_info=True,
+                )
+
+    if gemini_client is not None:
+        last_exc: Exception | None = None
+        for model in GEMINI_MODELS:
+            try:
+                return (
+                    _run_openai_client_chat(gemini_client, prompt, model),
+                    f"gemini:{model}",
+                )
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    "Gemini built-in AI failed for model %s; trying next fallback. error=%s",
+                    model,
+                    exc,
+                    exc_info=True,
+                )
+        raise HTTPException(
+            status_code=502,
+            detail=f"內建 AI 暫時無法使用（所有 Gemini fallback model 也失敗）：{last_exc}",
+        )
+
+    raise HTTPException(
+        status_code=502,
+        detail="所有 Groq fallback model 都失敗，且未設定 GEMINI_API_KEY 作為 fallback",
+    )
+
+
 def _run_gemini(api_key: str, prompt: str, model: str) -> str:
     result = _post_json(
         f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
@@ -648,10 +769,8 @@ def _run_ai_provider(body: AiRunRequest) -> tuple[str, str | None]:
     provider = body.api_provider or "none"
 
     if body.provider == "built_in":
-        built_in_key = os.getenv("AUTOLABREPORT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-        if built_in_key:
-            model = body.model or os.getenv("AUTOLABREPORT_OPENAI_MODEL", "gpt-4o-mini")
-            return _run_openai_compatible(built_in_key, prompt, model), model
+        if groq_client is not None or gemini_client is not None:
+            return _run_builtin_dual_engine(prompt)
         return _fallback_ai_response(body.action, body.text), "fallback-rule"
 
     if body.provider == "user_api_key":
@@ -1043,7 +1162,7 @@ def run_agent(body: AgentRunRequest, authorization: str | None = Header(default=
             and body.api_provider not in {None, "none"}
         ) or (
             body.provider == "built_in"
-            and bool(os.getenv("AUTOLABREPORT_OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY"))
+            and (groq_client is not None or gemini_client is not None)
         )
 
         if has_llm_key:

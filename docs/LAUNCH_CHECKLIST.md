@@ -23,8 +23,12 @@ Set environment variables:
 ```txt
 SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
-OPENAI_API_KEY
-AUTOLABREPORT_OPENAI_MODEL
+GROQ_API_KEY
+GROQ_MODEL
+GROQ_MODELS
+GEMINI_API_KEY
+GEMINI_MODEL
+GEMINI_MODELS
 FREE_DAILY_AI_QUOTA
 PRO_DAILY_AI_QUOTA
 STRIPE_SECRET_KEY
@@ -79,4 +83,3 @@ For deployed backend probes:
 ```powershell
 .\scripts\deploy-check.ps1 -BackendUrl https://your-render-backend.onrender.com
 ```
-

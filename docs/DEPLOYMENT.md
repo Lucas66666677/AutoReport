@@ -19,8 +19,12 @@ Set these environment variables:
 ```txt
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key
-OPENAI_API_KEY=your-openai-api-key
-AUTOLABREPORT_OPENAI_MODEL=gpt-4.1-mini
+GROQ_API_KEY=your-groq-api-key
+GROQ_MODEL=llama-3.3-70b-versatile
+GROQ_MODELS=llama-3.3-70b-versatile,llama-3.1-8b-instant
+GEMINI_API_KEY=your-gemini-api-key
+GEMINI_MODEL=gemini-2.0-flash
+GEMINI_MODELS=gemini-2.0-flash,gemini-1.5-flash
 FREE_DAILY_AI_QUOTA=3
 PRO_DAILY_AI_QUOTA=300
 STRIPE_SECRET_KEY=sk_test_your-stripe-secret-key
