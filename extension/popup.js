@@ -1,5 +1,9 @@
 const DEFAULT_SETTINGS = {
-  targetUrlPatterns: ["localhost:5173", "127.0.0.1:5173", "autolabreport", ".vercel.app"],
+  targetUrlPatterns: [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:4174",
+  ],
   preferredAiHost: "auto",
   autoReturn: false,
   rewritePrompt:

@@ -1,5 +1,9 @@
 const DEFAULT_SETTINGS = {
-  targetUrlPatterns: ["localhost:5173", "127.0.0.1:5173", "autolabreport", ".vercel.app"],
+  targetUrlPatterns: [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:4174",
+  ],
   preferredAiHost: "auto",
   autoReturn: false,
   rewritePrompt:
@@ -31,22 +35,48 @@ async function saveSettings(nextSettings) {
 }
 
 function getAiProviderForUrl(url) {
-  return AI_TARGET_PATTERNS.find((provider) =>
-    provider.patterns.some((pattern) => url.includes(pattern)),
-  );
+  try {
+    const hostname = new URL(url).hostname;
+    return AI_TARGET_PATTERNS.find((provider) =>
+      provider.patterns.some(
+        (pattern) => hostname === pattern || hostname.endsWith(`.${pattern}`),
+      ),
+    );
+  } catch (_error) {
+    return undefined;
+  }
 }
 
 async function queryAllTabs() {
   return chrome.tabs.query({});
 }
 
+function isAutoLabTargetUrl(url, configuredTargets) {
+  try {
+    const candidate = new URL(url);
+    return configuredTargets.some((configuredTarget) => {
+      const value = String(configuredTarget || "").trim();
+      if (!value || value.startsWith(".")) return false;
+      if (value.includes("://")) {
+        try {
+          return candidate.origin === new URL(value).origin;
+        } catch (_error) {
+          return false;
+        }
+      }
+      return candidate.host === value || candidate.hostname === value;
+    });
+  } catch (_error) {
+    return false;
+  }
+}
+
 async function findAutoLabReportTab(settings = undefined) {
   const activeSettings = settings || (await getSettings());
   const tabs = await queryAllTabs();
-  return tabs.find((tab) => {
-    const url = tab.url || "";
-    return activeSettings.targetUrlPatterns.some((pattern) => pattern && url.includes(pattern));
-  });
+  return tabs.find((tab) =>
+    isAutoLabTargetUrl(tab.url || "", activeSettings.targetUrlPatterns || []),
+  );
 }
 
 async function findAiTab(settings = undefined) {
@@ -148,7 +178,7 @@ chrome.commands.onCommand.addListener(async (command) => {
   }
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const allowedTypes = new Set([
     "AUTOLABREPORT_CAPTURED_TEXT",
     "AUTOLABREPORT_GET_STATUS",
@@ -160,6 +190,14 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!allowedTypes.has(message?.type)) return false;
 
   (async () => {
+    if (
+      message.type === "AUTOLABREPORT_CAPTURED_TEXT" &&
+      !getAiProviderForUrl(sender.tab?.url || "")
+    ) {
+      sendResponse({ ok: false, error: "拒絕未授權的訊息來源" });
+      return;
+    }
+
     if (message.type === "AUTOLABREPORT_GET_STATUS") {
       sendResponse(await getStatus());
       return;

@@ -1,0 +1,20 @@
+{
+  "name": "autolabreport-collaboration-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "node --watch src/server.js",
+    "start": "node src/server.js",
+    "check": "node --check src/server.js"
+  },
+  "dependencies": {
+    "@hocuspocus/server": "4.3.0",
+    "@supabase/supabase-js": "2.108.0",
+    "dotenv": "17.2.3",
+    "yjs": "13.6.31"
+  }
+}

@@ -1,17 +1,22 @@
 import base64
+import hashlib
+import hmac
 import html
 import io
 import json
 import logging
 import os
 import re
+import secrets
 import tempfile
 import traceback
 import urllib.error
 import urllib.request
-from datetime import UTC, datetime
+import urllib.parse
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Literal
+from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
@@ -32,12 +37,15 @@ def _configure_matplotlib_cjk() -> None:
 _configure_matplotlib_cjk()
 
 import numpy as np
+import stripe
+from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
 from openai import OpenAI
 import pypandoc
-from fastapi import FastAPI, Header, HTTPException
+from pypdf import PdfReader
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 
 try:
@@ -63,7 +71,15 @@ FREE_DAILY_AI_QUOTA = int(os.getenv("FREE_DAILY_AI_QUOTA", "3"))
 PRO_DAILY_AI_QUOTA = int(os.getenv("PRO_DAILY_AI_QUOTA", "300"))
 STRIPE_SECRET_KEY = os.getenv("STRIPE_SECRET_KEY")
 STRIPE_PRO_PRICE_ID = os.getenv("STRIPE_PRO_PRICE_ID")
-STRIPE_CUSTOMER_PORTAL_URL = os.getenv("STRIPE_CUSTOMER_PORTAL_URL")
+STRIPE_WEBHOOK_SECRET = os.getenv("STRIPE_WEBHOOK_SECRET")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173").rstrip("/")
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
+ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
+GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID")
+GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET")
+GITHUB_OAUTH_STATE_SECRET = os.getenv("GITHUB_OAUTH_STATE_SECRET") or ENCRYPTION_KEY
+if STRIPE_SECRET_KEY:
+    stripe.api_key = STRIPE_SECRET_KEY
 
 # Built-in AI dual engine configuration. Put these in backend/.env locally
 # or in your production backend environment variables:
@@ -147,7 +163,6 @@ class AiRunRequest(BaseModel):
     document_id: str | None = None
     prompt: str | None = None
     api_provider: Literal["openai", "gemini", "anthropic", "deepseek", "none"] | None = None
-    api_key: str | None = None
     model: str | None = None
 
 
@@ -176,7 +191,6 @@ class AgentRunRequest(BaseModel):
     selected_text: str | None = None
     document_id: str | None = None
     api_provider: Literal["openai", "gemini", "anthropic", "deepseek", "none"] | None = None
-    api_key: str | None = None
     model: str | None = None
 
 
@@ -204,6 +218,134 @@ class BillingConfigResponse(BaseModel):
     pro_price_id_configured: bool
     customer_portal_url: str | None = None
     message: str
+
+
+class StripeSessionRequest(BaseModel):
+    success_url: str | None = None
+    cancel_url: str | None = None
+    return_url: str | None = None
+
+
+class StripeSessionResponse(BaseModel):
+    url: str
+
+
+class SaveApiKeyRequest(BaseModel):
+    api_provider: Literal["openai", "gemini", "anthropic", "deepseek"]
+    api_key: str
+
+
+class SaveApiKeyResponse(BaseModel):
+    ok: bool
+    api_provider: str
+
+
+DRIVE_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+DRIVE_PDF_MIME = "application/pdf"
+DRIVE_ALLOWED_MIME_TYPES = {DRIVE_DOCX_MIME, DRIVE_PDF_MIME}
+
+
+class DriveFileItem(BaseModel):
+    id: str
+    name: str
+    mime_type: str
+    modified_time: str | None = None
+    size: int | None = None
+
+
+class DriveFilesResponse(BaseModel):
+    files: list[DriveFileItem]
+
+
+class DriveImportRequest(BaseModel):
+    access_token: str
+    file_id: str
+
+
+class DriveImportResponse(BaseModel):
+    markdown: str
+    title: str
+    mime_type: str
+
+
+class GithubOAuthStartRequest(BaseModel):
+    return_url: str | None = None
+
+
+class GithubOAuthStartResponse(BaseModel):
+    url: str
+
+
+class GithubSyncRequest(BaseModel):
+    title: str
+    markdown: str
+    repo: str
+    path: str | None = None
+    branch: str | None = None
+    commit_message: str | None = None
+
+
+class GithubSyncResponse(BaseModel):
+    ok: bool
+    action: Literal["created", "updated"]
+    repo: str
+    path: str
+    branch: str | None = None
+    html_url: str | None = None
+    commit_sha: str | None = None
+
+
+class TemplatePublishRequest(BaseModel):
+    template_id: UUID
+
+
+class TemplatePublishResponse(BaseModel):
+    ok: bool
+    template_id: UUID
+    review_status: Literal["pending"]
+
+
+class TemplateUseResponse(BaseModel):
+    ok: bool
+    template_id: UUID
+    usage_count: int
+
+
+class CommunityTemplateResponse(BaseModel):
+    id: UUID
+    user_id: UUID | None = None
+    title: str
+    description: str = ""
+    category: str = "實驗報告"
+    content: str = ""
+    author_name: str = "Anonymous"
+    author_avatar_url: str | None = None
+    source: str = "user"
+    usage_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class OwnershipTransferRequest(BaseModel):
+    recipient_email: str
+
+
+class OwnershipTransferRequestResponse(BaseModel):
+    ok: bool
+    transfer_request_id: UUID
+    expires_at: datetime
+    message: str
+
+
+class OwnershipTransferConfirmRequest(BaseModel):
+    token: str
+
+
+class OwnershipTransferConfirmResponse(BaseModel):
+    ok: bool
+    report_id: UUID
+    from_user: UUID
+    to_user: UUID
 
 
 def _noop_show(*_args: Any, **_kwargs: Any) -> None:
@@ -377,6 +519,110 @@ def export_markdown_to_docx(text: str) -> bytes:
         ) from exc
 
 
+def _google_drive_request(
+    url: str,
+    access_token: str,
+    *,
+    timeout: int = 45,
+) -> bytes:
+    if not access_token.strip():
+        raise HTTPException(status_code=401, detail="缺少 Google Drive access_token")
+
+    request = urllib.request.Request(
+        url,
+        headers={"Authorization": f"Bearer {access_token.strip()}"},
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        if exc.code in {401, 403}:
+            raise HTTPException(
+                status_code=401,
+                detail="Google Drive 授權失效或權限不足，請用 Google 重新登入並授權 Drive readonly。",
+            ) from exc
+        if exc.code == 404:
+            raise HTTPException(status_code=404, detail="找不到指定的 Google Drive 檔案") from exc
+        raise HTTPException(status_code=502, detail=f"Google Drive API 錯誤：{detail}") from exc
+    except urllib.error.URLError as exc:
+        raise HTTPException(status_code=502, detail=f"無法連線 Google Drive：{exc}") from exc
+
+
+def _google_drive_json(url: str, access_token: str) -> dict[str, Any]:
+    raw = _google_drive_request(url, access_token)
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=502, detail="Google Drive 回傳格式無法解析") from exc
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=502, detail="Google Drive 回傳格式不正確")
+    return parsed
+
+
+def _get_drive_file_metadata(file_id: str, access_token: str) -> dict[str, Any]:
+    safe_file_id = urllib.parse.quote(file_id, safe="")
+    fields = urllib.parse.quote("id,name,mimeType,modifiedTime,size", safe=",")
+    url = f"https://www.googleapis.com/drive/v3/files/{safe_file_id}?fields={fields}"
+    metadata = _google_drive_json(url, access_token)
+    mime_type = metadata.get("mimeType")
+    if mime_type not in DRIVE_ALLOWED_MIME_TYPES:
+        raise HTTPException(status_code=400, detail="目前只支援匯入 Word .docx 或 PDF 檔案")
+    return metadata
+
+
+def _download_drive_file(file_id: str, access_token: str, output_path: Path) -> None:
+    safe_file_id = urllib.parse.quote(file_id, safe="")
+    url = f"https://www.googleapis.com/drive/v3/files/{safe_file_id}?alt=media"
+    output_path.write_bytes(_google_drive_request(url, access_token, timeout=90))
+
+
+def _convert_docx_to_markdown(path: Path) -> str:
+    try:
+        converted = pypandoc.convert_file(str(path), "md", format="docx", encoding="utf-8")
+    except OSError as exc:
+        logger.exception("Pandoc 執行失敗（Drive DOCX 匯入）")
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                "DOCX 匯入需要 Pandoc。請先安裝 Pandoc 並加入 PATH："
+                "https://pandoc.org/installing.html"
+            ),
+        ) from exc
+    except RuntimeError as exc:
+        logger.exception("Pandoc 轉換 Drive DOCX 失敗")
+        raise HTTPException(status_code=500, detail=f"DOCX 轉 Markdown 失敗：{exc}") from exc
+
+    return str(converted).strip() + "\n"
+
+
+def _convert_pdf_to_markdown(path: Path) -> str:
+    try:
+        reader = PdfReader(str(path))
+        pages: list[str] = []
+        for index, page in enumerate(reader.pages, start=1):
+            text = (page.extract_text() or "").strip()
+            if text:
+                pages.append(f"## Page {index}\n\n{text}")
+        if not pages:
+            raise HTTPException(status_code=422, detail="PDF 未擷取到文字，可能是掃描圖片型 PDF")
+        return "\n\n".join(pages).strip() + "\n"
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("PDF 轉 Markdown 失敗")
+        raise HTTPException(status_code=500, detail=f"PDF 解析失敗：{type(exc).__name__}: {exc}") from exc
+
+
+def _convert_drive_file_to_markdown(path: Path, mime_type: str) -> str:
+    if mime_type == DRIVE_DOCX_MIME:
+        return _convert_docx_to_markdown(path)
+    if mime_type == DRIVE_PDF_MIME:
+        return _convert_pdf_to_markdown(path)
+    raise HTTPException(status_code=400, detail="不支援的 Google Drive 檔案格式")
+
+
 def _extract_outline_headings(sample_structure: str) -> list[tuple[int, str]]:
     headings: list[tuple[int, str]] = []
 
@@ -472,6 +718,20 @@ def _post_json(url: str, headers: dict[str, str], payload: dict[str, Any]) -> di
         raise HTTPException(status_code=502, detail=f"AI provider unavailable: {exc}") from exc
 
 
+def _post_form(url: str, headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+    data = urllib.parse.urlencode(payload).encode("utf-8")
+    request = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            raw = response.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise HTTPException(status_code=502, detail=f"OAuth provider error: {detail}") from exc
+    except urllib.error.URLError as exc:
+        raise HTTPException(status_code=502, detail=f"OAuth provider unavailable: {exc}") from exc
+
+
 def _supabase_configured() -> bool:
     return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
 
@@ -509,6 +769,69 @@ def _supabase_request(
         raise HTTPException(status_code=502, detail=f"Supabase unavailable: {exc}") from exc
 
 
+def _get_fernet() -> Fernet:
+    if not ENCRYPTION_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="ENCRYPTION_KEY 尚未設定，無法安全儲存或使用自備 API Key",
+        )
+    try:
+        return Fernet(ENCRYPTION_KEY.encode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="ENCRYPTION_KEY 格式錯誤，請使用 Fernet.generate_key() 產生",
+        ) from exc
+
+
+def encrypt_secret(value: str) -> str:
+    clean_value = value.strip()
+    if not clean_value:
+        raise HTTPException(status_code=400, detail="API Key 不可為空")
+    return _get_fernet().encrypt(clean_value.encode("utf-8")).decode("utf-8")
+
+
+def decrypt_secret(value: str) -> str:
+    try:
+        return _get_fernet().decrypt(value.encode("utf-8")).decode("utf-8")
+    except InvalidToken as exc:
+        raise HTTPException(status_code=500, detail="API Key 解密失敗，請重新儲存金鑰") from exc
+
+
+def _get_user_ai_settings(user_id: str) -> dict[str, Any] | None:
+    rows = _supabase_request(f"/rest/v1/user_ai_settings?user_id=eq.{user_id}&select=*")
+    return rows[0] if rows else None
+
+
+def _get_decrypted_user_api_key(
+    user: dict[str, Any],
+    requested_provider: str | None,
+) -> tuple[str, str]:
+    user_id = user.get("id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="無效的使用者")
+
+    settings = _get_user_ai_settings(user_id)
+    if not settings:
+        raise HTTPException(status_code=400, detail="尚未安全儲存自備 API Key")
+
+    stored_provider = settings.get("api_provider") or "none"
+    if stored_provider == "none":
+        raise HTTPException(status_code=400, detail="尚未設定 API Provider")
+
+    if requested_provider and requested_provider != "none" and requested_provider != stored_provider:
+        raise HTTPException(
+            status_code=400,
+            detail="請求的 API Provider 與已儲存金鑰不一致，請重新儲存金鑰",
+        )
+
+    encrypted_key = settings.get("api_key_encrypted")
+    if not encrypted_key:
+        raise HTTPException(status_code=400, detail="尚未安全儲存自備 API Key")
+
+    return decrypt_secret(str(encrypted_key)), str(stored_provider)
+
+
 def _get_user_from_authorization(authorization: str | None) -> dict[str, Any] | None:
     if not authorization or not authorization.lower().startswith("bearer "):
         return None
@@ -532,6 +855,44 @@ def _get_user_from_authorization(authorization: str | None) -> dict[str, Any] | 
             return json.loads(response.read().decode("utf-8"))
     except Exception:
         return None
+
+
+def _require_user(authorization: str | None) -> dict[str, Any]:
+    user = _get_user_from_authorization(authorization)
+    if not user:
+        raise HTTPException(status_code=401, detail="請先登入")
+    return user
+
+
+def _normalize_email(value: str) -> str:
+    email = value.strip().lower()
+    if (
+        len(email) > 254
+        or not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email)
+        or any(character in email for character in ("%", "*", ","))
+    ):
+        raise HTTPException(status_code=400, detail="接收者 Email 格式不正確")
+    return email
+
+
+def _hash_transfer_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _send_transfer_confirmation_email(
+    recipient_email: str,
+    report_title: str,
+    confirmation_url: str,
+    expires_at: datetime,
+) -> None:
+    # Development placeholder. Replace this with Resend/Postmark/SES in production.
+    print(
+        "[DEV EMAIL] Report ownership transfer\n"
+        f"To: {recipient_email}\n"
+        f"Report: {report_title}\n"
+        f"Expires: {expires_at.isoformat()}\n"
+        f"Confirm: {confirmation_url}"
+    )
 
 
 def _today_iso() -> str:
@@ -571,6 +932,292 @@ def _get_or_create_profile(user: dict[str, Any]) -> dict[str, Any]:
         extra_headers={"Prefer": "return=representation"},
     )
     return rows[0]
+
+
+def _stripe_configured() -> bool:
+    return bool(STRIPE_SECRET_KEY and STRIPE_PRO_PRICE_ID)
+
+
+def _safe_billing_url(value: str | None, fallback_path: str) -> str:
+    if value and value.startswith(("http://", "https://")):
+        return value
+    return f"{FRONTEND_URL}{fallback_path}"
+
+
+def _update_profile(profile_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
+    rows = _supabase_request(
+        f"/rest/v1/profiles?id=eq.{profile_id}",
+        method="PATCH",
+        payload={**payload, "updated_at": datetime.now(UTC).isoformat()},
+        extra_headers={"Prefer": "return=representation"},
+    )
+    return rows[0] if rows else None
+
+
+def _get_profile_by_stripe_customer(customer_id: str) -> dict[str, Any] | None:
+    rows = _supabase_request(
+        f"/rest/v1/profiles?stripe_customer_id=eq.{customer_id}&select=*"
+    )
+    return rows[0] if rows else None
+
+
+def _github_configured() -> bool:
+    return bool(GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET and GITHUB_OAUTH_STATE_SECRET)
+
+
+def _github_callback_url() -> str:
+    return f"{BACKEND_URL}/api/github/oauth/callback"
+
+
+def _base64url_encode(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("utf-8").rstrip("=")
+
+
+def _base64url_decode(value: str) -> bytes:
+    padded = value + "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(padded.encode("utf-8"))
+
+
+def _sign_github_state(payload: dict[str, Any]) -> str:
+    if not GITHUB_OAUTH_STATE_SECRET:
+        raise HTTPException(status_code=503, detail="GITHUB_OAUTH_STATE_SECRET 尚未設定")
+    body = _base64url_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
+    signature = hmac.new(
+        GITHUB_OAUTH_STATE_SECRET.encode("utf-8"),
+        body.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    return f"{body}.{_base64url_encode(signature)}"
+
+
+def _verify_github_state(state: str) -> dict[str, Any]:
+    if not GITHUB_OAUTH_STATE_SECRET:
+        raise HTTPException(status_code=503, detail="GITHUB_OAUTH_STATE_SECRET 尚未設定")
+    try:
+        body, signature = state.split(".", 1)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="GitHub OAuth state 格式錯誤") from exc
+
+    expected_signature = _base64url_encode(
+        hmac.new(
+            GITHUB_OAUTH_STATE_SECRET.encode("utf-8"),
+            body.encode("utf-8"),
+            hashlib.sha256,
+        ).digest()
+    )
+    if not hmac.compare_digest(signature, expected_signature):
+        raise HTTPException(status_code=400, detail="GitHub OAuth state 驗證失敗")
+
+    try:
+        payload = json.loads(_base64url_decode(body).decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="GitHub OAuth state 無法解析") from exc
+
+    issued_at = payload.get("iat")
+    if not isinstance(issued_at, int) or datetime.now(UTC).timestamp() - issued_at > 600:
+        raise HTTPException(status_code=400, detail="GitHub OAuth state 已過期，請重新綁定")
+    return payload
+
+
+def _safe_frontend_redirect(value: str | None, fallback: str = "/dashboard/settings") -> str:
+    if value and value.startswith(FRONTEND_URL):
+        return value
+    if value and value.startswith("/"):
+        return f"{FRONTEND_URL}{value}"
+    return f"{FRONTEND_URL}{fallback}"
+
+
+def _exchange_github_code_for_token(code: str) -> dict[str, Any]:
+    if not _github_configured():
+        raise HTTPException(status_code=503, detail="GitHub OAuth 尚未設定")
+    assert GITHUB_CLIENT_ID is not None
+    assert GITHUB_CLIENT_SECRET is not None
+
+    token_payload = _post_form(
+        "https://github.com/login/oauth/access_token",
+        headers={
+            "Accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+        },
+        payload={
+            "client_id": GITHUB_CLIENT_ID,
+            "client_secret": GITHUB_CLIENT_SECRET,
+            "code": code,
+            "redirect_uri": _github_callback_url(),
+        },
+    )
+    if token_payload.get("error"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"GitHub OAuth 失敗：{token_payload.get('error_description') or token_payload.get('error')}",
+        )
+    if not token_payload.get("access_token"):
+        raise HTTPException(status_code=502, detail="GitHub 未回傳 access_token")
+    return token_payload
+
+
+def _github_api_request(
+    url: str,
+    token: str,
+    *,
+    method: str = "GET",
+    payload: dict[str, Any] | None = None,
+    allow_404: bool = False,
+) -> tuple[int, dict[str, Any] | None]:
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "User-Agent": "AutoLabReport",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=45) as response:
+            raw = response.read().decode("utf-8")
+            parsed = json.loads(raw) if raw else None
+            return response.status, parsed if isinstance(parsed, dict) else None
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        if allow_404 and exc.code == 404:
+            return 404, None
+        if exc.code in {401, 403}:
+            raise HTTPException(status_code=401, detail="GitHub Token 無效或缺少 repo 權限，請重新綁定 GitHub") from exc
+        raise HTTPException(status_code=502, detail=f"GitHub API 錯誤：{detail}") from exc
+    except urllib.error.URLError as exc:
+        raise HTTPException(status_code=502, detail=f"GitHub API 無法連線：{exc}") from exc
+
+
+def _get_github_user(token: str) -> dict[str, Any]:
+    _status, payload = _github_api_request("https://api.github.com/user", token)
+    return payload or {}
+
+
+def _get_profile_integrations(profile: dict[str, Any]) -> dict[str, Any]:
+    integrations = profile.get("integrations")
+    return integrations if isinstance(integrations, dict) else {}
+
+
+def _store_github_integration(user_id: str, token_payload: dict[str, Any]) -> dict[str, Any]:
+    access_token = str(token_payload["access_token"])
+    github_user = _get_github_user(access_token)
+    profile = _get_or_create_profile({"id": user_id})
+    integrations = _get_profile_integrations(profile)
+    integrations["github"] = {
+        "access_token_encrypted": encrypt_secret(access_token),
+        "scope": token_payload.get("scope"),
+        "token_type": token_payload.get("token_type"),
+        "login": github_user.get("login"),
+        "avatar_url": github_user.get("avatar_url"),
+        "connected_at": datetime.now(UTC).isoformat(),
+    }
+    _update_profile(user_id, {"integrations": integrations})
+    return integrations["github"]
+
+
+def _get_decrypted_github_token(user: dict[str, Any]) -> str:
+    profile = _get_or_create_profile(user)
+    github = _get_profile_integrations(profile).get("github")
+    if not isinstance(github, dict):
+        raise HTTPException(status_code=400, detail="尚未綁定 GitHub，請先到設定頁連接 GitHub")
+    encrypted_token = github.get("access_token_encrypted")
+    if not isinstance(encrypted_token, str) or not encrypted_token:
+        raise HTTPException(status_code=400, detail="GitHub Token 不完整，請重新綁定 GitHub")
+    try:
+        return decrypt_secret(encrypted_token)
+    except HTTPException as exc:
+        raise HTTPException(status_code=400, detail="GitHub Token 解密失敗，請重新綁定 GitHub") from exc
+
+
+def _split_github_repo(repo: str) -> tuple[str, str]:
+    cleaned = repo.strip().strip("/")
+    parts = cleaned.split("/")
+    if len(parts) != 2 or not all(parts):
+        raise HTTPException(status_code=400, detail="Repo 格式必須是 owner/repo")
+    return parts[0], parts[1]
+
+
+def _safe_github_path(path: str | None, title: str) -> str:
+    if path and path.strip():
+        cleaned = path.strip().replace("\\", "/").lstrip("/")
+    else:
+        filename = re.sub(r"[^a-zA-Z0-9._-]+", "-", title.strip()).strip("-") or "AutoLabReport"
+        cleaned = f"reports/{filename}.md"
+    if cleaned.endswith("/"):
+        raise HTTPException(status_code=400, detail="GitHub path 必須包含檔名")
+    if not cleaned.lower().endswith(".md"):
+        cleaned = f"{cleaned}.md"
+    return cleaned
+
+
+def _get_or_create_stripe_customer(user: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    if not _stripe_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Stripe 尚未設定，請配置 STRIPE_SECRET_KEY 與 STRIPE_PRO_PRICE_ID",
+        )
+
+    profile = _get_or_create_profile(user)
+    existing_customer_id = profile.get("stripe_customer_id")
+    if existing_customer_id:
+        return existing_customer_id, profile
+
+    user_id = user.get("id")
+    email = user.get("email")
+    metadata = user.get("user_metadata") or {}
+    customer = stripe.Customer.create(
+        email=email,
+        name=metadata.get("full_name") or metadata.get("name"),
+        metadata={"supabase_user_id": user_id},
+    )
+    customer_id = str(customer["id"])
+    profile = _update_profile(user_id, {"stripe_customer_id": customer_id}) or profile
+    return customer_id, profile
+
+
+def _subscription_plan_from_status(status: str | None) -> str:
+    return "pro" if status in {"active", "trialing"} else "free"
+
+
+def _extract_period_end(subscription: Any) -> str | None:
+    value = None
+    if isinstance(subscription, dict):
+        value = subscription.get("current_period_end")
+    else:
+        value = getattr(subscription, "current_period_end", None)
+    if not value:
+        return None
+    return datetime.fromtimestamp(int(value), UTC).isoformat()
+
+
+def _sync_subscription_to_profile(subscription: Any) -> None:
+    customer_id = str(subscription.get("customer") if isinstance(subscription, dict) else subscription.customer)
+    profile = _get_profile_by_stripe_customer(customer_id)
+    if not profile:
+        logger.warning("Stripe subscription event for unknown customer: %s", customer_id)
+        return
+
+    status = str(subscription.get("status") if isinstance(subscription, dict) else subscription.status)
+    subscription_id = str(subscription.get("id") if isinstance(subscription, dict) else subscription.id)
+    price_id = None
+    try:
+        items = subscription["items"]["data"] if isinstance(subscription, dict) else subscription["items"]["data"]
+        if items:
+            price_id = items[0]["price"]["id"]
+    except Exception:
+        price_id = None
+
+    _update_profile(
+        profile["id"],
+        {
+            "plan": _subscription_plan_from_status(status),
+            "subscription_status": status,
+            "stripe_subscription_id": subscription_id,
+            "stripe_price_id": price_id,
+            "subscription_current_period_end": _extract_period_end(subscription),
+        },
+    )
 
 
 def _reset_profile_quota_if_needed(profile: dict[str, Any]) -> dict[str, Any]:
@@ -764,9 +1411,13 @@ def _run_anthropic(api_key: str, prompt: str, model: str) -> str:
     return result["content"][0]["text"].strip()
 
 
-def _run_ai_provider(body: AiRunRequest) -> tuple[str, str | None]:
+def _run_ai_provider(
+    body: AiRunRequest,
+    user_api_key: str | None = None,
+    user_api_provider: str | None = None,
+) -> tuple[str, str | None]:
     prompt = body.prompt or body.text
-    provider = body.api_provider or "none"
+    provider = user_api_provider or body.api_provider or "none"
 
     if body.provider == "built_in":
         if groq_client is not None or gemini_client is not None:
@@ -774,17 +1425,17 @@ def _run_ai_provider(body: AiRunRequest) -> tuple[str, str | None]:
         return _fallback_ai_response(body.action, body.text), "fallback-rule"
 
     if body.provider == "user_api_key":
-        if not body.api_key or provider == "none":
-            raise HTTPException(status_code=400, detail="請先提供 API provider 與 API key")
+        if not user_api_key or provider == "none":
+            raise HTTPException(status_code=400, detail="請先安全儲存 API Provider 與 API Key")
 
         if provider == "openai":
             model = body.model or "gpt-4o-mini"
-            return _run_openai_compatible(body.api_key, prompt, model), model
+            return _run_openai_compatible(user_api_key, prompt, model), model
         if provider == "deepseek":
             model = body.model or "deepseek-chat"
             return (
                 _run_openai_compatible(
-                    body.api_key,
+                    user_api_key,
                     prompt,
                     model,
                     "https://api.deepseek.com/chat/completions",
@@ -793,10 +1444,10 @@ def _run_ai_provider(body: AiRunRequest) -> tuple[str, str | None]:
             )
         if provider == "gemini":
             model = body.model or "gemini-1.5-flash"
-            return _run_gemini(body.api_key, prompt, model), model
+            return _run_gemini(user_api_key, prompt, model), model
         if provider == "anthropic":
             model = body.model or "claude-3-5-haiku-latest"
-            return _run_anthropic(body.api_key, prompt, model), model
+            return _run_anthropic(user_api_key, prompt, model), model
 
     raise HTTPException(status_code=400, detail="不支援的 AI provider")
 
@@ -1060,7 +1711,11 @@ def _build_agent_prompt(body: AgentRunRequest) -> str:
     )
 
 
-def _run_agent_provider(body: AgentRunRequest) -> tuple[AgentRunResponse, str | None]:
+def _run_agent_provider(
+    body: AgentRunRequest,
+    user_api_key: str | None = None,
+    user_api_provider: str | None = None,
+) -> tuple[AgentRunResponse, str | None]:
     prompt = _build_agent_prompt(body)
     ai_body = AiRunRequest(
         provider=body.provider,
@@ -1068,10 +1723,9 @@ def _run_agent_provider(body: AgentRunRequest) -> tuple[AgentRunResponse, str | 
         text=body.document_markdown,
         prompt=prompt,
         api_provider=body.api_provider,
-        api_key=body.api_key,
         model=body.model,
     )
-    text, model = _run_ai_provider(ai_body)
+    text, model = _run_ai_provider(ai_body, user_api_key, user_api_provider)
     response = _parse_agent_json(text, body.mode)
     response.model = model
     return response, model
@@ -1097,6 +1751,34 @@ def generate_outline(body: OutlineRequest):
     return OutlineResponse(markdown=generate_outline_from_sample(body.sample_structure))
 
 
+@app.post("/api/keys/save", response_model=SaveApiKeyResponse)
+def save_user_api_key(body: SaveApiKeyRequest, authorization: str | None = Header(default=None)):
+    user = _get_user_from_authorization(authorization)
+    if user is None:
+        raise HTTPException(status_code=401, detail="請先登入")
+
+    user_id = user.get("id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="無效的使用者")
+
+    encrypted_key = encrypt_secret(body.api_key)
+    _supabase_request(
+        "/rest/v1/user_ai_settings?on_conflict=user_id",
+        method="POST",
+        payload={
+            "user_id": user_id,
+            "preferred_provider": "user_api_key",
+            "api_provider": body.api_provider,
+            "api_key_encrypted": encrypted_key,
+            "updated_at": datetime.now(UTC).isoformat(),
+        },
+        extra_headers={
+            "Prefer": "resolution=merge-duplicates,return=minimal",
+        },
+    )
+    return SaveApiKeyResponse(ok=True, api_provider=body.api_provider)
+
+
 @app.post("/api/ai/run", response_model=AiRunResponse)
 def run_ai(body: AiRunRequest, authorization: str | None = Header(default=None)):
     text = body.text.strip()
@@ -1106,6 +1788,8 @@ def run_ai(body: AiRunRequest, authorization: str | None = Header(default=None))
     user = _get_user_from_authorization(authorization)
     quota: dict[str, Any] | None = None
     model: str | None = None
+    decrypted_user_api_key: str | None = None
+    decrypted_user_api_provider: str | None = None
     try:
         if body.provider == "built_in":
             if user is None:
@@ -1113,14 +1797,23 @@ def run_ai(body: AiRunRequest, authorization: str | None = Header(default=None))
             quota = _get_ai_quota(user)
             if quota["remaining"] <= 0:
                 raise HTTPException(status_code=402, detail="今日內建 AI 免費額度已用完")
+        elif body.provider == "user_api_key":
+            if user is None:
+                raise HTTPException(status_code=401, detail="自備 API Key 需要登入後使用")
+            decrypted_user_api_key, decrypted_user_api_provider = _get_decrypted_user_api_key(
+                user,
+                body.api_provider,
+            )
 
-        markdown, model = _run_ai_provider(body)
+        markdown, model = _run_ai_provider(body, decrypted_user_api_key, decrypted_user_api_provider)
         if body.provider == "built_in" and user is not None:
             quota = _consume_ai_quota(user)
         _log_ai_usage(user, body, model, "success")
     except HTTPException:
         _log_ai_usage(user, body, model, "error")
         raise
+    finally:
+        decrypted_user_api_key = None
 
     return AiRunResponse(
         markdown=markdown,
@@ -1147,6 +1840,8 @@ def run_agent(body: AgentRunRequest, authorization: str | None = Header(default=
     user = _get_user_from_authorization(authorization)
     quota: dict[str, Any] | None = None
     model: str | None = None
+    decrypted_user_api_key: str | None = None
+    decrypted_user_api_provider: str | None = None
 
     try:
         if body.provider == "built_in":
@@ -1155,18 +1850,29 @@ def run_agent(body: AgentRunRequest, authorization: str | None = Header(default=
             quota = _get_ai_quota(user)
             if quota["remaining"] <= 0:
                 raise HTTPException(status_code=402, detail="今日內建 AI 免費額度已用完")
+        elif body.provider == "user_api_key":
+            if user is None:
+                raise HTTPException(status_code=401, detail="自備 API Key 需要登入後使用")
+            decrypted_user_api_key, decrypted_user_api_provider = _get_decrypted_user_api_key(
+                user,
+                body.api_provider,
+            )
 
         has_llm_key = (
             body.provider == "user_api_key"
-            and bool(body.api_key)
-            and body.api_provider not in {None, "none"}
+            and bool(decrypted_user_api_key)
+            and decrypted_user_api_provider not in {None, "none"}
         ) or (
             body.provider == "built_in"
             and (groq_client is not None or gemini_client is not None)
         )
 
         if has_llm_key:
-            response, model = _run_agent_provider(body)
+            response, model = _run_agent_provider(
+                body,
+                decrypted_user_api_key,
+                decrypted_user_api_provider,
+            )
         else:
             response = _fallback_agent_response(body)
             model = response.model
@@ -1179,6 +1885,221 @@ def run_agent(body: AgentRunRequest, authorization: str | None = Header(default=
         return response
     except HTTPException:
         raise
+    finally:
+        decrypted_user_api_key = None
+
+
+@app.post("/api/templates/publish", response_model=TemplatePublishResponse)
+def publish_template(
+    body: TemplatePublishRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = _require_user(authorization)
+    user_id = user.get("id")
+    if not isinstance(user_id, str) or not user_id:
+        raise HTTPException(status_code=401, detail="無效的使用者")
+
+    template_id = str(body.template_id)
+    rows = _supabase_request(
+        "/rest/v1/report_templates"
+        f"?id=eq.{template_id}"
+        "&select=id,user_id,source,review_status"
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="找不到模板")
+
+    template = rows[0]
+    if template.get("user_id") != user_id:
+        raise HTTPException(status_code=403, detail="只有模板擁有者可以申請發布")
+    if template.get("source") != "user":
+        raise HTTPException(status_code=400, detail="系統模板不需要提交社群審核")
+
+    _supabase_request(
+        f"/rest/v1/report_templates?id=eq.{template_id}&user_id=eq.{user_id}",
+        method="PATCH",
+        payload={
+            "review_status": "pending",
+            "is_public": False,
+            "visibility": "private",
+            "updated_at": datetime.now(UTC).isoformat(),
+        },
+        extra_headers={"Prefer": "return=minimal"},
+    )
+    return TemplatePublishResponse(
+        ok=True,
+        template_id=body.template_id,
+        review_status="pending",
+    )
+
+
+@app.post("/api/templates/use/{template_id}", response_model=TemplateUseResponse)
+def use_community_template(template_id: UUID):
+    usage_count = _supabase_request(
+        "/rest/v1/rpc/increment_template_usage",
+        method="POST",
+        payload={"p_template_id": str(template_id)},
+    )
+    if usage_count is None:
+        raise HTTPException(status_code=404, detail="找不到已核准的公開模板")
+    if not isinstance(usage_count, int):
+        raise HTTPException(status_code=502, detail="模板使用次數回傳格式錯誤")
+
+    return TemplateUseResponse(
+        ok=True,
+        template_id=template_id,
+        usage_count=usage_count,
+    )
+
+
+@app.get("/api/templates/community", response_model=list[CommunityTemplateResponse])
+def list_community_templates():
+    rows = _supabase_request(
+        "/rest/v1/report_templates"
+        "?is_public=eq.true"
+        "&review_status=eq.approved"
+        "&select=id,user_id,title,description,category,content,author_name,"
+        "author_avatar_url,source,usage_count,created_at,updated_at"
+        "&order=usage_count.desc,created_at.desc"
+    )
+    return rows or []
+
+
+@app.post(
+    "/api/reports/{report_id}/transfer/request",
+    response_model=OwnershipTransferRequestResponse,
+)
+def request_report_ownership_transfer(
+    report_id: UUID,
+    body: OwnershipTransferRequest,
+    authorization: str | None = Header(default=None),
+):
+    sender = _require_user(authorization)
+    sender_id = sender.get("id")
+    if not isinstance(sender_id, str) or not sender_id:
+        raise HTTPException(status_code=401, detail="無效的使用者")
+    _get_or_create_profile(sender)
+
+    report_id_text = str(report_id)
+    reports = _supabase_request(
+        f"/rest/v1/documents?id=eq.{report_id_text}&select=id,user_id,title"
+    )
+    if not reports:
+        raise HTTPException(status_code=404, detail="找不到報告")
+    report = reports[0]
+    if report.get("user_id") != sender_id:
+        raise HTTPException(status_code=403, detail="只有目前擁有者可以發起轉移")
+
+    recipient_email = _normalize_email(body.recipient_email)
+    sender_email = str(sender.get("email") or "").strip().lower()
+    if recipient_email == sender_email:
+        raise HTTPException(status_code=400, detail="不能將報告轉移給自己")
+
+    recipient = _supabase_request(
+        "/rest/v1/rpc/resolve_transfer_recipient",
+        method="POST",
+        payload={"p_email": recipient_email},
+    )
+    if not isinstance(recipient, dict):
+        raise HTTPException(status_code=404, detail="找不到已註冊的接收者")
+    recipient_id = recipient.get("id")
+    if not isinstance(recipient_id, str) or not recipient_id:
+        raise HTTPException(status_code=404, detail="接收者帳號資料不完整")
+    if recipient_id == sender_id:
+        raise HTTPException(status_code=400, detail="不能將報告轉移給自己")
+
+    now = datetime.now(UTC)
+    expires_at = now + timedelta(hours=24)
+    raw_token = secrets.token_urlsafe(48)
+    token_hash = _hash_transfer_token(raw_token)
+
+    _supabase_request(
+        "/rest/v1/transfer_requests"
+        f"?report_id=eq.{report_id_text}"
+        f"&from_user=eq.{sender_id}"
+        "&status=eq.pending",
+        method="PATCH",
+        payload={
+            "status": "cancelled",
+            "cancelled_at": now.isoformat(),
+        },
+        extra_headers={"Prefer": "return=minimal"},
+    )
+    created = _supabase_request(
+        "/rest/v1/transfer_requests",
+        method="POST",
+        payload={
+            "report_id": report_id_text,
+            "from_user": sender_id,
+            "to_user": recipient_id,
+            "token_hash": token_hash,
+            "expires_at": expires_at.isoformat(),
+            "status": "pending",
+        },
+        extra_headers={"Prefer": "return=representation"},
+    )
+    if not created:
+        raise HTTPException(status_code=502, detail="無法建立轉移請求")
+
+    confirmation_url = (
+        f"{FRONTEND_URL}/transfer/confirm"
+        f"?token={urllib.parse.quote(raw_token, safe='')}"
+    )
+    _send_transfer_confirmation_email(
+        recipient_email,
+        str(report.get("title") or "未命名報告"),
+        confirmation_url,
+        expires_at,
+    )
+    raw_token = ""
+
+    return OwnershipTransferRequestResponse(
+        ok=True,
+        transfer_request_id=UUID(str(created[0]["id"])),
+        expires_at=expires_at,
+        message="確認信已發送給接收者，連結將於 24 小時後失效",
+    )
+
+
+@app.post(
+    "/api/reports/transfer/confirm",
+    response_model=OwnershipTransferConfirmResponse,
+)
+def confirm_report_ownership_transfer(
+    body: OwnershipTransferConfirmRequest,
+    authorization: str | None = Header(default=None),
+):
+    recipient = _require_user(authorization)
+    recipient_id = recipient.get("id")
+    if not isinstance(recipient_id, str) or not recipient_id:
+        raise HTTPException(status_code=401, detail="無效的使用者")
+
+    token = body.token.strip()
+    if len(token) < 32 or len(token) > 512:
+        raise HTTPException(status_code=400, detail="轉移連結無效或已失效")
+
+    result = _supabase_request(
+        "/rest/v1/rpc/confirm_report_ownership_transfer",
+        method="POST",
+        payload={
+            "p_token_hash": _hash_transfer_token(token),
+            "p_recipient_user_id": recipient_id,
+        },
+    )
+    token = ""
+    if not isinstance(result, dict) or not result.get("ok"):
+        code = result.get("code") if isinstance(result, dict) else "invalid_token"
+        if code == "wrong_recipient":
+            raise HTTPException(status_code=403, detail="此轉移連結不屬於目前登入帳號")
+        if code in {"already_processed", "owner_changed"}:
+            raise HTTPException(status_code=409, detail="此轉移請求已處理或報告擁有者已變更")
+        raise HTTPException(status_code=400, detail="轉移連結無效或已失效")
+
+    return OwnershipTransferConfirmResponse(
+        ok=True,
+        report_id=UUID(str(result["report_id"])),
+        from_user=UUID(str(result["from_user"])),
+        to_user=UUID(str(result["to_user"])),
+    )
 
 
 @app.get("/api/billing/config", response_model=BillingConfigResponse)
@@ -1187,9 +2108,209 @@ def get_billing_config():
     return BillingConfigResponse(
         enabled=enabled,
         pro_price_id_configured=bool(STRIPE_PRO_PRICE_ID),
-        customer_portal_url=STRIPE_CUSTOMER_PORTAL_URL,
+        customer_portal_url=None,
         message="Stripe 已可接入" if enabled else "Stripe 尚未設定，請先配置 STRIPE_SECRET_KEY 與 STRIPE_PRO_PRICE_ID",
     )
+
+
+@app.post("/api/stripe/create-checkout-session", response_model=StripeSessionResponse)
+def create_checkout_session(
+    body: StripeSessionRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = _get_user_from_authorization(authorization)
+    if user is None:
+        raise HTTPException(status_code=401, detail="請先登入")
+
+    customer_id, _profile = _get_or_create_stripe_customer(user)
+    success_url = _safe_billing_url(body.success_url, "/?billing=success")
+    cancel_url = _safe_billing_url(body.cancel_url, "/?billing=cancel")
+
+    session = stripe.checkout.Session.create(
+        mode="subscription",
+        customer=customer_id,
+        client_reference_id=user["id"],
+        line_items=[{"price": STRIPE_PRO_PRICE_ID, "quantity": 1}],
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata={"supabase_user_id": user["id"]},
+        subscription_data={"metadata": {"supabase_user_id": user["id"]}},
+        allow_promotion_codes=True,
+    )
+    if not session.url:
+        raise HTTPException(status_code=502, detail="Stripe 未回傳 Checkout URL")
+    return StripeSessionResponse(url=session.url)
+
+
+@app.post("/api/stripe/create-portal-session", response_model=StripeSessionResponse)
+def create_portal_session(
+    body: StripeSessionRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = _get_user_from_authorization(authorization)
+    if user is None:
+        raise HTTPException(status_code=401, detail="請先登入")
+
+    customer_id, _profile = _get_or_create_stripe_customer(user)
+    session = stripe.billing_portal.Session.create(
+        customer=customer_id,
+        return_url=_safe_billing_url(body.return_url, "/"),
+    )
+    if not session.url:
+        raise HTTPException(status_code=502, detail="Stripe 未回傳 Customer Portal URL")
+    return StripeSessionResponse(url=session.url)
+
+
+@app.post("/api/github/oauth/start", response_model=GithubOAuthStartResponse)
+def start_github_oauth(
+    body: GithubOAuthStartRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = _require_user(authorization)
+    if not _github_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="GitHub OAuth 尚未設定，請配置 GITHUB_CLIENT_ID、GITHUB_CLIENT_SECRET、GITHUB_OAUTH_STATE_SECRET",
+        )
+    assert GITHUB_CLIENT_ID is not None
+
+    state = _sign_github_state(
+        {
+            "user_id": user["id"],
+            "return_url": _safe_frontend_redirect(body.return_url),
+            "nonce": secrets.token_urlsafe(18),
+            "iat": int(datetime.now(UTC).timestamp()),
+        }
+    )
+    params = urllib.parse.urlencode(
+        {
+            "client_id": GITHUB_CLIENT_ID,
+            "redirect_uri": _github_callback_url(),
+            "scope": "repo",
+            "state": state,
+            "allow_signup": "true",
+        }
+    )
+    return GithubOAuthStartResponse(url=f"https://github.com/login/oauth/authorize?{params}")
+
+
+@app.get("/api/github/oauth/callback")
+def github_oauth_callback(code: str | None = None, state: str | None = None, error: str | None = None):
+    fallback_url = _safe_frontend_redirect(None)
+    if error:
+        return RedirectResponse(f"{fallback_url}?github=error&message={urllib.parse.quote(error)}")
+    if not code or not state:
+        return RedirectResponse(f"{fallback_url}?github=error&message=missing_code_or_state")
+
+    try:
+        state_payload = _verify_github_state(state)
+        user_id = state_payload.get("user_id")
+        if not isinstance(user_id, str) or not user_id:
+            raise HTTPException(status_code=400, detail="GitHub OAuth state 缺少 user_id")
+        token_payload = _exchange_github_code_for_token(code)
+        _store_github_integration(user_id, token_payload)
+        return_url = _safe_frontend_redirect(state_payload.get("return_url"))
+        return RedirectResponse(f"{return_url}?github=connected")
+    except HTTPException as exc:
+        logger.exception("GitHub OAuth callback failed")
+        return RedirectResponse(
+            f"{fallback_url}?github=error&message={urllib.parse.quote(str(exc.detail))}"
+        )
+    except Exception as exc:
+        logger.exception("GitHub OAuth callback unexpected failure")
+        return RedirectResponse(
+            f"{fallback_url}?github=error&message={urllib.parse.quote(type(exc).__name__)}"
+        )
+
+
+@app.post("/api/github/sync", response_model=GithubSyncResponse)
+def sync_report_to_github(
+    body: GithubSyncRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = _require_user(authorization)
+    if not body.markdown.strip():
+        raise HTTPException(status_code=400, detail="Markdown 內容不可為空")
+
+    token = _get_decrypted_github_token(user)
+    owner, repo_name = _split_github_repo(body.repo)
+    path = _safe_github_path(body.path, body.title)
+    branch = body.branch.strip() if body.branch and body.branch.strip() else None
+    encoded_path = urllib.parse.quote(path, safe="")
+    base_url = f"https://api.github.com/repos/{owner}/{repo_name}/contents/{encoded_path}"
+
+    query = f"?ref={urllib.parse.quote(branch)}" if branch else ""
+    status, existing = _github_api_request(f"{base_url}{query}", token, allow_404=True)
+    sha = existing.get("sha") if status != 404 and isinstance(existing, dict) else None
+    if sha is not None and not isinstance(sha, str):
+        raise HTTPException(status_code=409, detail="目標路徑不是可覆蓋的單一檔案")
+
+    commit_message = (
+        body.commit_message.strip()
+        if body.commit_message and body.commit_message.strip()
+        else f"AutoLabReport: Sync report {datetime.now(UTC).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+    )
+    payload: dict[str, Any] = {
+        "message": commit_message,
+        "content": base64.b64encode(body.markdown.encode("utf-8")).decode("ascii"),
+    }
+    if sha:
+        payload["sha"] = sha
+    if branch:
+        payload["branch"] = branch
+
+    _put_status, result = _github_api_request(base_url, token, method="PUT", payload=payload)
+    content = result.get("content") if isinstance(result, dict) else None
+    commit = result.get("commit") if isinstance(result, dict) else None
+    html_url = content.get("html_url") if isinstance(content, dict) else None
+    commit_sha = commit.get("sha") if isinstance(commit, dict) else None
+
+    return GithubSyncResponse(
+        ok=True,
+        action="updated" if sha else "created",
+        repo=f"{owner}/{repo_name}",
+        path=path,
+        branch=branch,
+        html_url=html_url if isinstance(html_url, str) else None,
+        commit_sha=commit_sha if isinstance(commit_sha, str) else None,
+    )
+
+
+@app.post("/api/stripe/webhook")
+async def stripe_webhook(request: Request, stripe_signature: str | None = Header(default=None)):
+    if not STRIPE_WEBHOOK_SECRET:
+        raise HTTPException(status_code=503, detail="STRIPE_WEBHOOK_SECRET 尚未設定")
+
+    payload = await request.body()
+    try:
+        event = stripe.Webhook.construct_event(
+            payload=payload,
+            sig_header=stripe_signature,
+            secret=STRIPE_WEBHOOK_SECRET,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid Stripe webhook payload") from exc
+    except stripe.SignatureVerificationError as exc:
+        raise HTTPException(status_code=400, detail="Invalid Stripe webhook signature") from exc
+
+    event_type = event["type"]
+    data_object = event["data"]["object"]
+
+    if event_type == "checkout.session.completed":
+        customer_id = data_object.get("customer")
+        user_id = data_object.get("client_reference_id") or data_object.get("metadata", {}).get("supabase_user_id")
+        if customer_id and user_id:
+            _update_profile(str(user_id), {"stripe_customer_id": str(customer_id)})
+        subscription_id = data_object.get("subscription")
+        if subscription_id:
+            subscription = stripe.Subscription.retrieve(subscription_id)
+            _sync_subscription_to_profile(subscription)
+    elif event_type in {"customer.subscription.updated", "customer.subscription.deleted"}:
+        _sync_subscription_to_profile(data_object)
+    else:
+        logger.info("Unhandled Stripe webhook event: %s", event_type)
+
+    return {"received": True}
 
 
 @app.post("/api/export")
@@ -1216,6 +2337,63 @@ def export_docx(body: RenderRequest):
             "Content-Disposition": 'attachment; filename="AutoLabReport.docx"',
         },
     )
+
+
+@app.get("/api/drive/files", response_model=DriveFilesResponse)
+def list_drive_files(access_token: str):
+    query = " or ".join(f"mimeType='{mime_type}'" for mime_type in sorted(DRIVE_ALLOWED_MIME_TYPES))
+    params = urllib.parse.urlencode(
+        {
+            "q": f"trashed=false and ({query})",
+            "pageSize": "50",
+            "orderBy": "modifiedTime desc",
+            "fields": "files(id,name,mimeType,modifiedTime,size)",
+        }
+    )
+    url = f"https://www.googleapis.com/drive/v3/files?{params}"
+    payload = _google_drive_json(url, access_token)
+    raw_files = payload.get("files", [])
+    if not isinstance(raw_files, list):
+        raise HTTPException(status_code=502, detail="Google Drive 檔案列表格式不正確")
+
+    files: list[DriveFileItem] = []
+    for item in raw_files:
+        if not isinstance(item, dict):
+            continue
+        mime_type = item.get("mimeType")
+        file_id = item.get("id")
+        name = item.get("name")
+        if mime_type not in DRIVE_ALLOWED_MIME_TYPES or not isinstance(file_id, str) or not isinstance(name, str):
+            continue
+        size_value = item.get("size")
+        size = int(size_value) if isinstance(size_value, str) and size_value.isdigit() else None
+        files.append(
+            DriveFileItem(
+                id=file_id,
+                name=name,
+                mime_type=mime_type,
+                modified_time=item.get("modifiedTime") if isinstance(item.get("modifiedTime"), str) else None,
+                size=size,
+            )
+        )
+
+    return DriveFilesResponse(files=files)
+
+
+@app.post("/api/drive/import", response_model=DriveImportResponse)
+def import_drive_file(body: DriveImportRequest):
+    metadata = _get_drive_file_metadata(body.file_id, body.access_token)
+    name = str(metadata.get("name") or "Google Drive 匯入檔案")
+    mime_type = str(metadata.get("mimeType") or "")
+    suffix = ".docx" if mime_type == DRIVE_DOCX_MIME else ".pdf"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        temp_path = Path(tmp) / f"drive-import{suffix}"
+        _download_drive_file(body.file_id, body.access_token, temp_path)
+        markdown = _convert_drive_file_to_markdown(temp_path, mime_type)
+
+    title = re.sub(r"\.(docx|pdf)$", "", name, flags=re.IGNORECASE).strip() or "Google Drive 匯入檔案"
+    return DriveImportResponse(markdown=markdown, title=title, mime_type=mime_type)
 
 
 if __name__ == "__main__":

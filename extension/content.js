@@ -4,6 +4,8 @@
       id: "chatgpt",
       label: "ChatGPT",
       hosts: ["chatgpt.com", "www.chatgpt.com"],
+      responseContainerSelectors: ['[data-message-author-role="assistant"]'],
+      responseContentSelectors: [".markdown", ".prose"],
       responseSelectors: [
         '[data-message-author-role="assistant"] .markdown',
         '[data-message-author-role="assistant"]',
@@ -26,6 +28,12 @@
       id: "gemini",
       label: "Gemini",
       hosts: ["gemini.google.com"],
+      responseContainerSelectors: [
+        "model-response",
+        ".model-response",
+        "[data-test-id='response']",
+      ],
+      responseContentSelectors: ["message-content", ".model-response-text", ".markdown"],
       responseSelectors: [
         "message-content",
         ".model-response-text",
@@ -49,6 +57,11 @@
       id: "claude",
       label: "Claude",
       hosts: ["claude.ai"],
+      responseContainerSelectors: [
+        "[data-testid='conversation-turn-Assistant']",
+        "[data-is-streaming][data-testid*='Assistant']",
+      ],
+      responseContentSelectors: [".font-claude-message", ".prose"],
       responseSelectors: [
         "[data-testid='conversation-turn-Assistant']",
         ".font-claude-message",
@@ -149,9 +162,121 @@
     return selectors.flatMap((selector) => [...document.querySelectorAll(selector)]);
   }
 
+  function markdownFromElement(root) {
+    const clone = root.cloneNode(true);
+    clone
+      .querySelectorAll(
+        [
+          ".autolabreport-response-action",
+          "button",
+          "nav",
+          "[role='toolbar']",
+          "[data-testid*='copy']",
+          "[aria-label*='Copy']",
+          "[aria-label*='複製']",
+          "[class*='sr-only']",
+        ].join(","),
+      )
+      .forEach((node) => node.remove());
+
+    function serializeChildren(node) {
+      return [...node.childNodes].map(serializeNode).join("");
+    }
+
+    function serializeNode(node) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        return String(node.textContent || "").replace(/\u00a0/g, " ");
+      }
+      if (!(node instanceof HTMLElement)) return "";
+
+      const tag = node.tagName.toLowerCase();
+      const content = serializeChildren(node);
+      if (tag === "br") return "\n";
+      if (/^h[1-6]$/.test(tag)) {
+        return `${"#".repeat(Number(tag[1]))} ${content.trim()}\n\n`;
+      }
+      if (tag === "strong" || tag === "b") return `**${content.trim()}**`;
+      if (tag === "em" || tag === "i") return `*${content.trim()}*`;
+      if (tag === "s" || tag === "del") return `~~${content.trim()}~~`;
+      if (tag === "code" && node.parentElement?.tagName.toLowerCase() !== "pre") {
+        return `\`${node.textContent || ""}\``;
+      }
+      if (tag === "pre") {
+        const code = node.querySelector("code");
+        const languageClass = [...(code?.classList || [])].find((name) =>
+          name.startsWith("language-"),
+        );
+        const language = languageClass?.replace("language-", "") || "";
+        return `\n\`\`\`${language}\n${(code?.textContent || node.textContent || "").trim()}\n\`\`\`\n\n`;
+      }
+      if (tag === "a") {
+        const href = node.getAttribute("href");
+        return href ? `[${content.trim() || href}](${href})` : content;
+      }
+      if (tag === "blockquote") {
+        return `${content
+          .trim()
+          .split("\n")
+          .map((line) => `> ${line}`)
+          .join("\n")}\n\n`;
+      }
+      if (tag === "li") {
+        const ordered = node.parentElement?.tagName.toLowerCase() === "ol";
+        return `${ordered ? "1." : "-"} ${content.trim()}\n`;
+      }
+      if (tag === "ul" || tag === "ol") return `\n${content}\n`;
+      if (tag === "table") {
+        const rows = [...node.querySelectorAll("tr")].map((row) =>
+          [...row.querySelectorAll("th,td")].map((cell) =>
+            String(cell.textContent || "").trim().replace(/\|/g, "\\|"),
+          ),
+        );
+        if (!rows.length) return "";
+        const width = Math.max(...rows.map((row) => row.length));
+        const normalized = rows.map((row) => [...row, ...Array(width - row.length).fill("")]);
+        const header = normalized[0];
+        return [
+          `| ${header.join(" | ")} |`,
+          `| ${header.map(() => "---").join(" | ")} |`,
+          ...normalized.slice(1).map((row) => `| ${row.join(" | ")} |`),
+          "",
+          "",
+        ].join("\n");
+      }
+      if (tag === "p") return `${content.trim()}\n\n`;
+      if (["div", "section", "article"].includes(tag)) return `${content}\n`;
+      return content;
+    }
+
+    return serializeChildren(clone)
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+  }
+
+  function getResponseNodes() {
+    const selectors = currentProvider?.responseContainerSelectors;
+    if (!selectors?.length) return [];
+    return [...new Set(querySelectorList(selectors))].filter(
+      (node) => node instanceof HTMLElement,
+    );
+  }
+
+  function extractResponseMarkdown(container) {
+    const contentSelector = currentProvider?.responseContentSelectors?.join(",");
+    const content =
+      (contentSelector && container.querySelector(contentSelector)) || container;
+    return markdownFromElement(content);
+  }
+
   function getLatestAiResponse() {
     const selectedText = getSelectedText();
     if (selectedText) return selectedText;
+
+    const responseNodes = getResponseNodes();
+    if (responseNodes.length) {
+      return extractResponseMarkdown(responseNodes.at(-1));
+    }
 
     const selectors = currentProvider?.responseSelectors || [
       ".markdown",
@@ -192,8 +317,8 @@
     window.setTimeout(() => toast.remove(), 2600);
   }
 
-  function sendLatestContent() {
-    const text = getLatestAiResponse();
+  function sendLatestContent(explicitText = "") {
+    const text = String(explicitText || getLatestAiResponse()).trim();
     if (!text) {
       showToast(`找不到可傳送的 ${currentProvider?.label || "AI"} 內容`, true);
       return;
@@ -219,6 +344,62 @@
         }
       },
     );
+  }
+
+  function injectResponseButtons() {
+    getResponseNodes().forEach((container) => {
+      if (
+        container.dataset.autolabreportBridgeAttached === "true" &&
+        container.querySelector(".autolabreport-response-action")
+      ) {
+        return;
+      }
+
+      container.dataset.autolabreportBridgeAttached = "true";
+      const action = document.createElement("div");
+      action.className = "autolabreport-response-action";
+      action.style.cssText =
+        "display:flex;justify-content:flex-end;margin:8px 0 2px;clear:both";
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = "🚀 傳回 AutoLabReport";
+      button.setAttribute("aria-label", "傳回 AutoLabReport");
+      button.style.cssText = [
+        "border:1px solid rgba(100,116,139,.28)",
+        "border-radius:7px",
+        "padding:6px 9px",
+        "background:rgba(255,255,255,.96)",
+        "color:#334155",
+        "font:600 12px/1.2 system-ui,-apple-system,BlinkMacSystemFont,sans-serif",
+        "cursor:pointer",
+        "box-shadow:0 1px 3px rgba(15,23,42,.08)",
+      ].join(";");
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const markdown = extractResponseMarkdown(container);
+        sendLatestContent(markdown);
+      });
+
+      action.appendChild(button);
+      container.appendChild(action);
+    });
+  }
+
+  function watchAiResponses() {
+    let scanFrame = 0;
+    const scheduleScan = () => {
+      if (scanFrame) return;
+      scanFrame = window.requestAnimationFrame(() => {
+        scanFrame = 0;
+        injectResponseButtons();
+      });
+    };
+
+    injectResponseButtons();
+    const observer = new MutationObserver(scheduleScan);
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
   function fillTemplate(template, text, action) {
@@ -375,9 +556,12 @@
   }
 
   function insertIntoAutoLabReport(text) {
+    const messageId = crypto.randomUUID();
     window.postMessage(
       {
         type: "AUTOLABREPORT_EXTENSION_TEXT",
+        source: "autolabreport-extension",
+        messageId,
         text,
       },
       window.location.origin,
@@ -386,7 +570,11 @@
     localStorage.setItem("autoLabReport_bridge_payload", text);
     window.dispatchEvent(
       new CustomEvent("AutoLabReport_Insert", {
-        detail: { text },
+        detail: {
+          source: "autolabreport-extension",
+          messageId,
+          text,
+        },
       }),
     );
 
@@ -439,7 +627,7 @@
       }
     });
 
-    injectFloatingButton();
+    watchAiResponses();
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message?.type === "AUTOLABREPORT_AI_COMMAND") {
         const ok = sendAiCommand(message.text, message.action, message.settings, message.prompt);

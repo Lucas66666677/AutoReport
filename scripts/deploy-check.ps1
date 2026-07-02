@@ -93,7 +93,15 @@ foreach ($name in @(
   "VITE_SUPABASE_ANON_KEY",
   "SUPABASE_URL",
   "SUPABASE_SERVICE_ROLE_KEY",
-  "OPENAI_API_KEY"
+  "ENCRYPTION_KEY",
+  "GROQ_API_KEY",
+  "GROQ_MODELS",
+  "GEMINI_API_KEY",
+  "GEMINI_MODELS",
+  "STRIPE_SECRET_KEY",
+  "STRIPE_PRO_PRICE_ID",
+  "STRIPE_WEBHOOK_SECRET",
+  "FRONTEND_URL"
 )) {
   Test-EnvName $name $envFiles
 }
@@ -116,7 +124,11 @@ foreach ($path in @("/api/health", "/keep-alive", "/api/billing/config")) {
 if ($RunBuild) {
   Invoke-CheckedCommand "frontend lint" "npm run lint" $frontend
   Invoke-CheckedCommand "frontend production build" "npm run build" $frontend
-  Invoke-CheckedCommand "backend python compile" "python -m py_compile backend/main.py" $root
+  $backendPython = Join-Path $backend ".venv\Scripts\python.exe"
+  if (-not (Test-Path $backendPython)) {
+    $backendPython = "python"
+  }
+  Invoke-CheckedCommand "backend python compile" "`"$backendPython`" -m py_compile backend/main.py" $root
   Invoke-CheckedCommand "extension syntax check" "node --check extension/background.js; node --check extension/content.js; node --check extension/popup.js" $root
 }
 
@@ -127,4 +139,3 @@ if ($failed) {
 }
 
 Write-Host "Deployment check finished." -ForegroundColor Green
-

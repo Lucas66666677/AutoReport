@@ -8,10 +8,16 @@ create table if not exists public.profiles (
   email text,
   full_name text,
   avatar_url text,
+  preferences jsonb not null default '{}'::jsonb,
+  integrations jsonb not null default '{}'::jsonb,
   plan text not null default 'free' check (plan in ('free', 'pro')),
-  ai_quota_used integer not null default 0,
-  ai_quota_reset_at timestamptz not null default now(),
+  ai_daily_used integer not null default 0,
+  ai_daily_reset_at timestamptz not null default now(),
   stripe_customer_id text,
+  stripe_subscription_id text,
+  stripe_price_id text,
+  subscription_status text not null default 'inactive',
+  subscription_current_period_end timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -26,6 +32,7 @@ create table if not exists public.documents (
   is_favorite boolean not null default false,
   is_trashed boolean not null default false,
   share_setting text not null default 'private' check (share_setting in ('private', 'view', 'edit')),
+  view_count integer not null default 0,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
 );
@@ -87,11 +94,44 @@ create table if not exists public.ai_usage_logs (
 alter table public.profiles add column if not exists email text;
 alter table public.profiles add column if not exists full_name text;
 alter table public.profiles add column if not exists avatar_url text;
+alter table public.profiles add column if not exists preferences jsonb not null default '{}'::jsonb;
+alter table public.profiles add column if not exists integrations jsonb not null default '{}'::jsonb;
 alter table public.profiles add column if not exists plan text not null default 'free';
-alter table public.profiles add column if not exists ai_quota_used integer not null default 0;
-alter table public.profiles add column if not exists ai_quota_reset_at timestamptz not null default now();
+alter table public.profiles add column if not exists ai_daily_used integer not null default 0;
+alter table public.profiles add column if not exists ai_daily_reset_at timestamptz not null default now();
 alter table public.profiles add column if not exists stripe_customer_id text;
+alter table public.profiles add column if not exists stripe_subscription_id text;
+alter table public.profiles add column if not exists stripe_price_id text;
+alter table public.profiles add column if not exists subscription_status text not null default 'inactive';
+alter table public.profiles add column if not exists subscription_current_period_end timestamptz;
 alter table public.profiles add column if not exists updated_at timestamptz not null default now();
+
+do $$
+begin
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'profiles'
+      and column_name = 'ai_quota_used'
+  ) then
+    update public.profiles
+    set ai_daily_used = coalesce(ai_daily_used, ai_quota_used)
+    where ai_quota_used is not null;
+  end if;
+
+  if exists (
+    select 1
+    from information_schema.columns
+    where table_schema = 'public'
+      and table_name = 'profiles'
+      and column_name = 'ai_quota_reset_at'
+  ) then
+    update public.profiles
+    set ai_daily_reset_at = coalesce(ai_daily_reset_at, ai_quota_reset_at)
+    where ai_quota_reset_at is not null;
+  end if;
+end $$;
 
 alter table public.documents add column if not exists user_id uuid references auth.users(id) on delete cascade;
 alter table public.documents add column if not exists content text not null default '';
@@ -100,6 +140,7 @@ alter table public.documents add column if not exists parent_id uuid references 
 alter table public.documents add column if not exists is_favorite boolean not null default false;
 alter table public.documents add column if not exists is_trashed boolean not null default false;
 alter table public.documents add column if not exists share_setting text not null default 'private';
+alter table public.documents add column if not exists view_count integer not null default 0;
 alter table public.documents add column if not exists updated_at timestamptz not null default now();
 
 alter table public.user_ai_settings add column if not exists preferred_provider text not null default 'built_in';
@@ -130,9 +171,17 @@ create index if not exists documents_user_id_idx on public.documents(user_id);
 create index if not exists documents_share_setting_idx on public.documents(share_setting);
 create index if not exists document_collaborators_document_id_idx on public.document_collaborators(document_id);
 create index if not exists document_collaborators_user_email_idx on public.document_collaborators(lower(user_email));
+create index if not exists documents_public_view_idx on public.documents(id, share_setting, is_trashed);
 create index if not exists ai_usage_logs_user_id_created_at_idx on public.ai_usage_logs(user_id, created_at desc);
 create index if not exists report_templates_user_id_idx on public.report_templates(user_id);
 create index if not exists report_templates_visibility_category_idx on public.report_templates(visibility, category);
+create index if not exists profiles_stripe_customer_id_idx on public.profiles(stripe_customer_id);
+create index if not exists profiles_stripe_subscription_id_idx on public.profiles(stripe_subscription_id);
+
+insert into storage.buckets (id, name, public)
+values ('report_images', 'report_images', true)
+on conflict (id) do update
+set public = excluded.public;
 
 create or replace function public.is_document_owner(
   p_document_id uuid,
@@ -178,12 +227,66 @@ $$;
 grant execute on function public.is_document_owner(uuid, uuid) to anon, authenticated;
 grant execute on function public.is_document_collaborator(uuid, text, text) to anon, authenticated;
 
+create or replace function public.increment_document_view_count(
+  p_document_id uuid
+)
+returns void
+language sql
+security definer
+set search_path = public
+as $$
+  update public.documents
+  set view_count = coalesce(view_count, 0) + 1
+  where id = p_document_id
+    and is_trashed = false
+    and share_setting in ('view', 'edit');
+$$;
+
+grant execute on function public.increment_document_view_count(uuid) to anon, authenticated;
+
 alter table public.profiles enable row level security;
 alter table public.documents enable row level security;
 alter table public.document_collaborators enable row level security;
 alter table public.user_ai_settings enable row level security;
 alter table public.ai_usage_logs enable row level security;
 alter table public.report_templates enable row level security;
+
+drop policy if exists "report_images_public_read" on storage.objects;
+create policy "report_images_public_read"
+on storage.objects for select
+to anon, authenticated
+using (bucket_id = 'report_images');
+
+drop policy if exists "report_images_authenticated_insert_own_folder" on storage.objects;
+create policy "report_images_authenticated_insert_own_folder"
+on storage.objects for insert
+to authenticated
+with check (
+  bucket_id = 'report_images'
+  and (storage.foldername(name))[1] = auth.uid()::text
+);
+
+drop policy if exists "report_images_authenticated_update_own_folder" on storage.objects;
+create policy "report_images_authenticated_update_own_folder"
+on storage.objects for update
+to authenticated
+using (
+  bucket_id = 'report_images'
+  and (storage.foldername(name))[1] = auth.uid()::text
+)
+with check (
+  bucket_id = 'report_images'
+  and (storage.foldername(name))[1] = auth.uid()::text
+);
+
+drop policy if exists "report_images_authenticated_delete_own_folder" on storage.objects;
+create policy "report_images_authenticated_delete_own_folder"
+on storage.objects for delete
+to authenticated
+using (
+  bucket_id = 'report_images'
+  and (storage.foldername(name))[1] = auth.uid()::text
+);
 
 drop policy if exists "profiles_select_own" on public.profiles;
 create policy "profiles_select_own"

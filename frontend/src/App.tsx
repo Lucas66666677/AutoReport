@@ -12,7 +12,7 @@ import {
   type ReactNode,
 } from 'react'
 import 'katex/dist/katex.min.css'
-import { createClient, type Provider, type User } from '@supabase/supabase-js'
+import { createClient, type Provider, type Session, type User } from '@supabase/supabase-js'
 import {
   ArrowRight,
   Archive,
@@ -84,19 +84,25 @@ import {
   X,
 } from 'lucide-react'
 import type { editor } from 'monaco-editor'
+import type { HocuspocusProvider, WebSocketStatus } from '@hocuspocus/provider'
 import ReactMarkdown from 'react-markdown'
 import remarkMath from 'remark-math'
 import type { Text as YText, Doc as YDoc } from 'yjs'
-import type { WebrtcProvider } from 'y-webrtc'
 import {
   createDocumentVersion,
   readDocumentVersions,
   type DocumentVersion,
 } from './documentVersions'
+import GoogleDrivePicker from './GoogleDrivePicker'
 import { REHYPE_PLUGINS, safeMarkdownUrlTransform } from './markdownSafety'
+import PublicReport from './PublicReport'
 import { analyzeReportQuality } from './reportQuality'
+import ScreenRecorderControls from './ScreenRecorderControls'
+import { useExtensionBridge } from './useExtensionBridge'
+import { useSettings, type NotePreferences } from './useSettings'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const COLLABORATION_URL = import.meta.env.VITE_COLLABORATION_URL || 'ws://localhost:1234'
 const RENDER_DEBOUNCE_MS = 300
 const THEME_STORAGE_KEY = 'autolabreport-theme'
 const CONTENT_STORAGE_KEY = 'autoLabReport_content'
@@ -106,6 +112,7 @@ const ANONYMOUS_IDENTITY_STORAGE_KEY = 'autoLabReport_anonymousIdentity'
 const AI_SETTINGS_STORAGE_KEY = 'autoLabReport_aiSettings'
 const USER_TEMPLATES_STORAGE_KEY = 'autoLabReport_userTemplates'
 const DOCUMENT_VERSIONS_STORAGE_KEY = 'autoLabReport_documentVersions'
+const REPORT_IMAGE_BUCKET = 'report_images'
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined
 const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
 const supabase =
@@ -832,12 +839,40 @@ function readFileAsDataUrl(file: File): Promise<string> {
   })
 }
 
-function applyAutoNumbering(text: string): string {
+function getImageFileExtension(file: File): string {
+  const fromName = file.name.split('.').pop()?.toLowerCase()
+  if (fromName && /^[a-z0-9]+$/.test(fromName)) return fromName
+
+  const fromType = file.type.split('/')[1]?.toLowerCase()
+  if (fromType && /^[a-z0-9.+-]+$/.test(fromType)) {
+    return fromType === 'jpeg' ? 'jpg' : fromType.replace(/[^a-z0-9]/g, '')
+  }
+
+  return 'png'
+}
+
+function createReportImagePath(file: File, userId: string, documentId: string | null | undefined): string {
+  const safeDocumentId = documentId?.replace(/[^a-zA-Z0-9_-]/g, '') || 'draft'
+  const extension = getImageFileExtension(file)
+  const randomId =
+    typeof crypto !== 'undefined' && 'randomUUID' in crypto
+      ? crypto.randomUUID()
+      : Math.random().toString(36).slice(2, 12)
+
+  return `${userId}/${safeDocumentId}/${Date.now()}-${randomId}.${extension}`
+}
+
+function applyAutoNumbering(
+  text: string,
+  options: { figures?: boolean; tables?: boolean } = { figures: true, tables: true },
+): string {
   let figureCount = 1
   let tableCount = 1
 
-  return text
-    .replace(/!\[([^\]]*)\]\(([^)\r\n]+)\)|\[@fig:[^\]\s]+\]/g, (_match, caption, url) => {
+  let nextText = text
+
+  if (options.figures !== false) {
+    nextText = nextText.replace(/!\[([^\]]*)\]\(([^)\r\n]+)\)|\[@fig:[^\]\s]+\]/g, (_match, caption, url) => {
       const currentFigure = figureCount
       figureCount += 1
 
@@ -852,11 +887,17 @@ function applyAutoNumbering(text: string): string {
 
       return `圖 ${currentFigure}`
     })
-    .replace(/\[@tbl:[^\]\s]+\]/g, () => {
+  }
+
+  if (options.tables !== false) {
+    nextText = nextText.replace(/\[@tbl:[^\]\s]+\]/g, () => {
       const currentTable = tableCount
       tableCount += 1
       return `表 ${currentTable}`
     })
+  }
+
+  return nextText
 }
 
 function getInitialTheme() {
@@ -1687,7 +1728,6 @@ function toSupabaseAiSettingsPayload(userId: string, settings: AiSettings) {
     user_id: userId,
     preferred_provider: settings.preferredProvider,
     api_provider: settings.userApiProvider,
-    api_key_encrypted: null,
     default_model: settings.defaultModel || null,
     rewrite_prompt: settings.rewritePrompt,
     expand_prompt: settings.expandPrompt,
@@ -1823,12 +1863,26 @@ function AiSettingsView({
   settings,
   quota,
   quotaLoading,
+  userApiKeySaving,
+  notePreferences,
+  preferencesLoading,
+  preferencesSaving,
+  onConnectGithub,
   onChangeSettings,
+  onSaveUserApiKey,
+  onChangeNotePreferences,
 }: {
   settings: AiSettings
   quota: AiQuota | null
   quotaLoading: boolean
+  userApiKeySaving: boolean
+  notePreferences: NotePreferences
+  preferencesLoading: boolean
+  preferencesSaving: boolean
+  onConnectGithub: () => void
   onChangeSettings: (settings: AiSettings) => void
+  onSaveUserApiKey: () => void
+  onChangeNotePreferences: (patch: Partial<NotePreferences>) => void
 }) {
   function updateSettings(patch: Partial<AiSettings>) {
     onChangeSettings(normalizeAiSettings({ ...settings, ...patch }))
@@ -1871,13 +1925,14 @@ function AiSettingsView({
     {
       id: 'user_api_key' as AiProvider,
       title: '自備 API Key',
-      status: settings.userApiKey ? '本次已填入' : '未設定',
-      description: '適合進階使用者；金鑰只留在本次頁面狀態。',
+      status: settings.userApiKey ? '待安全儲存' : '後端加密保存',
+      description: '適合進階使用者；金鑰送到後端加密保存，不寫入瀏覽器或資料庫明文。',
       icon: Database,
     },
   ]
   const toolCards = [
     { title: 'Google Drive', description: '匯出、同步與備份文件。', status: '待連接', icon: Cloud },
+    { title: 'GitHub 同步', description: '將 Markdown 報告推送到自己的 Repo。', status: '可綁定', icon: FileCode2 },
     { title: 'Markdown 匯入', description: '上傳 .md 後直接進入編輯器。', status: '已可用', icon: FileUp },
     { title: 'Word / PDF 匯出', description: '把報告交付成常用格式。', status: '已可用', icon: Download },
     { title: '新增工具', description: '之後可讓使用者添加自己的工具列。', status: '預留', icon: Plus },
@@ -2003,11 +2058,99 @@ function AiSettingsView({
         </div>
 
         <section className="mt-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div>
+              <h2 className="text-lg font-semibold text-slate-950">筆記與編輯器設定</h2>
+              <p className="mt-1 text-sm leading-6 text-slate-500">
+                這些偏好會儲存在 Supabase profiles.preferences，登入後可跨裝置同步。
+              </p>
+            </div>
+            <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-semibold text-slate-500">
+              {preferencesLoading ? '讀取中...' : preferencesSaving ? '雲端同步中...' : '已同步'}
+            </span>
+          </div>
+
+          <div className="mt-6 grid gap-5 lg:grid-cols-3">
+            <label className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <span className="text-sm font-semibold text-slate-700">編輯器字體大小</span>
+              <div className="mt-4 flex items-center gap-3">
+                <input
+                  type="range"
+                  min={12}
+                  max={24}
+                  value={notePreferences.editorFontSize}
+                  onChange={(event) => onChangeNotePreferences({ editorFontSize: Number(event.target.value) })}
+                  className="w-full accent-slate-950"
+                />
+                <span className="w-10 text-right text-sm font-semibold text-slate-950">
+                  {notePreferences.editorFontSize}
+                </span>
+              </div>
+            </label>
+
+            <label className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <span className="text-sm font-semibold text-slate-700">編輯器行高</span>
+              <div className="mt-4 flex items-center gap-3">
+                <input
+                  type="range"
+                  min={20}
+                  max={36}
+                  value={notePreferences.editorLineHeight}
+                  onChange={(event) => onChangeNotePreferences({ editorLineHeight: Number(event.target.value) })}
+                  className="w-full accent-slate-950"
+                />
+                <span className="w-10 text-right text-sm font-semibold text-slate-950">
+                  {notePreferences.editorLineHeight}
+                </span>
+              </div>
+            </label>
+
+            <label className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+              <span className="text-sm font-semibold text-slate-700">預設匯出格式</span>
+              <select
+                value={notePreferences.defaultExportFormat}
+                onChange={(event) =>
+                  onChangeNotePreferences({
+                    defaultExportFormat: event.target.value as NotePreferences['defaultExportFormat'],
+                  })
+                }
+                className="mt-3 h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 outline-none"
+              >
+                <option value="word">Word</option>
+                <option value="pdf">PDF</option>
+                <option value="markdown">Markdown</option>
+              </select>
+            </label>
+          </div>
+
+          <div className="mt-5 grid gap-3 md:grid-cols-3">
+            {[
+              ['autoNumberFigures', '自動編號圖片'],
+              ['autoNumberTables', '自動編號表格'],
+              ['compactPreview', '緊湊預覽版面'],
+            ].map(([key, label]) => (
+              <label
+                key={key}
+                className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4 text-sm font-semibold text-slate-700"
+              >
+                <span>{label}</span>
+                <input
+                  type="checkbox"
+                  checked={Boolean(notePreferences[key as keyof NotePreferences])}
+                  onChange={(event) => onChangeNotePreferences({ [key]: event.target.checked } as Partial<NotePreferences>)}
+                  className="h-4 w-4"
+                />
+              </label>
+            ))}
+          </div>
+        </section>
+
+        <section className="mt-6 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
             <div>
               <h2 className="text-lg font-semibold text-slate-950">自備 API Key</h2>
               <p className="mt-1 text-sm leading-6 text-slate-500">
-                適合你有自己的模型帳號。金鑰只保留在目前頁面狀態，不寫入瀏覽器或資料庫。
+                適合你有自己的模型帳號。金鑰只短暫停留在輸入框，按下安全儲存後會在後端加密並清空。
               </p>
               <div className="mt-5 grid gap-4">
                 <label className="block">
@@ -2034,26 +2177,41 @@ function AiSettingsView({
                     className="mt-2 h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-900 outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-100"
                   />
                 </label>
-                <button
-                  type="button"
-                  onClick={() => updateSettings({ userApiKey: '' })}
-                  disabled={!settings.userApiKey}
-                  className="w-fit rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  清除本次金鑰
-                </button>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={onSaveUserApiKey}
+                    disabled={
+                      userApiKeySaving ||
+                      !settings.userApiKey.trim() ||
+                      settings.userApiProvider === 'none'
+                    }
+                    className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {userApiKeySaving ? '儲存中...' : '安全儲存金鑰'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => updateSettings({ userApiKey: '' })}
+                    disabled={!settings.userApiKey}
+                    className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    清除輸入框
+                  </button>
+                </div>
               </div>
             </div>
             <div>
               <h2 className="text-lg font-semibold text-slate-950">可用工具</h2>
               <p className="mt-1 text-sm leading-6 text-slate-500">
-                先把工具入口留清楚，已完成的可以直接使用；Google Drive 需要後端 OAuth 才能真正連接。
+                已完成的工具可以直接使用；GitHub 第一次使用前需要先完成 OAuth 綁定。
               </p>
               <div className="mt-5 grid gap-3 sm:grid-cols-2">
                 {toolCards.map((tool) => (
                   <button
                     key={tool.title}
                     type="button"
+                    onClick={tool.title === 'GitHub 同步' ? onConnectGithub : undefined}
                     className="rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:-translate-y-0.5 hover:shadow-md"
                   >
                     <div className="flex items-start justify-between gap-3">
@@ -2283,12 +2441,18 @@ function BillingView({
   quota,
   quotaLoading,
   billingConfig,
+  actionLoading,
   onOpenAiSettings,
+  onStartCheckout,
+  onOpenCustomerPortal,
 }: {
   quota: AiQuota | null
   quotaLoading: boolean
   billingConfig: BillingConfig | null
+  actionLoading: 'checkout' | 'portal' | null
   onOpenAiSettings: () => void
+  onStartCheckout: () => void
+  onOpenCustomerPortal: () => void
 }) {
   const remainingPercent = quota ? Math.max(0, Math.min(100, (quota.remaining / Math.max(quota.limit, 1)) * 100)) : 0
   const isPro = quota?.plan === 'pro'
@@ -2399,16 +2563,19 @@ function BillingView({
             <div className="mt-auto pt-8">
               <button
                 type="button"
-                onClick={() => {
-                  if (billingConfig?.customer_portal_url) {
-                    window.location.href = billingConfig.customer_portal_url
-                    return
-                  }
-                  window.location.href = 'mailto:?subject=AutoLabReport Pro 等候名單&body=我想加入 AutoLabReport Pro 等候名單。'
-                }}
-                className="w-full rounded-xl bg-white px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-zinc-100"
+                onClick={isPro ? onOpenCustomerPortal : onStartCheckout}
+                disabled={!billingConfig?.enabled || Boolean(actionLoading)}
+                className="w-full rounded-xl bg-white px-4 py-3 text-sm font-semibold text-zinc-950 transition hover:bg-zinc-100 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {billingConfig?.enabled ? '管理訂閱' : '加入 Pro 等候名單'}
+                {actionLoading === 'checkout'
+                  ? '正在前往付款...'
+                  : actionLoading === 'portal'
+                    ? '正在開啟管理頁...'
+                    : isPro
+                      ? '管理訂閱'
+                      : billingConfig?.enabled
+                        ? '升級 Pro'
+                        : 'Stripe 尚未設定'}
               </button>
             </div>
           </section>
@@ -3923,10 +4090,12 @@ function WorkspaceApp({
   user,
   onSignOut,
   initialSharedDocument,
+  googleDriveAccessToken,
 }: {
   user: User | null
   onSignOut: () => void
   initialSharedDocument?: Document | null
+  googleDriveAccessToken?: string | null
 }) {
   const [initialWorkspace] = useState(() => {
     if (initialSharedDocument) {
@@ -3951,12 +4120,15 @@ function WorkspaceApp({
   const [preview, setPreview] = useState('')
   const [theme] = useState<'light' | 'dark'>(getInitialTheme)
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('synced')
+  const [collaborationStatus, setCollaborationStatus] =
+    useState<WebSocketStatus | 'idle'>('idle')
   const [renderError, setRenderError] = useState<string | null>(null)
   const [, setExporting] = useState(false)
   const [databaseLoading, setDatabaseLoading] = useState(false)
   const [isOutlineModalOpen, setIsOutlineModalOpen] = useState(false)
   const [isShareModalOpen, setIsShareModalOpen] = useState(false)
   const [isExtensionModalOpen, setIsExtensionModalOpen] = useState(false)
+  const [isGoogleDrivePickerOpen, setIsGoogleDrivePickerOpen] = useState(false)
   const [isAdvancedMenuOpen, setIsAdvancedMenuOpen] = useState(false)
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false)
   const [isAssistDrawerOpen, setIsAssistDrawerOpen] = useState(false)
@@ -3978,10 +4150,18 @@ function WorkspaceApp({
   const [outlineLoading, setOutlineLoading] = useState(false)
   const [aiSettings, setAiSettings] = useState<AiSettings>(getInitialAiSettings)
   const [aiTaskLoading, setAiTaskLoading] = useState<AiAction | null>(null)
+  const [userApiKeySaving, setUserApiKeySaving] = useState(false)
   const [aiQuota, setAiQuota] = useState<AiQuota | null>(null)
   const [aiQuotaLoading, setAiQuotaLoading] = useState(false)
   const [billingConfig, setBillingConfig] = useState<BillingConfig | null>(null)
+  const [billingActionLoading, setBillingActionLoading] = useState<'checkout' | 'portal' | null>(null)
   const [bridgeToast, setBridgeToast] = useState<string | null>(null)
+  const {
+    preferences: notePreferences,
+    updatePreferences: updateNotePreferences,
+    isLoading: preferencesLoading,
+    isSaving: preferencesSaving,
+  } = useSettings({ supabase, user, onError: setBridgeToast })
   const [shareCopied, setShareCopied] = useState(false)
   const [, setCollaborators] = useState<CollaboratorPresence[]>([])
   const [anonymousIdentity] = useState(getInitialAnonymousIdentity)
@@ -4008,7 +4188,7 @@ function WorkspaceApp({
   const userMenuRef = useRef<HTMLDivElement | null>(null)
   const editorImportInputRef = useRef<HTMLInputElement | null>(null)
   const documentsRef = useRef<Document[]>(documents)
-  const providerRef = useRef<WebrtcProvider | null>(null)
+  const providerRef = useRef<HocuspocusProvider | null>(null)
   const ytextRef = useRef<YText | null>(null)
   const ytextObserverCleanupRef = useRef<(() => void) | null>(null)
   const isApplyingRemoteRef = useRef(false)
@@ -4057,6 +4237,28 @@ function WorkspaceApp({
       window.history.replaceState(null, '', nextPath)
     }
   }, [currentView])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const params = new URLSearchParams(window.location.search)
+    const githubStatus = params.get('github')
+    if (!githubStatus) return
+
+    const message =
+      githubStatus === 'connected'
+        ? 'GitHub 已綁定，可以同步報告了'
+        : `GitHub 綁定失敗：${params.get('message') ?? 'unknown error'}`
+    params.delete('github')
+    params.delete('message')
+    const nextSearch = params.toString()
+    window.history.replaceState(
+      null,
+      '',
+      `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`,
+    )
+    const timer = window.setTimeout(() => setBridgeToast(message), 0)
+    return () => window.clearTimeout(timer)
+  }, [])
 
   const applyLoadedDocument = useCallback((document: Document) => {
     setActiveDocumentId(document.id)
@@ -4194,6 +4396,56 @@ function WorkspaceApp({
     window.localStorage.setItem(AI_SETTINGS_STORAGE_KEY, JSON.stringify(getPersistableAiSettings(aiSettings)))
   }, [aiSettings])
 
+  async function saveUserApiKey() {
+    if (!user) {
+      setBridgeToast('請先登入後再安全儲存 API Key')
+      return
+    }
+    if (aiSettings.userApiProvider === 'none' || !aiSettings.userApiKey.trim()) {
+      setBridgeToast('請先選擇 API Provider 並填入 API Key')
+      return
+    }
+
+    setUserApiKeySaving(true)
+    try {
+      const authHeaders = await getAuthHeaders()
+      const res = await fetch(`${API_BASE_URL}/api/keys/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({
+          api_provider: aiSettings.userApiProvider,
+          api_key: aiSettings.userApiKey,
+        }),
+      })
+
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`
+        try {
+          const err = (await res.json()) as { detail?: string }
+          if (err.detail) detail = err.detail
+        } catch {
+          /* response may not be JSON */
+        }
+        throw new Error(detail)
+      }
+
+      setAiSettings((currentSettings) =>
+        normalizeAiSettings({
+          ...currentSettings,
+          preferredProvider: 'user_api_key',
+          userApiProvider: aiSettings.userApiProvider,
+          userApiKey: '',
+        }),
+      )
+      setBridgeToast('API Key 已加密儲存，輸入框已清空')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'API Key 儲存失敗'
+      setBridgeToast(`API Key 儲存失敗：${message}`)
+    } finally {
+      setUserApiKeySaving(false)
+    }
+  }
+
   useEffect(() => {
     let isCancelled = false
 
@@ -4221,6 +4473,79 @@ function WorkspaceApp({
       isCancelled = true
     }
   }, [])
+
+  async function openStripeSession(endpoint: string, loadingState: 'checkout' | 'portal') {
+    if (!user) {
+      setBridgeToast('請先登入後再管理訂閱')
+      return
+    }
+
+    setBillingActionLoading(loadingState)
+    try {
+      const authHeaders = await getAuthHeaders()
+      const currentUrl = window.location.href
+      const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({
+          success_url: currentUrl,
+          cancel_url: currentUrl,
+          return_url: currentUrl,
+        }),
+      })
+
+      if (!res.ok) {
+        let detail = `HTTP ${res.status}`
+        try {
+          const err = (await res.json()) as { detail?: string }
+          if (err.detail) detail = err.detail
+        } catch {
+          /* response may not be JSON */
+        }
+        throw new Error(detail)
+      }
+
+      const data = (await res.json()) as { url?: string }
+      if (!data.url) throw new Error('後端未回傳 Stripe URL')
+      window.location.href = data.url
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Stripe 操作失敗'
+      setBridgeToast(`Stripe 操作失敗：${message}`)
+    } finally {
+      setBillingActionLoading(null)
+    }
+  }
+
+  function startStripeCheckout() {
+    void openStripeSession('/api/stripe/create-checkout-session', 'checkout')
+  }
+
+  function openStripeCustomerPortal() {
+    void openStripeSession('/api/stripe/create-portal-session', 'portal')
+  }
+
+  async function connectGithub() {
+    if (!user) {
+      setBridgeToast('請先登入後再綁定 GitHub')
+      return
+    }
+
+    try {
+      const authHeaders = await getAuthHeaders()
+      const res = await fetch(`${API_BASE_URL}/api/github/oauth/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ return_url: `${window.location.origin}/dashboard/settings` }),
+      })
+      const data = (await res.json().catch(() => null)) as { url?: string; detail?: string } | null
+      if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`)
+      if (!data?.url) throw new Error('後端未回傳 GitHub OAuth URL')
+      window.location.href = data.url
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'GitHub 綁定失敗'
+      setBridgeToast(`GitHub 綁定失敗：${message}`)
+    }
+  }
 
   useEffect(() => {
     if (!supabase || !user) {
@@ -4466,16 +4791,11 @@ function WorkspaceApp({
     }
   }, [applyLoadedDocument, documents, readDocumentCollaborators, shouldUseSupabaseDocuments, user])
 
-  useEffect(() => {
-    function handleAutoLabReportInsert(event: Event) {
+  useExtensionBridge(({ text: incomingText }) => {
       if (!canEditActiveDocumentRef.current) {
         setBridgeToast('此文件目前為唯讀模式，無法插入內容')
         return
       }
-
-      const customEvent = event as CustomEvent<{ text?: string }>
-      const incomingText = customEvent.detail?.text?.trim()
-      if (!incomingText) return
 
       const ytext = ytextRef.current
       const ed = editorRef.current
@@ -4520,16 +4840,7 @@ function WorkspaceApp({
       }
 
       setBridgeToast('成功接收 AI 內容並同步至協作房間')
-    }
-
-    window.addEventListener('AutoLabReport_Insert', handleAutoLabReportInsert)
-    window.addEventListener('autolabreport:bridge-text', handleAutoLabReportInsert)
-
-    return () => {
-      window.removeEventListener('AutoLabReport_Insert', handleAutoLabReportInsert)
-      window.removeEventListener('autolabreport:bridge-text', handleAutoLabReportInsert)
-    }
-  }, [])
+  })
 
   useEffect(() => {
     if (!bridgeToast) return
@@ -4544,7 +4855,8 @@ function WorkspaceApp({
   }, [bridgeToast])
 
   useEffect(() => {
-    if (!activeDocumentId) return
+    if (!activeDocumentId || !user || !supabase) return
+    const collaborationSupabase = supabase
 
     let isCancelled = false
     let cleanupCollaboration: (() => void) | null = null
@@ -4554,51 +4866,29 @@ function WorkspaceApp({
     ytextRef.current = null
 
     async function setupCollaboration() {
-      const activeDoc = documentsRef.current.find((document) => document.id === activeDocumentId)
       const roomDoc = await getDocumentYDoc(activeDocumentId)
       if (isCancelled) return
 
-      const ytext = roomDoc.getText(YTEXT_NAME)
-
-      if (ytext.length === 0 && activeDoc?.content) {
-        roomDoc.transact(() => {
-          ytext.insert(0, activeDoc.content)
-        }, LOCAL_YJS_ORIGIN)
-      }
-
-      ytextRef.current = ytext
-      const nextMarkdown = ytext.toString()
-      isApplyingRemoteRef.current = true
-      updateMarkdownValue(nextMarkdown)
-      editorRef.current?.setValue(nextMarkdown)
-      isApplyingRemoteRef.current = false
-
-      const { WebrtcProvider: WebrtcProviderCtor } = await import('y-webrtc')
+      const [{ HocuspocusProvider: HocuspocusProviderCtor }, { IndexeddbPersistence }] =
+        await Promise.all([
+          import('@hocuspocus/provider'),
+          import('y-indexeddb'),
+        ])
       if (isCancelled) return
 
-      const provider = new WebrtcProviderCtor(activeDocumentId, roomDoc)
-      providerRef.current = provider
-      provider.awareness.setLocalStateField('user', awarenessUser)
-      if (editorRef.current) {
-        const cursorState = getCursorAwarenessState(editorRef.current, awarenessUser)
-        if (cursorState) {
-          provider.awareness.setLocalStateField('cursor', cursorState)
-        }
+      const localPersistence = new IndexeddbPersistence(
+        `autolabreport-yjs-${activeDocumentId}`,
+        roomDoc,
+      )
+      await localPersistence.whenSynced
+      if (isCancelled) {
+        await localPersistence.destroy()
+        return
       }
 
-      const syncCollaborators = () => {
-        const nextCollaborators = Array.from(provider.awareness.getStates().entries())
-          .map(([clientId, state]) =>
-            getCollaboratorFromAwarenessState(clientId, state, roomDoc.clientID),
-          )
-          .filter((collaborator): collaborator is CollaboratorPresence => Boolean(collaborator))
-          .sort((left, right) => Number(right.isLocal) - Number(left.isLocal) || left.name.localeCompare(right.name))
-
-        setCollaborators(nextCollaborators)
-      }
-
-      provider.awareness.on('change', syncCollaborators)
-      syncCollaborators()
+      const ytext = roomDoc.getText(YTEXT_NAME)
+      let isYTextBound = false
+      let tokenRefreshTimer = 0
 
       const handleYTextChange = () => {
         const remoteValue = ytext.toString()
@@ -4610,17 +4900,89 @@ function WorkspaceApp({
         isApplyingRemoteRef.current = false
       }
 
-      ytext.observe(handleYTextChange)
-      ytextObserverCleanupRef.current = () => {
-        ytext.unobserve(handleYTextChange)
+      const bindYText = () => {
+        if (isYTextBound) return
+        isYTextBound = true
+        ytextRef.current = ytext
+        handleYTextChange()
+        ytext.observe(handleYTextChange)
+        ytextObserverCleanupRef.current = () => {
+          ytext.unobserve(handleYTextChange)
+        }
       }
 
+      // IndexedDB contains real Yjs history, so it is safe to bind before the
+      // network sync. A brand-new empty doc waits for the server seed to avoid
+      // independently inserting the same Markdown twice.
+      if (ytext.length > 0) bindYText()
+
+      const getCollaborationToken = async () => {
+        const { data, error } = await collaborationSupabase.auth.getSession()
+        const accessToken = data.session?.access_token
+        if (error || !accessToken) throw new Error('協作登入憑證已失效')
+        return accessToken
+      }
+
+      const provider = new HocuspocusProviderCtor({
+        url: COLLABORATION_URL,
+        name: activeDocumentId,
+        document: roomDoc,
+        token: getCollaborationToken,
+        forceSyncInterval: 30_000,
+        onStatus: ({ status }) => {
+          if (!isCancelled) setCollaborationStatus(status)
+        },
+        onSynced: ({ state }) => {
+          if (!state || isCancelled) return
+          bindYText()
+        },
+        onAuthenticationFailed: ({ reason }) => {
+          if (!isCancelled) {
+            setBridgeToast(`協作權限驗證失敗：${reason || '請重新登入'}`)
+          }
+        },
+      })
+      providerRef.current = provider
+      const awareness = provider.awareness
+      if (!awareness) throw new Error('協作 Awareness 初始化失敗')
+
+      awareness.setLocalStateField('user', awarenessUser)
+      if (editorRef.current) {
+        const cursorState = getCursorAwarenessState(editorRef.current, awarenessUser)
+        if (cursorState) {
+          awareness.setLocalStateField('cursor', cursorState)
+        }
+      }
+
+      const syncCollaborators = () => {
+        const nextCollaborators = Array.from(awareness.getStates().entries())
+          .map(([clientId, state]) =>
+            getCollaboratorFromAwarenessState(clientId, state, roomDoc.clientID),
+          )
+          .filter((collaborator): collaborator is CollaboratorPresence => Boolean(collaborator))
+          .sort((left, right) => Number(right.isLocal) - Number(left.isLocal) || left.name.localeCompare(right.name))
+
+        setCollaborators(nextCollaborators)
+      }
+
+      awareness.on('change', syncCollaborators)
+      syncCollaborators()
+
+      tokenRefreshTimer = window.setInterval(() => {
+        void provider.sendToken().catch(() => {
+          if (!isCancelled) setBridgeToast('協作登入憑證更新失敗，正在重新連線')
+        })
+      }, 5 * 60 * 1000)
+
       cleanupCollaboration = () => {
-        ytext.unobserve(handleYTextChange)
+        setCollaborationStatus('idle')
+        if (tokenRefreshTimer) window.clearInterval(tokenRefreshTimer)
+        if (isYTextBound) ytext.unobserve(handleYTextChange)
         ytextObserverCleanupRef.current = null
-        provider.awareness.off('change', syncCollaborators)
+        awareness.off('change', syncCollaborators)
         setCollaborators([])
         provider.destroy()
+        void localPersistence.destroy()
         if (providerRef.current === provider) {
           providerRef.current = null
         }
@@ -4641,7 +5003,7 @@ function WorkspaceApp({
       providerRef.current = null
       ytextRef.current = null
     }
-  }, [activeDocumentId, awarenessUser])
+  }, [activeDocumentId, awarenessUser, user])
 
   useEffect(() => {
     if (isEditorEmpty) {
@@ -4651,7 +5013,10 @@ function WorkspaceApp({
     const controller = new AbortController()
 
     const timer = window.setTimeout(async () => {
-      const previewMarkdown = applyAutoNumbering(markdown)
+      const previewMarkdown = applyAutoNumbering(markdown, {
+        figures: notePreferences.autoNumberFigures,
+        tables: notePreferences.autoNumberTables,
+      })
       setPreview(previewMarkdown)
       setSyncStatus('synced')
       setRenderError(null)
@@ -4685,7 +5050,7 @@ function WorkspaceApp({
       clearTimeout(timer)
       controller.abort()
     }
-  }, [markdown, isEditorEmpty])
+  }, [markdown, isEditorEmpty, notePreferences.autoNumberFigures, notePreferences.autoNumberTables])
 
   function updateMarkdownValue(value: string) {
     setMarkdown(value)
@@ -4767,9 +5132,10 @@ function WorkspaceApp({
   function updateLocalCursorAwareness(ed: editor.IStandaloneCodeEditor) {
     const provider = providerRef.current
     const cursorState = getCursorAwarenessState(ed, awarenessUser)
-    if (!provider || !cursorState) return
+    const awareness = provider?.awareness
+    if (!awareness || !cursorState) return
 
-    provider.awareness.setLocalStateField('cursor', cursorState)
+    awareness.setLocalStateField('cursor', cursorState)
   }
 
   function updateAiSelectionMenu(ed: editor.IStandaloneCodeEditor) {
@@ -4864,8 +5230,8 @@ function WorkspaceApp({
     const promptTemplate = request.prompt ?? getPromptTemplateForAction(aiSettings, request.action)
     const prompt = fillPromptTemplate(promptTemplate, cleanText, request.action)
 
-    if (provider === 'user_api_key' && (!aiSettings.userApiKey.trim() || aiSettings.userApiProvider === 'none')) {
-      setBridgeToast('請先到 AI 設定填入 API Provider 與 API Key')
+    if (provider === 'user_api_key' && aiSettings.userApiProvider === 'none') {
+      setBridgeToast('請先到 AI 設定選擇 API Provider 並安全儲存 API Key')
       return null
     }
 
@@ -4897,7 +5263,6 @@ function WorkspaceApp({
           document_id: request.documentId ?? activeDocumentId,
           prompt,
           api_provider: provider === 'user_api_key' ? aiSettings.userApiProvider : undefined,
-          api_key: provider === 'user_api_key' ? aiSettings.userApiKey : undefined,
           model: aiSettings.defaultModel || undefined,
         }),
       })
@@ -4940,8 +5305,8 @@ function WorkspaceApp({
     const provider: Exclude<AiProvider, 'extension'> =
       aiSettings.preferredProvider === 'extension' ? 'built_in' : aiSettings.preferredProvider
 
-    if (provider === 'user_api_key' && (!aiSettings.userApiKey.trim() || aiSettings.userApiProvider === 'none')) {
-      setBridgeToast('請先到 AI 設定填入 API Provider 與 API Key')
+    if (provider === 'user_api_key' && aiSettings.userApiProvider === 'none') {
+      setBridgeToast('請先到 AI 設定選擇 API Provider 並安全儲存 API Key')
       return
     }
 
@@ -4960,7 +5325,6 @@ function WorkspaceApp({
           selected_text: getSelectedEditorText(),
           document_id: activeDocumentId,
           api_provider: provider === 'user_api_key' ? aiSettings.userApiProvider : undefined,
-          api_key: provider === 'user_api_key' ? aiSettings.userApiKey : undefined,
           model: aiSettings.defaultModel || undefined,
         }),
       })
@@ -5130,6 +5494,28 @@ function WorkspaceApp({
     ed.focus()
   }
 
+  async function uploadPastedImage(file: File): Promise<string> {
+    if (!supabase || !user) {
+      return readFileAsDataUrl(file)
+    }
+
+    const path = createReportImagePath(file, user.id, activeDocumentId)
+    const { error } = await supabase.storage
+      .from(REPORT_IMAGE_BUCKET)
+      .upload(path, file, {
+        cacheControl: '3600',
+        contentType: file.type || 'image/png',
+        upsert: false,
+      })
+
+    if (error) throw error
+
+    const { data } = supabase.storage.from(REPORT_IMAGE_BUCKET).getPublicUrl(path)
+    if (!data.publicUrl) throw new Error('Supabase 未回傳圖片公開網址')
+
+    return data.publicUrl
+  }
+
   function handleEditorPaste(event: ClipboardEvent) {
     if (!canEditActiveDocumentRef.current) return
 
@@ -5139,13 +5525,22 @@ function WorkspaceApp({
     if (imageFile) {
       event.preventDefault()
       event.stopPropagation()
-      void readFileAsDataUrl(imageFile)
-        .then((dataUrl) => {
-          if (!dataUrl) return
-          insertAtCursor(`![pasted-image](${dataUrl})`)
-          setBridgeToast('圖片已貼上為 Markdown')
+      setBridgeToast(supabase && user ? '正在上傳圖片...' : '正在處理圖片...')
+      void uploadPastedImage(imageFile)
+        .then((imageUrl) => {
+          if (!imageUrl) return
+          insertAtCursor(`![pasted-image](${imageUrl})`)
+          setBridgeToast(supabase && user ? '圖片已上傳並貼上' : '圖片已貼上為 Markdown')
         })
-        .catch(() => setBridgeToast('圖片貼上失敗'))
+        .catch(async () => {
+          try {
+            const dataUrl = await readFileAsDataUrl(imageFile)
+            insertAtCursor(`![pasted-image](${dataUrl})`)
+            setBridgeToast('雲端上傳失敗，已改用本地 base64 貼上')
+          } catch {
+            setBridgeToast('圖片貼上失敗')
+          }
+        })
       return
     }
 
@@ -5290,6 +5685,47 @@ function WorkspaceApp({
     setIsSidebarCollapsed(true)
     setCurrentView('editor')
     setBridgeToast('Markdown 檔案已匯入')
+  }
+
+  function openGoogleDrivePicker() {
+    if (!googleDriveAccessToken) {
+      setBridgeToast('請使用 Google 重新登入並授權 Google Drive readonly')
+      return
+    }
+    setIsGoogleDrivePickerOpen(true)
+  }
+
+  async function importMarkdownFromGoogleDrive({ title, markdown: importedMarkdown }: { title: string; markdown: string }) {
+    const safeTitle = title.trim() || 'Google Drive 匯入報告'
+
+    if (supabase && shouldUseSupabaseDocuments) {
+      setDatabaseLoading(true)
+      try {
+        const { data, error } = await supabase
+          .from('documents')
+          .insert([{ title: safeTitle, content: importedMarkdown, share_setting: 'private' }])
+          .select('*')
+          .single()
+        if (error) throw error
+
+        const nextDocument = mapSupabaseDocument(data as SupabaseDocumentRow)
+        await refreshSupabaseDocuments(nextDocument.id)
+        setIsSidebarCollapsed(true)
+        setCurrentView('editor')
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Google Drive 匯入失敗'
+        setBridgeToast(`Google Drive 匯入失敗：${message}`)
+      } finally {
+        setDatabaseLoading(false)
+      }
+      return
+    }
+
+    const nextDocument = createDocument(safeTitle, importedMarkdown, null)
+    setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
+    loadDocument(nextDocument)
+    setIsSidebarCollapsed(true)
+    setCurrentView('editor')
   }
 
   async function createDocumentFromTemplate(template: ReportTemplate) {
@@ -5679,7 +6115,10 @@ function WorkspaceApp({
     setExporting(true)
     setSyncStatus(status)
     try {
-      const exportMarkdown = applyAutoNumbering(markdown)
+      const exportMarkdown = applyAutoNumbering(markdown, {
+        figures: notePreferences.autoNumberFigures,
+        tables: notePreferences.autoNumberTables,
+      })
       const res = await fetch(`${API_BASE_URL}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -5783,7 +6222,11 @@ function WorkspaceApp({
     }
 
     const filename = `${activeDocument?.title ?? 'AutoLabReport'}.md`
-    const blob = new Blob([markdown], { type: 'text/markdown;charset=utf-8' })
+    const exportMarkdown = applyAutoNumbering(markdown, {
+      figures: notePreferences.autoNumberFigures,
+      tables: notePreferences.autoNumberTables,
+    })
+    const blob = new Blob([exportMarkdown], { type: 'text/markdown;charset=utf-8' })
     const url = window.URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
@@ -5793,6 +6236,19 @@ function WorkspaceApp({
     link.remove()
     window.URL.revokeObjectURL(url)
     setIsAdvancedMenuOpen(false)
+  }
+
+  function exportDefaultReport() {
+    if (notePreferences.defaultExportFormat === 'pdf') {
+      return exportPdfReport()
+    }
+
+    if (notePreferences.defaultExportFormat === 'markdown') {
+      downloadMarkdownReport()
+      return
+    }
+
+    return exportWordReport()
   }
 
   function saveActiveDocumentVersion(note = '手動儲存') {
@@ -5834,9 +6290,64 @@ function WorkspaceApp({
     setBridgeToast(`已還原 ${formatDocumentTime(version.createdAt)} 的版本`)
   }
 
-  function syncWithGithub() {
-    setBridgeToast('GitHub 同步功能準備中')
+  async function syncWithGithub() {
+    if (!activeDocument) {
+      setBridgeToast('請先開啟一份報告')
+      return
+    }
+    if (!user) {
+      setBridgeToast('請先登入後再同步 GitHub')
+      return
+    }
+    if (!markdown.trim()) {
+      setBridgeToast('目前報告內容是空的，無法同步')
+      return
+    }
+
+    const savedRepo = window.localStorage.getItem('autoLabReport_githubRepo') ?? ''
+    const repo = window.prompt('GitHub Repo（格式：owner/repo）', savedRepo)
+    if (!repo?.trim()) return
+
+    const defaultPath = `reports/${activeDocument.title.replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/^-+|-+$/g, '') || 'AutoLabReport'}.md`
+    const savedPath = window.localStorage.getItem('autoLabReport_githubPath') ?? defaultPath
+    const path = window.prompt('同步到 Repo 內的路徑', savedPath)
+    if (!path?.trim()) return
+
+    const branch = window.prompt('目標分支（留空使用 GitHub 預設分支）', window.localStorage.getItem('autoLabReport_githubBranch') ?? '')
+    setBridgeToast('正在同步到 GitHub...')
     setIsAdvancedMenuOpen(false)
+    try {
+      const authHeaders = await getAuthHeaders()
+      const res = await fetch(`${API_BASE_URL}/api/github/sync`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({
+          title: activeDocument.title,
+          markdown,
+          repo: repo.trim(),
+          path: path.trim(),
+          branch: branch?.trim() || null,
+        }),
+      })
+      const data = (await res.json().catch(() => null)) as {
+        action?: 'created' | 'updated'
+        html_url?: string
+        detail?: string
+      } | null
+      if (!res.ok) throw new Error(data?.detail || `HTTP ${res.status}`)
+
+      window.localStorage.setItem('autoLabReport_githubRepo', repo.trim())
+      window.localStorage.setItem('autoLabReport_githubPath', path.trim())
+      window.localStorage.setItem('autoLabReport_githubBranch', branch?.trim() || '')
+      setBridgeToast(data?.action === 'updated' ? '已更新 GitHub 檔案' : '已建立 GitHub 檔案')
+      if (data?.html_url) window.open(data.html_url, '_blank', 'noopener,noreferrer')
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'GitHub 同步失敗'
+      setBridgeToast(`GitHub 同步失敗：${message}`)
+      if (message.includes('尚未綁定 GitHub')) {
+        setCurrentView('settings')
+      }
+    }
   }
 
   async function shareCurrentDocument() {
@@ -5858,7 +6369,7 @@ function WorkspaceApp({
       return
     }
 
-    const shareUrl = `${window.location.origin}/editor/${encodeURIComponent(targetDocument.id)}`
+    const shareUrl = `${window.location.origin}/p/${encodeURIComponent(targetDocument.id)}`
 
     try {
       await navigator.clipboard.writeText(shareUrl)
@@ -6198,6 +6709,16 @@ function WorkspaceApp({
             {syncStatus === 'error' && (
               <span className="text-sm font-medium text-red-500">同步失敗</span>
             )}
+            {collaborationStatus === 'connecting' && (
+              <span className="hidden text-xs font-medium text-amber-600 sm:inline">
+                協作連線中
+              </span>
+            )}
+            {collaborationStatus === 'disconnected' && (
+              <span className="hidden text-xs font-medium text-red-500 sm:inline">
+                協作離線
+              </span>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
@@ -6344,13 +6865,12 @@ function WorkspaceApp({
                     onClick={() => {
                       setIsAdvancedMenuOpen(false)
                       saveActiveDocumentVersion()
-                      syncWithGithub()
-                      setCurrentView('history')
+                      void syncWithGithub()
                     }}
                     className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
                   >
                     <History className="h-4 w-4" strokeWidth={2} />
-                    版本與 GitHub 同步
+                    同步到 GitHub
                   </button>
                   <button
                     type="button"
@@ -6475,6 +6995,28 @@ function WorkspaceApp({
                   >
                     <FileUp className="h-4 w-4" strokeWidth={2} />
                     匯入 Markdown
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAdvancedMenuOpen(false)
+                      openGoogleDrivePicker()
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
+                  >
+                    <Cloud className="h-4 w-4" strokeWidth={2} />
+                    從 Google Drive 匯入
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAdvancedMenuOpen(false)
+                      void exportDefaultReport()
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
+                  >
+                    <Download className="h-4 w-4" strokeWidth={2} />
+                    按預設格式匯出
                   </button>
                   <button
                     type="button"
@@ -6610,7 +7152,14 @@ function WorkspaceApp({
           settings={aiSettings}
           quota={aiQuota}
           quotaLoading={aiQuotaLoading}
+          userApiKeySaving={userApiKeySaving}
+          notePreferences={notePreferences}
+          preferencesLoading={preferencesLoading}
+          preferencesSaving={preferencesSaving}
+          onConnectGithub={connectGithub}
           onChangeSettings={setAiSettings}
+          onSaveUserApiKey={saveUserApiKey}
+          onChangeNotePreferences={updateNotePreferences}
         />
       ) : currentView === 'prompts' ? (
         <PromptLibraryView
@@ -6624,7 +7173,10 @@ function WorkspaceApp({
           quota={aiQuota}
           quotaLoading={aiQuotaLoading}
           billingConfig={billingConfig}
+          actionLoading={billingActionLoading}
           onOpenAiSettings={() => setCurrentView('settings')}
+          onStartCheckout={startStripeCheckout}
+          onOpenCustomerPortal={openStripeCustomerPortal}
         />
       ) : currentView === 'quality' ? (
         <ReportQualityView
@@ -6693,14 +7245,23 @@ function WorkspaceApp({
                 </div>
               ))}
             </div>
-            <button
-              type="button"
-              onClick={() => setIsAssistDrawerOpen(true)}
-              className="inline-flex h-8 shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
-            >
-              <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
-              AI Assist
-            </button>
+            <div className="flex shrink-0 items-center gap-2">
+              <ScreenRecorderControls
+                supabase={supabase}
+                userId={user?.id ?? null}
+                documentId={activeDocumentId || null}
+                onUploaded={() => setBridgeToast('錄影已上傳')}
+                onError={setBridgeToast}
+              />
+              <button
+                type="button"
+                onClick={() => setIsAssistDrawerOpen(true)}
+                className="inline-flex h-8 shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
+              >
+                <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
+                AI Assist
+              </button>
+            </div>
           </div>
           <div className="relative min-h-[280px] flex-1 flex-grow bg-slate-50 font-mono leading-relaxed lg:min-h-0">
             {aiSelectionMenu.visible && (
@@ -6802,8 +7363,8 @@ function WorkspaceApp({
                   lineNumbers: 'on',
                   minimap: { enabled: false },
                   wordWrap: 'on',
-                  fontSize: 16,
-                  lineHeight: 28,
+                  fontSize: notePreferences.editorFontSize,
+                  lineHeight: notePreferences.editorLineHeight,
                   fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
                   scrollBeyondLastLine: false,
                   overviewRulerBorder: false,
@@ -6861,7 +7422,11 @@ function WorkspaceApp({
             ) : preview ? (
               <div
                 id="pdf-preview-content"
-                className="pdf-export-surface markdown-preview prose prose-slate mx-auto min-h-[calc(100vh-9rem)] max-w-4xl bg-white px-4 py-8 text-slate-900 transition-colors duration-300 prose-headings:font-semibold prose-p:leading-loose lg:px-10 lg:py-12"
+                className={`pdf-export-surface markdown-preview prose prose-slate mx-auto min-h-[calc(100vh-9rem)] max-w-4xl bg-white text-slate-900 transition-colors duration-300 prose-headings:font-semibold prose-p:leading-loose ${
+                  notePreferences.compactPreview
+                    ? 'px-3 py-5 prose-p:my-2 lg:px-6 lg:py-8'
+                    : 'px-4 py-8 lg:px-10 lg:py-12'
+                }`}
               >
                 <ReactMarkdown
                   remarkPlugins={REMARK_PLUGINS}
@@ -7496,7 +8061,7 @@ function WorkspaceApp({
                     { label: '下載', icon: Download, action: () => void exportWordReport() },
                     { label: '公開查看', icon: ExternalLink, action: () => void updateShareSetting('view') },
                     { label: '錄製', icon: Video, action: () => setBridgeToast('錄製功能準備中') },
-                    { label: 'Google Drive', icon: Cloud, action: () => setBridgeToast('Google Drive 連接需要設定 OAuth Client ID') },
+                    { label: 'Google Drive', icon: Cloud, action: openGoogleDrivePicker },
                   ].map((item) => (
                     <button
                       key={item.label}
@@ -7598,6 +8163,14 @@ function WorkspaceApp({
         </div>
       )}
 
+      <GoogleDrivePicker
+        isOpen={isGoogleDrivePickerOpen}
+        accessToken={googleDriveAccessToken ?? null}
+        onClose={() => setIsGoogleDrivePickerOpen(false)}
+        onImport={importMarkdownFromGoogleDrive}
+        onNotify={setBridgeToast}
+      />
+
       {bridgeToast && (
         <div className="fixed bottom-5 right-5 z-[60] rounded-lg bg-zinc-950 px-4 py-3 text-sm font-medium text-white shadow-2xl dark:bg-zinc-100 dark:text-zinc-950">
           {bridgeToast}
@@ -7608,7 +8181,11 @@ function WorkspaceApp({
 }
 
 function App() {
+  const publicReportId =
+    typeof window !== 'undefined' ? window.location.pathname.match(/^\/p\/([^/]+)/) : null
+  const publicReportShareId = publicReportId?.[1] ? decodeURIComponent(publicReportId[1]) : null
   const [user, setUser] = useState<User | null>(null)
+  const [googleDriveAccessToken, setGoogleDriveAccessToken] = useState<string | null>(null)
   const [authLoading, setAuthLoading] = useState(Boolean(supabase))
   const [authMessage, setAuthMessage] = useState<string | null>(null)
   const [publicRouteLoading, setPublicRouteLoading] = useState(false)
@@ -7619,16 +8196,21 @@ function App() {
 
     let isMounted = true
 
+    function syncSession(session: Session | null | undefined) {
+      setUser(session?.user ?? null)
+      setGoogleDriveAccessToken(session?.provider_token ?? null)
+    }
+
     supabase.auth.getSession().then(({ data }) => {
       if (!isMounted) return
-      setUser(data.session?.user ?? null)
+      syncSession(data.session)
       setAuthLoading(false)
     })
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null)
+      syncSession(session)
       setAuthLoading(false)
     })
 
@@ -7640,6 +8222,7 @@ function App() {
 
   useEffect(() => {
     if (authLoading) return
+    if (publicReportShareId) return
 
     if (user) {
       const clearTimer = window.setTimeout(() => {
@@ -7702,7 +8285,11 @@ function App() {
       isCancelled = true
       window.clearTimeout(loadTimer)
     }
-  }, [authLoading, user])
+  }, [authLoading, publicReportShareId, user])
+
+  if (publicReportShareId) {
+    return <PublicReport shareId={publicReportShareId} />
+  }
 
   async function signInWithOAuth(provider: Provider) {
     setAuthMessage(null)
@@ -7761,6 +8348,7 @@ function App() {
 
   async function signOut() {
     setUser(null)
+    setGoogleDriveAccessToken(null)
     if (supabase) {
       await supabase.auth.signOut()
     }
@@ -7778,6 +8366,7 @@ function App() {
     return (
       <WorkspaceApp
         user={null}
+        googleDriveAccessToken={null}
         initialSharedDocument={publicSharedDocument}
         onSignOut={() => {
           window.location.href = '/'
@@ -7800,6 +8389,7 @@ function App() {
   return (
     <WorkspaceApp
       user={user}
+      googleDriveAccessToken={googleDriveAccessToken}
       onSignOut={signOut}
     />
   )
