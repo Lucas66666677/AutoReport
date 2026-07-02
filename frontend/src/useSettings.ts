@@ -31,6 +31,15 @@ function normalizeExportFormat(value: unknown): DefaultExportFormat {
   return value === 'pdf' || value === 'markdown' || value === 'word' ? value : DEFAULT_NOTE_PREFERENCES.defaultExportFormat
 }
 
+function getErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim()) return error.message
+  if (error && typeof error === 'object' && 'message' in error) {
+    const message = (error as { message?: unknown }).message
+    if (typeof message === 'string' && message.trim()) return message
+  }
+  return fallback
+}
+
 export function normalizeNotePreferences(input: unknown): NotePreferences {
   const source = input && typeof input === 'object' ? (input as Partial<NotePreferences>) : {}
 
@@ -98,13 +107,36 @@ export function useSettings({
         if (isCancelled) return
         if (error) throw error
 
-        const nextPreferences = normalizeNotePreferences(data?.preferences)
+        let profile = data
+        if (!profile) {
+          const metadata = user.user_metadata ?? {}
+          const { data: createdProfile, error: createError } = await supabase
+            .from('profiles')
+            .upsert(
+              {
+                id: user.id,
+                email: user.email ?? null,
+                full_name: metadata.full_name ?? metadata.name ?? null,
+                avatar_url: metadata.avatar_url ?? null,
+                preferences: DEFAULT_NOTE_PREFERENCES,
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: 'id' },
+            )
+            .select('preferences')
+            .single()
+          if (createError) throw createError
+          profile = createdProfile
+        }
+
+        if (isCancelled) return
+        const nextPreferences = normalizeNotePreferences(profile?.preferences)
         setPreferences(nextPreferences)
         lastSavedJsonRef.current = JSON.stringify(nextPreferences)
         hasLoadedRef.current = true
       } catch (err) {
         if (isCancelled) return
-        const message = err instanceof Error ? err.message : '偏好設定讀取失敗'
+        const message = getErrorMessage(err, '請確認已執行 profiles preferences migration')
         onError?.(`偏好設定讀取失敗：${message}`)
         const defaults = normalizeNotePreferences(DEFAULT_NOTE_PREFERENCES)
         setPreferences(defaults)
@@ -137,15 +169,19 @@ export function useSettings({
         try {
           const { error } = await supabase
             .from('profiles')
-            .update({
-              preferences: normalizedPreferences,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', user.id)
+            .upsert(
+              {
+                id: user.id,
+                email: user.email ?? null,
+                preferences: normalizedPreferences,
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: 'id' },
+            )
           if (error) throw error
           lastSavedJsonRef.current = nextJson
         } catch (err) {
-          const message = err instanceof Error ? err.message : '偏好設定儲存失敗'
+          const message = getErrorMessage(err, '請確認 profiles 欄位與 RLS 設定')
           onError?.(`偏好設定儲存失敗：${message}`)
         } finally {
           setIsSaving(false)

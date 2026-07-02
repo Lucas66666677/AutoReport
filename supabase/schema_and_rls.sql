@@ -3,6 +3,29 @@
 
 create extension if not exists "pgcrypto";
 
+create or replace function public.handle_new_user_profile()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.profiles (id, email, full_name, avatar_url)
+  values (
+    new.id,
+    new.email,
+    coalesce(new.raw_user_meta_data ->> 'full_name', new.raw_user_meta_data ->> 'name'),
+    new.raw_user_meta_data ->> 'avatar_url'
+  )
+  on conflict (id) do update
+    set email = excluded.email,
+        full_name = coalesce(public.profiles.full_name, excluded.full_name),
+        avatar_url = coalesce(public.profiles.avatar_url, excluded.avatar_url),
+        updated_at = now();
+  return new;
+end;
+$$;
+
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   email text,
@@ -167,6 +190,11 @@ alter table public.report_templates add column if not exists source text not nul
 alter table public.report_templates add column if not exists use_count integer not null default 0;
 alter table public.report_templates add column if not exists updated_at timestamptz not null default now();
 
+drop trigger if exists on_auth_user_created_create_profile on auth.users;
+create trigger on_auth_user_created_create_profile
+after insert or update of email, raw_user_meta_data on auth.users
+for each row execute function public.handle_new_user_profile();
+
 create index if not exists documents_user_id_idx on public.documents(user_id);
 create index if not exists documents_share_setting_idx on public.documents(share_setting);
 create index if not exists document_collaborators_document_id_idx on public.document_collaborators(document_id);
@@ -293,6 +321,12 @@ create policy "profiles_select_own"
 on public.profiles for select
 to authenticated
 using (auth.uid() = id);
+
+drop policy if exists "profiles_insert_own" on public.profiles;
+create policy "profiles_insert_own"
+on public.profiles for insert
+to authenticated
+with check (auth.uid() = id);
 
 drop policy if exists "profiles_update_own" on public.profiles;
 create policy "profiles_update_own"
