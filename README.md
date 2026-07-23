@@ -1,306 +1,132 @@
 # AutoLabReport
 
-> AI-powered collaborative Markdown workspace for STEM lab reports.
+AutoLabReport 是面向大学实验课程的 Markdown 报告工作区。当前代码以「20 位学生 Closed Beta」为目标：先保证写作、保存、预览、检查、分享与导出可靠，再逐步开放计费、实时协作和第三方同步。
 
-AutoLabReport 是一個為理工科實驗報告打造的現代化 SaaS 寫作平台。它結合 Markdown 編輯、AI 內容整理、即時預覽、Python 圖表渲染、Word/PDF 匯出、多人協作與 Supabase 雲端文件管理，讓學生與研究者可以用更接近 Notion、HackMD 與 Google Docs 的體驗完成實驗報告。
+## Closed Beta 范围
 
-![React](https://img.shields.io/badge/React-19-61DAFB?style=flat-square&logo=react&logoColor=111)
-![Vite](https://img.shields.io/badge/Vite-8-646CFF?style=flat-square&logo=vite&logoColor=fff)
-![FastAPI](https://img.shields.io/badge/FastAPI-Python-009688?style=flat-square&logo=fastapi&logoColor=fff)
-![Supabase](https://img.shields.io/badge/Supabase-Auth%20%26%20Database-3FCF8E?style=flat-square&logo=supabase&logoColor=111)
-![Yjs](https://img.shields.io/badge/Yjs-WebRTC%20Collaboration-f6c915?style=flat-square)
+本轮支持：
 
----
+- Email Magic Link、Google OAuth，以及明确标示为本机保存的访客模式。
+- 登录用户的云端文件／资料夹 CRUD、收藏、垃圾桶、恢复与永久删除。
+- Monaco Markdown 编辑、GFM 表格、KaTeX、Mermaid、图片和即时预览。
+- 结构化实验信息生成大纲；AI 重写／扩写／格式化先预览再确认套用。
+- AI 输出数字与单位完整性检查；修改原始实验数值时拒绝套用。
+- 报告完整度检查，包含章节、单位、图表标题／正文引用、参考资料、占位符与结论依据。
+- Word（FastAPI + Pandoc）和浏览器 PDF 导出。
+- 公开只读报告与按 Email 邀请的 view/edit 协作者模型。
+- 私有报告图片与短期 signed URL。
 
-## Product Overview
+Closed Beta 默认关闭：
 
-AutoLabReport is designed for students, teaching assistants, and lab teams who need to turn AI-generated drafts, experiment notes, data tables, Python plots, formulas, and diagrams into polished academic reports.
+- Stripe 计费
+- GitHub 登录与 Repo 同步
+- Google Drive 导入
+- 浏览器扩充功能
+- 录屏
+- Yjs 实时协作
+- 所有服务器端 Python 执行
 
-The current product experience includes:
+这些入口只有在前后端对应 feature flag 都明确设为 true 后才可开放。关闭中的功能不属于本轮验收范围。
 
-- A clean commercial SaaS landing page with Google, GitHub, and Email Magic Link authentication.
-- A Canva-style dashboard for managing recent reports, favorites, templates, and trash.
-- A HackMD-inspired editor with a dark Monaco Markdown editor and a bright paper-like preview pane.
-- Supabase-backed document CRUD for authenticated users.
-- Local guest mode for quick testing without account setup.
-- Word/PDF export workflows for final submission.
-- Yjs + WebRTC collaboration room per document.
-- Chrome extension bridge for sending content from ChatGPT into AutoLabReport.
+## 安全基线
 
----
+- Markdown 中的 Python 代码块只显示，不在 API 进程执行。
+- 文档写入以拥有者或明确的 Email 编辑协作者为准；公开链接始终只读。
+- profiles 的方案、额度、Stripe 与集成字段不能由浏览器自行修改。
+- AI 额度通过 service-role RPC 原子预留／退回。
+- report_images 与 report_recordings bucket 为私有。
+- 登录账号、访客草稿、保存 outbox 与 Yjs 缓存使用隔离命名空间。
+- CORS 使用明确 allowlist；生产环境不会回退到学生电脑的 localhost。
 
-## Key Features
+必须在目标 Supabase 环境应用全部迁移，尤其是：
 
-### Authentication
+~~~text
+supabase/migrations/20260723_closed_beta_security.sql
+~~~
 
-- Supabase Auth integration.
-- Google OAuth login.
-- GitHub OAuth login.
-- Email Magic Link login.
-- Guest mode for local testing.
-- User profile rendering with `avatar_url`, display name, and email.
+在未完成 staging 迁移验证前，不应邀请 Beta 用户。
 
-### Document Workspace
+## 技术栈
 
-- Dashboard grid with document previews.
-- Supabase `documents` table integration for authenticated users.
-- Create, rename, favorite, soft delete, restore, and permanently delete documents.
-- Favorites view for pinned reports.
-- Trash view with restore and hard-delete actions.
-- LocalStorage fallback for guest mode.
-
-### Markdown Editor
-
-- Monaco Editor with a dark HackMD-style writing surface.
-- Debounced preview rendering.
-- Synchronized editor-to-preview scrolling.
-- Markdown preprocessing for figure/table auto-numbering.
-- Smart formatting cleanup for AI-generated text.
-- Excel/CSV paste conversion into Markdown tables.
-
-### Academic Rendering
-
-- KaTeX math rendering.
-- Mermaid diagram rendering.
-- Python code block execution through FastAPI for plot generation.
-- Markdown preview optimized for academic report spacing.
-- A4-like preview surface for export-ready reading.
-
-### Export
-
-- Export Markdown to Word `.docx` through FastAPI + Pandoc.
-- Export preview to PDF through `html2pdf.js` and `html2canvas-pro`.
-- PDF output follows the rendered preview surface.
-
-### AI Workflow
-
-- Generate report outline from a sample structure.
-- Smart formatting repair for common AI output issues.
-- Chrome extension bridge for capturing ChatGPT content.
-- Notion-style selected-text AI request events for rewrite/expand workflows.
-
-### Collaboration
-
-- Yjs document model.
-- WebRTC provider per document room.
-- Shared text binding for collaborative editing.
-
----
-
-## Tech Stack
-
-| Layer | Technologies |
+| 层 | 技术 |
 | --- | --- |
-| Frontend | React 19, Vite 8, TypeScript, Tailwind CSS, Monaco Editor |
-| Auth & Database | Supabase Auth, Supabase Postgres |
-| Markdown | react-markdown, remark-math, rehype-katex, rehype-raw |
-| Diagrams | Mermaid.js |
-| Collaboration | Yjs, y-webrtc |
-| Export | html2pdf.js, html2canvas-pro, FastAPI, Pandoc |
-| Backend | Python, FastAPI, matplotlib, numpy, scipy, pypandoc |
-| Extension | Chrome Extension Manifest V3 |
+| Frontend | React 19、TypeScript、Vite 8、Tailwind CSS、Monaco |
+| Preview | react-markdown、GFM、KaTeX、Mermaid |
+| Auth / Data | Supabase Auth、Postgres、Storage、RLS |
+| Backend | FastAPI、Pandoc、Groq／Gemini、Stripe（关闭） |
+| Export | Pandoc DOCX、html2pdf.js PDF |
+| Optional | Hocuspocus／Yjs collaboration、Chrome extension（均关闭） |
 
----
+## 本机启动
 
-## Project Structure
+复制根目录 .env.example，把前端变量放入 frontend/.env.local，后端变量放入 backend/.env。不要提交真实密钥。
 
-```txt
-AutoLabReport/
-├── backend/
-│   ├── main.py                 # FastAPI render/export/outline API
-│   └── requirements.txt
-├── extension/
-│   ├── manifest.json           # Chrome extension manifest
-│   ├── background.js
-│   └── content.js
-├── frontend/
-│   ├── src/
-│   │   ├── App.tsx             # Main SaaS shell, editor, dashboard, auth flow
-│   │   ├── main.tsx
-│   │   └── index.css
-│   ├── package.json
-│   └── vite.config.ts
-├── package.json
-└── README.md
-```
+后端：
 
----
-
-## Supabase Setup
-
-Create a Supabase project and add the following environment variables to `frontend/.env`:
-
-```env
-VITE_SUPABASE_URL=https://your-project.supabase.co
-VITE_SUPABASE_ANON_KEY=your-anon-key
-VITE_API_URL=http://localhost:8000
-```
-
-### Recommended `documents` Table
-
-The frontend expects a `documents` table compatible with the following shape:
-
-```sql
-create table documents (
-  id uuid primary key default gen_random_uuid(),
-  user_id uuid references auth.users(id) on delete cascade,
-  title text not null default '未命名報告',
-  content text not null default '',
-  is_favorite boolean not null default false,
-  is_trashed boolean not null default false,
-  type text not null default 'file',
-  parent_id uuid null,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
-);
-```
-
-For production, enable Row Level Security and bind documents to the authenticated user:
-
-```sql
-alter table documents enable row level security;
-
-create policy "Users can read their own documents"
-on documents for select
-using (auth.uid() = user_id);
-
-create policy "Users can create their own documents"
-on documents for insert
-with check (auth.uid() = user_id);
-
-create policy "Users can update their own documents"
-on documents for update
-using (auth.uid() = user_id);
-
-create policy "Users can delete their own documents"
-on documents for delete
-using (auth.uid() = user_id);
-```
-
-If your table uses RLS, make sure inserts include `user_id` or use a trigger to set it automatically.
-
----
-
-## Getting Started
-
-### Prerequisites
-
-- Node.js 20+
-- Python 3.10+
-- Pandoc installed and available in PATH
-- Supabase project for production auth/database
-
-### 1. Backend
-
-```powershell
-cd backend
+~~~powershell
+cd D:\AutoLabReport\backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python main.py
-```
+~~~
 
-Backend default URL:
+前端：
 
-```txt
-http://localhost:8000
-```
-
-Useful endpoints:
-
-| Method | Endpoint | Description |
-| --- | --- | --- |
-| GET | `/api/health` | API health check |
-| GET | `/keep-alive` | Lightweight keep-alive endpoint for Render |
-| POST | `/api/render` | Render Markdown and execute supported Python plot blocks |
-| POST | `/api/export` | Export Markdown to Word `.docx` |
-| POST | `/api/generate-outline` | Generate a report outline from a sample structure |
-
-### 2. Frontend
-
-```powershell
-cd frontend
+~~~powershell
+cd D:\AutoLabReport\frontend
 npm install
 npm run dev
-```
+~~~
 
-Frontend default URL:
+常用验证：
 
-```txt
-http://localhost:5173
-```
-
-### 3. Chrome Extension
-
-Load the extension manually in Chrome:
-
-1. Open `chrome://extensions`.
-2. Enable Developer mode.
-3. Click "Load unpacked".
-4. Select the `extension/` directory.
-
-The extension can bridge selected or latest ChatGPT content into AutoLabReport.
-
----
-
-## Environment Variables
-
-| Variable | Scope | Description |
-| --- | --- | --- |
-| `VITE_SUPABASE_URL` | Frontend | Supabase project URL |
-| `VITE_SUPABASE_ANON_KEY` | Frontend | Supabase anon public key |
-| `VITE_API_URL` | Frontend | FastAPI backend URL. Defaults to `http://localhost:8000` |
-
----
-
-## Development Commands
-
-### Frontend
-
-```powershell
-cd frontend
-npm run dev
+~~~powershell
+cd D:\AutoLabReport\frontend
+npm run typecheck
 npm run lint
+npm test -- --run
 npm run build
-```
 
-### Backend
+cd D:\AutoLabReport\backend
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m py_compile main.py
 
-```powershell
-cd backend
-python main.py
-```
+cd D:\AutoLabReport
+npm run check:deploy
+git diff --check
+~~~
 
----
+## 运行状态
 
-## Product Workflow
+- GET /api/health 只说明进程可响应。
+- GET /api/readiness 检查 Supabase、加密密钥与 Pandoc；缺少必要配置时返回 503。
+- 至少配置 Groq 或 Gemini 之一，内建 AI 才可供 Beta 使用。
 
-1. Sign in with Google, GitHub, or Email Magic Link.
-2. Create a new report from Dashboard or apply a template from Template Hub.
-3. Paste AI-generated notes, lab content, Python snippets, formulas, tables, or Mermaid diagrams.
-4. Use the smart formatter to clean AI output.
-5. Preview the report in the paper-like right pane.
-6. Export as Word or PDF.
-7. Share the document link or collaborate in the same Yjs/WebRTC room.
+## 项目结构
 
----
+~~~text
+backend/                 FastAPI、AI、Word 导出与安全测试
+frontend/                React 工作区与前端测试
+supabase/                基础 schema 与按日期排序的迁移
+collaboration-server/    默认关闭的 Hocuspocus 服务
+extension/               Closed Beta 默认关闭的浏览器扩充
+docs/product/            产品规范、需求矩阵、Backlog、发布判断
+docs/OWNER_ACTIONS.md    需要项目所有者在外部平台完成的事项
+artifacts/closed-beta/   本机 QA 导出、渲染页与截图（不提交）
+~~~
 
-## Current Status
+## 发布资料
 
-AutoLabReport is actively evolving from a Markdown report editor into a full SaaS workspace for academic writing. The current implementation already includes authentication, dashboard, database-backed documents, template hub, editor, export workflows, collaboration primitives, and browser extension integration.
+- [产品规范](docs/product/PRODUCT_SPEC.md)
+- [需求矩阵](docs/product/REQUIREMENTS_MATRIX.md)
+- [Beta Backlog](docs/product/BETA_BACKLOG.md)
+- [发布就绪判断](docs/product/RELEASE_READINESS.md)
+- [Owner Actions](docs/OWNER_ACTIONS.md)
+- [部署说明](docs/DEPLOYMENT.md)
 
-Planned improvements include:
-
-- Fine-grained Supabase RLS and user-owned document permissions.
-- Production-grade collaboration persistence.
-- Dedicated settings and billing pages.
-- Improved AI rewrite workflows.
-- More STEM-specific report templates.
-- File/folder drag-and-drop organization.
-
----
+目前建议结论为 **READY WITH OWNER ACTIONS**：代码层 Closed Beta 基线已建立，但仍必须由项目所有者在 staging 完成 Supabase 迁移、OAuth、生产环境变量、AI provider 和真实账号验收。不要跳过这些步骤直接开放给学生。
 
 ## License
 
-This project is currently maintained as a private/product prototype. Add a license before public distribution.
-
+当前为私有产品原型。公开分发前请补充正式 License。
