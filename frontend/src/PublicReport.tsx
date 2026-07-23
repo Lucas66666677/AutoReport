@@ -1,15 +1,7 @@
-import { useEffect, useMemo, useState, type HTMLAttributes, type ImgHTMLAttributes } from 'react'
-import { createClient } from '@supabase/supabase-js'
-import ReactMarkdown from 'react-markdown'
-import remarkMath from 'remark-math'
-import { REHYPE_PLUGINS, safeMarkdownUrlTransform } from './markdownSafety'
-
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
-const publicSupabase =
-  SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null
-
-let mermaidInitialized = false
+import { useEffect, useMemo, useState } from 'react'
+import { BrandLockup } from './Brand'
+import MarkdownRenderer from './MarkdownRenderer'
+import { supabaseClient } from './supabaseClient'
 
 type PublicDocumentRow = {
   id: string
@@ -71,75 +63,11 @@ function applyPublicAutoNumbering(text: string) {
     })
 }
 
-function MermaidBlock({ chart }: { chart: string }) {
-  const [svg, setSvg] = useState('')
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let isCancelled = false
-    const renderId = `public-mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-
-    async function renderMermaid() {
-      try {
-        const { default: mermaid } = await import('mermaid')
-        if (!mermaidInitialized) {
-          mermaid.initialize({
-            startOnLoad: false,
-            theme: 'default',
-            securityLevel: 'strict',
-          })
-          mermaidInitialized = true
-        }
-        const result = await mermaid.render(renderId, chart)
-        if (!isCancelled) {
-          setSvg(result.svg)
-          setError(null)
-        }
-      } catch (err) {
-        if (!isCancelled) {
-          setError(err instanceof Error ? err.message : 'Mermaid 渲染失敗')
-          setSvg('')
-        }
-      }
-    }
-
-    void renderMermaid()
-    return () => {
-      isCancelled = true
-    }
-  }, [chart])
-
-  if (error) return <pre className="text-sm text-red-500">{error}</pre>
-  if (!svg) return <p className="text-sm text-slate-500">正在渲染 Mermaid 圖表...</p>
-
-  return <div className="my-4 overflow-x-auto" dangerouslySetInnerHTML={{ __html: svg }} />
-}
-
-const PUBLIC_MARKDOWN_COMPONENTS = {
-  img: ({ alt, src, ...props }: ImgHTMLAttributes<HTMLImageElement>) => (
-    <img {...props} src={src} alt={alt ?? 'report image'} className="rounded-lg border border-slate-200" />
-  ),
-  code: ({ children, className, ...props }: HTMLAttributes<HTMLElement>) => {
-    const match = /language-(\w+)/.exec(className ?? '')
-    const code = String(children ?? '').replace(/\n$/, '')
-
-    if (match?.[1] === 'mermaid') {
-      return <MermaidBlock chart={code} />
-    }
-
-    return (
-      <code {...props} className={className}>
-        {children}
-      </code>
-    )
-  },
-}
-
 export default function PublicReport({ shareId }: PublicReportProps) {
   const [publicDocument, setPublicDocument] = useState<PublicDocumentRow | null>(null)
-  const [isLoading, setIsLoading] = useState(Boolean(publicSupabase))
+  const [isLoading, setIsLoading] = useState(Boolean(supabaseClient))
   const [error, setError] = useState<string | null>(
-    publicSupabase ? null : '尚未設定 Supabase，無法載入公開報告。',
+    supabaseClient ? null : '尚未設定 Supabase，無法載入公開報告。',
   )
 
   const markdown = useMemo(() => applyPublicAutoNumbering(publicDocument?.content ?? ''), [publicDocument?.content])
@@ -147,7 +75,7 @@ export default function PublicReport({ shareId }: PublicReportProps) {
   const title = publicDocument?.title?.trim() || 'AutoLabReport 公開報告'
 
   useEffect(() => {
-    if (!publicSupabase) {
+    if (!supabaseClient) {
       return
     }
 
@@ -157,7 +85,7 @@ export default function PublicReport({ shareId }: PublicReportProps) {
       setIsLoading(true)
       setError(null)
 
-      const { data, error: loadError } = await publicSupabase!
+      const { data, error: loadError } = await supabaseClient!
         .from('documents')
         .select('id,title,content,share_setting,is_trashed,created_at,updated_at,view_count')
         .eq('id', shareId)
@@ -184,7 +112,7 @@ export default function PublicReport({ shareId }: PublicReportProps) {
       setPublicDocument(nextDocument)
       setIsLoading(false)
 
-      void publicSupabase!.rpc('increment_document_view_count', {
+      void supabaseClient!.rpc('increment_document_view_count', {
         p_document_id: nextDocument.id,
       })
     }
@@ -199,12 +127,18 @@ export default function PublicReport({ shareId }: PublicReportProps) {
   useEffect(() => {
     const previousTitle = document.title
     const description = summary || 'AutoLabReport 公開實驗報告'
+    const shareImage = new URL('/brand/autolabreport-og.png', window.location.origin).href
 
     document.title = `${title} | AutoLabReport`
     getOrCreateMeta('meta[name="description"]', { name: 'description' }).content = description
     getOrCreateMeta('meta[property="og:title"]', { property: 'og:title' }).content = title
     getOrCreateMeta('meta[property="og:description"]', { property: 'og:description' }).content = description
     getOrCreateMeta('meta[property="og:type"]', { property: 'og:type' }).content = 'article'
+    getOrCreateMeta('meta[property="og:image"]', { property: 'og:image' }).content = shareImage
+    getOrCreateMeta('meta[property="og:image:width"]', { property: 'og:image:width' }).content = '1200'
+    getOrCreateMeta('meta[property="og:image:height"]', { property: 'og:image:height' }).content = '630'
+    getOrCreateMeta('meta[name="twitter:card"]', { name: 'twitter:card' }).content = 'summary_large_image'
+    getOrCreateMeta('meta[name="twitter:image"]', { name: 'twitter:image' }).content = shareImage
 
     return () => {
       document.title = previousTitle
@@ -235,7 +169,11 @@ export default function PublicReport({ shareId }: PublicReportProps) {
       <header className="border-b border-slate-200 bg-white">
         <div className="mx-auto flex max-w-5xl flex-wrap items-end justify-between gap-4 px-6 py-8">
           <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Public Report</p>
+            <div className="mb-5 flex items-center gap-3">
+              <BrandLockup size="compact" surface="light" />
+              <span className="h-4 w-px bg-slate-200" aria-hidden="true" />
+              <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Public Report</p>
+            </div>
             <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">{title}</h1>
             {summary && <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-500">{summary}</p>}
           </div>
@@ -247,14 +185,7 @@ export default function PublicReport({ shareId }: PublicReportProps) {
 
       <article className="mx-auto max-w-5xl px-6 py-10">
         <div className="markdown-preview prose prose-slate mx-auto max-w-4xl rounded-2xl border border-slate-200 bg-white px-6 py-8 shadow-sm prose-headings:font-semibold prose-p:leading-loose lg:px-12 lg:py-12">
-          <ReactMarkdown
-            remarkPlugins={[remarkMath]}
-            rehypePlugins={REHYPE_PLUGINS}
-            urlTransform={safeMarkdownUrlTransform}
-            components={PUBLIC_MARKDOWN_COMPONENTS}
-          >
-            {markdown}
-          </ReactMarkdown>
+          <MarkdownRenderer markdown={markdown} />
         </div>
       </article>
     </main>

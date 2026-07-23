@@ -3,8 +3,19 @@ import rehypeRaw from 'rehype-raw'
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
 import type { PluggableList } from 'unified'
 
-const SANITIZE_SCHEMA = {
+const SAFE_MARKDOWN_TAGS = [
+  'table',
+  'thead',
+  'tbody',
+  'tr',
+  'th',
+  'td',
+  'input',
+]
+
+export const SANITIZE_SCHEMA = {
   ...defaultSchema,
+  tagNames: [...new Set([...(defaultSchema.tagNames ?? []), ...SAFE_MARKDOWN_TAGS])],
   attributes: {
     ...defaultSchema.attributes,
     code: [['className', /^language-[\w-]+$/]],
@@ -21,10 +32,32 @@ const SANITIZE_SCHEMA = {
       ...(defaultSchema.attributes?.span ?? []),
       ['className'],
     ],
+    ul: [
+      ...(defaultSchema.attributes?.ul ?? []),
+      ['className', 'contains-task-list'],
+    ],
+    li: [
+      ...(defaultSchema.attributes?.li ?? []),
+      ['className', 'task-list-item'],
+    ],
+    input: [
+      ...(defaultSchema.attributes?.input ?? []),
+      ['type', 'checkbox'],
+      ['checked'],
+      ['disabled'],
+    ],
+    th: [
+      ...(defaultSchema.attributes?.th ?? []),
+      ['align', 'left', 'center', 'right'],
+    ],
+    td: [
+      ...(defaultSchema.attributes?.td ?? []),
+      ['align', 'left', 'center', 'right'],
+    ],
   },
   protocols: {
     ...defaultSchema.protocols,
-    src: ['http', 'https'],
+    src: ['http', 'https', 'data'],
   },
 }
 

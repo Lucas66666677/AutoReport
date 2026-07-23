@@ -45,6 +45,282 @@ body,
   height: auto;
 }
 
+.editor-format-toolbar {
+  position: relative;
+  z-index: 20;
+}
+
+.editor-workspace {
+  --editor-split-ratio: 50%;
+  position: relative;
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #f8fafc;
+}
+
+.editor-workspace__panel {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.editor-workspace__panel[hidden] {
+  display: none;
+}
+
+.editor-workspace--edit .editor-workspace__editor,
+.editor-workspace--preview .editor-workspace__preview {
+  width: 100%;
+  flex: 1 1 100%;
+}
+
+.editor-workspace--split .editor-workspace__editor {
+  width: calc(var(--editor-split-ratio) - 6px);
+  flex: 0 0 calc(var(--editor-split-ratio) - 6px);
+}
+
+.editor-workspace--split .editor-workspace__preview {
+  flex: 1 1 auto;
+}
+
+.editor-workspace__divider {
+  position: relative;
+  z-index: 10;
+  width: 12px;
+  flex: 0 0 12px;
+  cursor: col-resize;
+  touch-action: none;
+  background: #e2e8f0;
+  outline: none;
+  transition: background-color 160ms ease, box-shadow 160ms ease;
+}
+
+.editor-workspace__divider::before {
+  position: absolute;
+  inset: 0 3px;
+  content: '';
+  background: #cbd5e1;
+  transition: background-color 160ms ease;
+}
+
+.editor-workspace__divider span {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 4px;
+  height: 40px;
+  border-radius: 999px;
+  background: #94a3b8;
+  transform: translate(-50%, -50%);
+  transition: height 160ms ease, background-color 160ms ease;
+}
+
+.editor-workspace__divider:hover,
+.editor-workspace__divider:focus-visible,
+.editor-workspace__divider.is-dragging {
+  background: #e0e7ff;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.18);
+}
+
+.editor-workspace__divider:hover::before,
+.editor-workspace__divider:focus-visible::before,
+.editor-workspace__divider.is-dragging::before,
+.editor-workspace__divider:hover span,
+.editor-workspace__divider:focus-visible span,
+.editor-workspace__divider.is-dragging span {
+  background: #6366f1;
+}
+
+.editor-workspace__divider:hover span,
+.editor-workspace__divider:focus-visible span,
+.editor-workspace__divider.is-dragging span {
+  height: 56px;
+}
+
+html.is-resizing-editor,
+html.is-resizing-editor * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
+
+.markdown-preview {
+  overflow-wrap: anywhere;
+}
+
+.markdown-preview .markdown-table-scroll {
+  width: 100%;
+  max-width: 100%;
+  margin: 1.25rem 0;
+  overflow-x: auto;
+  border: 1px solid #cbd5e1;
+  border-radius: 0.625rem;
+  background: #ffffff;
+  overscroll-behavior-inline: contain;
+}
+
+.markdown-preview .markdown-table-scroll:focus-visible {
+  outline: 2px solid #6366f1;
+  outline-offset: 2px;
+}
+
+.markdown-preview .markdown-table-scroll table {
+  width: max-content;
+  min-width: 100%;
+  margin: 0;
+  border: 0;
+  border-collapse: collapse;
+  table-layout: auto;
+}
+
+.markdown-preview .markdown-table-scroll thead {
+  background: #f1f5f9;
+}
+
+.markdown-preview .markdown-table-scroll tbody tr:nth-child(even) {
+  background: #f8fafc;
+}
+
+.markdown-preview .markdown-table-scroll th,
+.markdown-preview .markdown-table-scroll td {
+  min-width: 7rem;
+  max-width: 32rem;
+  padding: 0.625rem 0.875rem;
+  border: 0;
+  border-right: 1px solid #e2e8f0;
+  border-bottom: 1px solid #e2e8f0;
+  color: #334155;
+  line-height: 1.55;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.markdown-preview .markdown-table-scroll th {
+  color: #0f172a;
+  font-weight: 650;
+}
+
+.markdown-preview .markdown-table-scroll tr:last-child td {
+  border-bottom: 0;
+}
+
+.markdown-preview .markdown-table-scroll th:last-child,
+.markdown-preview .markdown-table-scroll td:last-child {
+  border-right: 0;
+}
+
+.markdown-preview .markdown-table-scroll th[align='center'],
+.markdown-preview .markdown-table-scroll td[align='center'] {
+  text-align: center;
+}
+
+.markdown-preview .markdown-table-scroll th[align='right'],
+.markdown-preview .markdown-table-scroll td[align='right'] {
+  text-align: right;
+}
+
+.markdown-preview .contains-task-list {
+  padding-left: 0;
+  list-style: none;
+}
+
+.markdown-preview .task-list-item {
+  list-style: none;
+}
+
+.markdown-preview .task-list-item > input[type='checkbox'] {
+  margin: 0 0.5rem 0 0;
+  accent-color: #4f46e5;
+}
+
+.markdown-preview pre,
+.markdown-preview .katex-display,
+.markdown-preview .markdown-mermaid {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.markdown-preview a {
+  overflow-wrap: anywhere;
+}
+
+.markdown-preview img,
+.markdown-mermaid svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+.markdown-image-error,
+.markdown-mermaid-error {
+  display: block;
+  margin: 1rem 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid #fecaca;
+  border-radius: 0.625rem;
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 0.875rem;
+}
+
+.markdown-mermaid-error span {
+  display: block;
+  margin-top: 0.25rem;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.75rem;
+}
+
+.markdown-mermaid-loading {
+  color: #64748b;
+  font-size: 0.875rem;
+}
+
+.markdown-mermaid {
+  margin: 1.25rem 0;
+  padding: 0.75rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 0.625rem;
+  background: #ffffff;
+}
+
+.dark .markdown-preview .markdown-table-scroll {
+  border-color: #475569;
+  background: #0f172a;
+}
+
+.dark .markdown-preview .markdown-table-scroll thead {
+  background: #1e293b;
+}
+
+.dark .markdown-preview .markdown-table-scroll tbody tr:nth-child(even) {
+  background: #111c2e;
+}
+
+.dark .markdown-preview .markdown-table-scroll th,
+.dark .markdown-preview .markdown-table-scroll td {
+  border-color: #334155;
+  color: #e2e8f0;
+}
+
+.dark .markdown-preview .markdown-table-scroll th {
+  color: #f8fafc;
+}
+
+#pdf-preview-content.pdf-print-mode .markdown-table-scroll {
+  overflow: visible !important;
+  border-color: #d1d5db !important;
+}
+
+#pdf-preview-content.pdf-print-mode .markdown-table-scroll table {
+  width: 100% !important;
+}
+
 .landing-optics-scene {
   cursor: default;
   touch-action: none;

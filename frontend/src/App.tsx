@@ -7,12 +7,10 @@ import {
   useRef,
   useState,
   type FormEvent,
-  type HTMLAttributes,
-  type ImgHTMLAttributes,
   type ReactNode,
 } from 'react'
 import 'katex/dist/katex.min.css'
-import { createClient, type Provider, type Session, type User } from '@supabase/supabase-js'
+import { type Provider, type Session, type User } from '@supabase/supabase-js'
 import {
   ArrowRight,
   Archive,
@@ -30,6 +28,7 @@ import {
   CalendarDays,
   Database,
   Download,
+  Eye,
   ExternalLink,
   FileClock,
   FileText,
@@ -85,19 +84,27 @@ import {
 } from 'lucide-react'
 import type { editor } from 'monaco-editor'
 import type { HocuspocusProvider, WebSocketStatus } from '@hocuspocus/provider'
-import ReactMarkdown from 'react-markdown'
-import remarkMath from 'remark-math'
 import type { Text as YText, Doc as YDoc } from 'yjs'
 import {
   createDocumentVersion,
   readDocumentVersions,
   type DocumentVersion,
 } from './documentVersions'
+import { BrandLockup, BrandMark } from './Brand'
+import EditorWorkspaceLayout from './EditorWorkspaceLayout'
+import {
+  EDITOR_SPLIT_RATIO_STORAGE_KEY,
+  EDITOR_VIEW_MODE_STORAGE_KEY,
+  getInitialEditorViewMode,
+  readStoredSplitRatio,
+  type EditorViewMode,
+} from './editorViewMode'
 import GoogleDrivePicker from './GoogleDrivePicker'
-import { REHYPE_PLUGINS, safeMarkdownUrlTransform } from './markdownSafety'
+import MarkdownRenderer from './MarkdownRenderer'
 import PublicReport from './PublicReport'
 import { analyzeReportQuality } from './reportQuality'
 import ScreenRecorderControls from './ScreenRecorderControls'
+import { supabaseClient as supabase } from './supabaseClient'
 import { useExtensionBridge } from './useExtensionBridge'
 import { useSettings, type NotePreferences } from './useSettings'
 
@@ -113,17 +120,10 @@ const AI_SETTINGS_STORAGE_KEY = 'autoLabReport_aiSettings'
 const USER_TEMPLATES_STORAGE_KEY = 'autoLabReport_userTemplates'
 const DOCUMENT_VERSIONS_STORAGE_KEY = 'autoLabReport_documentVersions'
 const REPORT_IMAGE_BUCKET = 'report_images'
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
-const supabase =
-  SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null
-
-const REMARK_PLUGINS = [remarkMath]
 const MarkdownEditor = lazy(() => import('@monaco-editor/react'))
 const PrismLandingScene = lazy(() => import('./PrismLandingScene'))
 const documentYDocs = new Map<string, YDoc>()
 let sharedYDoc: YDoc | null = null
-let mermaidInitialized = false
 const YTEXT_NAME = 'monaco-or-textarea'
 const LOCAL_YJS_ORIGIN = 'local-monaco'
 
@@ -633,82 +633,6 @@ function normalizePromptLibrary(items: unknown): PromptLibraryItem[] {
   })
 }
 
-function MermaidBlock({ chart }: { chart: string }) {
-  const [svg, setSvg] = useState('')
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let isCancelled = false
-    const renderId = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-
-    async function renderMermaid() {
-      try {
-        const { default: mermaid } = await import('mermaid')
-        if (!mermaidInitialized) {
-          mermaid.initialize({
-            startOnLoad: false,
-            theme: 'default',
-            securityLevel: 'strict',
-          })
-          mermaidInitialized = true
-        }
-        const result = await mermaid.render(renderId, chart)
-        if (!isCancelled) {
-          setSvg(result.svg)
-          setError(null)
-        }
-      } catch (err) {
-        if (!isCancelled) {
-          const message = err instanceof Error ? err.message : 'Mermaid 渲染失敗'
-          setError(message)
-          setSvg('')
-        }
-      }
-    }
-
-    renderMermaid()
-
-    return () => {
-      isCancelled = true
-    }
-  }, [chart])
-
-  if (error) {
-    return <pre className="text-sm text-red-400">{error}</pre>
-  }
-
-  if (!svg) {
-    return <p className="text-sm text-zinc-500">正在渲染 Mermaid 圖表...</p>
-  }
-
-  return (
-    <div
-      className="my-4 overflow-x-auto"
-      dangerouslySetInnerHTML={{ __html: svg }}
-    />
-  )
-}
-
-const MARKDOWN_COMPONENTS = {
-  img: ({ alt, src, ...props }: ImgHTMLAttributes<HTMLImageElement>) => (
-    <img {...props} src={src} alt={alt ?? 'matplotlib plot'} className="pdf-plot-image" />
-  ),
-  code: ({ children, className, ...props }: HTMLAttributes<HTMLElement>) => {
-    const match = /language-(\w+)/.exec(className ?? '')
-    const code = String(children ?? '').replace(/\n$/, '')
-
-    if (match?.[1] === 'mermaid') {
-      return <MermaidBlock chart={code} />
-    }
-
-    return (
-      <code {...props} className={className}>
-        {children}
-      </code>
-    )
-  },
-}
-
 function smartFormat(text: string): string {
   return removeConsecutiveDuplicateContent(text)
     .replace(/\([A-Za-z\s]+\)/g, '')
@@ -1181,6 +1105,7 @@ function DocumentSidebar({
   }
 
   function renderNavItem({
+    key,
     icon: Icon,
     label,
     isActive,
@@ -1188,6 +1113,7 @@ function DocumentSidebar({
     pinState,
     onTogglePin,
   }: {
+    key?: string
     icon: typeof Home
     label: string
     isActive?: boolean
@@ -1197,6 +1123,7 @@ function DocumentSidebar({
   }) {
     return (
       <button
+        key={key}
         type="button"
         onClick={onClick}
         className={`${navButtonBase} ${isActive ? navButtonActive : navButtonIdle}`}
@@ -1234,11 +1161,12 @@ function DocumentSidebar({
   if (isCollapsed) {
     return (
       <aside className="flex w-16 shrink-0 flex-col items-center border-r border-slate-200/80 bg-slate-50 py-4 text-slate-500">
+        <BrandMark size="compact" className="h-9 w-9" />
         <button
           type="button"
           title="展開工作區"
           onClick={onToggleCollapsed}
-          className="grid h-10 w-10 place-items-center rounded-xl bg-white text-slate-700 shadow-sm ring-1 ring-slate-200 transition hover:text-slate-950"
+          className="mt-3 grid h-10 w-10 place-items-center rounded-xl bg-white text-slate-700 shadow-sm ring-1 ring-slate-200 transition hover:text-slate-950"
         >
           <PanelLeftOpen className="h-[18px] w-[18px]" strokeWidth={2} />
         </button>
@@ -1376,15 +1304,7 @@ function DocumentSidebar({
   return (
     <aside className="flex w-72 shrink-0 flex-col border-r border-slate-200/80 bg-slate-50 text-slate-700">
       <div className="flex items-center justify-between px-5 py-5">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-indigo-500 via-violet-500 to-fuchsia-500 text-white shadow-lg shadow-indigo-500/20">
-            <FileText className="h-5 w-5" strokeWidth={2.2} />
-          </div>
-          <div className="min-w-0">
-            <h2 className="truncate text-sm font-semibold tracking-tight text-slate-950">AutoLabReport</h2>
-            <p className="text-xs text-slate-400">Lab workspace</p>
-          </div>
-        </div>
+        <BrandLockup size="compact" surface="light" />
         <div className="flex items-center gap-1">
           <button
             type="button"
@@ -1432,6 +1352,7 @@ function DocumentSidebar({
           <div className="space-y-1">
             {pinnedItems.map((item) =>
               renderNavItem({
+                key: item.id,
                 icon: item.icon,
                 label: item.label,
                 isActive: item.isActive,
@@ -1459,6 +1380,7 @@ function DocumentSidebar({
             <div className="space-y-1">
               {moreItems.map((item) =>
                 renderNavItem({
+                  key: item.id,
                   icon: item.icon,
                   label: item.label,
                   isActive: item.isActive,
@@ -3957,13 +3879,7 @@ function LandingPage({
       </Suspense>
 
       <nav className="pointer-events-none relative z-10 mx-auto flex max-w-7xl items-center justify-between px-6 py-6 sm:px-8">
-        <div className="flex items-center gap-3">
-          <span className="h-2 w-2 rounded-full bg-white shadow-[0_0_22px_rgba(255,255,255,0.9)]" />
-          <div>
-            <div className="text-sm font-semibold tracking-tight text-white">AutoLabReport</div>
-            <div className="text-[11px] uppercase text-white/40">Prism workspace</div>
-          </div>
-        </div>
+        <BrandLockup size="compact" surface="dark" hideTextOnMobile />
         <button
           type="button"
           onClick={() => handleOAuthLogin('google')}
@@ -3977,6 +3893,7 @@ function LandingPage({
       <main className="pointer-events-none relative z-10 flex min-h-[calc(100vh-88px)] items-center px-6 pb-12 pt-8 sm:px-8">
         <section className="mx-auto grid w-full max-w-7xl grid-cols-1 items-center gap-12 lg:grid-cols-[minmax(0,1fr)_420px]">
           <div className="max-w-3xl py-12">
+            <BrandMark size="large" decorative className="mb-8" />
             <p className="mb-5 text-xs font-semibold uppercase text-white/45">
               Laboratory writing, clarified.
             </p>
@@ -4139,7 +4056,16 @@ function WorkspaceApp({
   const [agentResult, setAgentResult] = useState<AgentResult | null>(null)
   const [agentLoading, setAgentLoading] = useState(false)
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
-  const [mobileEditorPane, setMobileEditorPane] = useState<'edit' | 'preview'>('edit')
+  const [editorViewMode, setEditorViewMode] = useState<EditorViewMode>(() =>
+    getInitialEditorViewMode(
+      typeof window === 'undefined' ? null : window.localStorage,
+      typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches,
+    ),
+  )
+  const [editorSplitRatio, setEditorSplitRatio] = useState(() =>
+    readStoredSplitRatio(typeof window === 'undefined' ? null : window.localStorage),
+  )
+  const [isEditorWorkspaceCompact, setIsEditorWorkspaceCompact] = useState(false)
   const [collaboratorEmail, setCollaboratorEmail] = useState('')
   const [documentCollaborators, setDocumentCollaborators] = useState<DocumentCollaborator[]>([])
   const [documentCollaboratorsLoading, setDocumentCollaboratorsLoading] = useState(false)
@@ -4198,6 +4124,7 @@ function WorkspaceApp({
   const pendingAiSelectionRef = useRef<PendingAiSelection | null>(null)
   const shareResetTimerRef = useRef<number | null>(null)
   const hasOpenedSharedDocRef = useRef(false)
+  const scrollSyncSourceRef = useRef<'editor' | 'preview' | null>(null)
 
   const isEditorEmpty = !markdown.trim()
   const isDarkMode = theme === 'dark'
@@ -4220,6 +4147,26 @@ function WorkspaceApp({
         : [],
     [activeDocument, documentVersions],
   )
+
+  const changeEditorViewMode = useCallback((nextMode: EditorViewMode) => {
+    if (!canEditActiveDocument && nextMode !== 'preview') return
+    if (isEditorWorkspaceCompact && nextMode === 'split') return
+    setEditorViewMode(nextMode)
+    window.localStorage.setItem(EDITOR_VIEW_MODE_STORAGE_KEY, nextMode)
+  }, [canEditActiveDocument, isEditorWorkspaceCompact])
+
+  const commitEditorSplitRatio = useCallback((ratio: number) => {
+    setEditorSplitRatio(ratio)
+    window.localStorage.setItem(EDITOR_SPLIT_RATIO_STORAGE_KEY, String(ratio))
+  }, [])
+
+  const visibleEditorViewMode: EditorViewMode = canEditActiveDocument
+    ? editorViewMode
+    : 'preview'
+  const displayedEditorViewMode: EditorViewMode =
+    visibleEditorViewMode === 'split' && isEditorWorkspaceCompact
+      ? 'edit'
+      : visibleEditorViewMode
 
   useEffect(() => {
     if (typeof window === 'undefined' || currentView === 'editor') return
@@ -4552,11 +4499,12 @@ function WorkspaceApp({
       aiSettingsHydratedRef.current = false
       return
     }
+    const settingsSupabase = supabase
 
     let isCancelled = false
     const fetchTimer = window.setTimeout(async () => {
       try {
-        const { data, error } = await supabase
+        const { data, error } = await settingsSupabase
           .from('user_ai_settings')
           .select('*')
           .eq('user_id', user.id)
@@ -4587,9 +4535,10 @@ function WorkspaceApp({
 
   useEffect(() => {
     if (!supabase || !user || !aiSettingsHydratedRef.current) return
+    const settingsSupabase = supabase
 
     const saveTimer = window.setTimeout(async () => {
-      const { error } = await supabase
+      const { error } = await settingsSupabase
         .from('user_ai_settings')
         .upsert(toSupabaseAiSettingsPayload(user.id, aiSettings), { onConflict: 'user_id' })
 
@@ -4694,6 +4643,34 @@ function WorkspaceApp({
   useEffect(() => {
     canEditActiveDocumentRef.current = canEditActiveDocument
   }, [canEditActiveDocument])
+
+  useEffect(() => {
+    if (currentView !== 'editor') return
+
+    function handleViewModeShortcut(event: KeyboardEvent) {
+      if (!event.ctrlKey || !event.altKey || event.metaKey || event.shiftKey) return
+
+      const modeByKey: Partial<Record<string, EditorViewMode>> = {
+        e: 'edit',
+        b: 'split',
+        v: 'preview',
+      }
+      const nextMode = modeByKey[event.key.toLowerCase()]
+      if (!nextMode || (!canEditActiveDocument && nextMode !== 'preview')) return
+
+      event.preventDefault()
+      changeEditorViewMode(nextMode)
+    }
+
+    window.addEventListener('keydown', handleViewModeShortcut)
+    return () => window.removeEventListener('keydown', handleViewModeShortcut)
+  }, [canEditActiveDocument, changeEditorViewMode, currentView])
+
+  useEffect(() => {
+    if (currentView !== 'editor') return
+    const frame = window.requestAnimationFrame(() => editorRef.current?.layout())
+    return () => window.cancelAnimationFrame(frame)
+  }, [currentView, editorSplitRatio, editorViewMode])
 
   useEffect(() => {
     if (!activeDocument || documentCollaboratorsLoading || activeDocumentPermission !== 'none') return
@@ -5120,13 +5097,33 @@ function WorkspaceApp({
   function syncPreviewScroll() {
     const ed = editorRef.current
     const preview = previewRef.current
-    if (!ed || !preview) return
+    if (!ed || !preview || editorViewMode !== 'split' || scrollSyncSourceRef.current === 'preview') return
 
     const editorMaxScroll = ed.getScrollHeight() - ed.getLayoutInfo().height
     const scrollRatio = editorMaxScroll > 0 ? ed.getScrollTop() / editorMaxScroll : 0
     const previewMaxScroll = preview.scrollHeight - preview.clientHeight
 
+    scrollSyncSourceRef.current = 'editor'
     preview.scrollTop = scrollRatio * Math.max(previewMaxScroll, 0)
+    window.requestAnimationFrame(() => {
+      if (scrollSyncSourceRef.current === 'editor') scrollSyncSourceRef.current = null
+    })
+  }
+
+  function syncEditorScroll() {
+    const ed = editorRef.current
+    const preview = previewRef.current
+    if (!ed || !preview || editorViewMode !== 'split' || scrollSyncSourceRef.current === 'editor') return
+
+    const previewMaxScroll = preview.scrollHeight - preview.clientHeight
+    const scrollRatio = previewMaxScroll > 0 ? preview.scrollTop / previewMaxScroll : 0
+    const editorMaxScroll = ed.getScrollHeight() - ed.getLayoutInfo().height
+
+    scrollSyncSourceRef.current = 'preview'
+    ed.setScrollTop(scrollRatio * Math.max(editorMaxScroll, 0))
+    window.requestAnimationFrame(() => {
+      if (scrollSyncSourceRef.current === 'preview') scrollSyncSourceRef.current = null
+    })
   }
 
   function updateLocalCursorAwareness(ed: editor.IStandaloneCodeEditor) {
@@ -6646,8 +6643,8 @@ function WorkspaceApp({
 
       <div className="flex min-w-0 flex-1 flex-col">
       {currentView === 'editor' ? (
-        <header className="sticky top-0 z-40 flex h-16 shrink-0 items-center justify-between gap-4 border-b border-slate-200 bg-white px-5 text-slate-700 shadow-sm">
-          <div className="flex min-w-0 flex-1 items-center gap-3">
+        <header className="sticky top-0 z-40 flex min-h-16 shrink-0 flex-col items-stretch justify-between gap-2 border-b border-slate-200 bg-white px-3 py-2 text-slate-700 shadow-sm sm:flex-row sm:items-center sm:gap-3 sm:px-5">
+          <div className="flex min-w-0 w-full flex-1 items-center gap-2 sm:w-auto sm:gap-3">
             <button
               type="button"
               onClick={() => setCurrentView('projects')}
@@ -6657,7 +6654,8 @@ function WorkspaceApp({
             >
               <ArrowRight className="h-4 w-4 rotate-180" strokeWidth={2} />
             </button>
-            <span className="hidden text-sm font-medium text-slate-400 sm:inline">Projects /</span>
+            <BrandMark size="compact" className="h-8 w-8 rounded-lg" />
+            <span className="hidden text-sm font-medium text-slate-400 lg:inline">Projects /</span>
             {isTitleEditing ? (
               <input
                 value={titleDraft}
@@ -6683,7 +6681,7 @@ function WorkspaceApp({
                   setTitleDraft(activeDocument?.title ?? '')
                   setIsTitleEditing(true)
                 }}
-                className={`max-w-md truncate rounded-xl px-2 py-1.5 text-left text-sm font-semibold text-slate-950 transition-colors ${
+                className={`max-w-32 truncate rounded-xl px-2 py-1.5 text-left text-sm font-semibold text-slate-950 transition-colors sm:max-w-56 lg:max-w-md ${
                   isActiveDocumentOwner
                     ? 'hover:bg-slate-100'
                     : 'cursor-default'
@@ -6694,7 +6692,7 @@ function WorkspaceApp({
               </button>
             )}
             {isReadOnlyMode ? (
-              <span className="text-sm font-medium text-amber-600">唯讀模式</span>
+              <span className="hidden text-sm font-medium text-amber-600 md:inline">唯讀模式</span>
             ) : null}
             {syncStatus === 'exporting' && (
               <span className="text-sm font-medium text-amber-600">正在打包 Word</span>
@@ -6721,14 +6719,49 @@ function WorkspaceApp({
             )}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className={`flex min-w-0 w-full items-center gap-1.5 overflow-x-auto sm:w-auto sm:overflow-visible ${SCROLLBAR_HIDE}`}>
+            <div
+              className="editor-view-switch flex shrink-0 items-center rounded-xl border border-slate-200 bg-slate-50 p-1"
+              role="group"
+              aria-label="編輯器檢視模式"
+            >
+              {([
+                ['edit', 'Edit', Pencil, 'Ctrl + Alt + E'],
+                ['split', 'Split', PanelLeftOpen, 'Ctrl + Alt + B'],
+                ['preview', 'Preview', Eye, 'Ctrl + Alt + V'],
+              ] as const).map(([mode, label, Icon, shortcut]) => {
+                const isUnavailable =
+                  (!canEditActiveDocument && mode !== 'preview') ||
+                  (isEditorWorkspaceCompact && mode === 'split')
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => changeEditorViewMode(mode)}
+                    disabled={isUnavailable}
+                    aria-pressed={displayedEditorViewMode === mode}
+                    aria-label={`${label} 模式`}
+                    title={`${label} 模式（${shortcut}）`}
+                    className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-1 ${
+                      displayedEditorViewMode === mode
+                        ? 'bg-white text-slate-950 shadow-sm ring-1 ring-slate-200'
+                        : 'text-slate-500 hover:bg-white/70 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-35'
+                    }`}
+                  >
+                    <Icon className="h-3.5 w-3.5" strokeWidth={2} />
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
             {user && (
-              <div ref={userMenuRef} className="relative">
+              <div ref={userMenuRef} className="relative hidden sm:block">
                 <button
                   type="button"
                   onClick={() => setIsUserMenuOpen((current) => !current)}
                   className="inline-flex h-10 items-center gap-2 rounded-2xl border border-slate-200 bg-white px-2 pr-3 text-slate-600 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
                   title="帳號選單"
+                  aria-label="帳號選單"
                 >
                   {topbarAvatarUrl ? (
                     <img
@@ -6829,24 +6862,31 @@ function WorkspaceApp({
               <button
                 type="button"
                 onClick={() => void shareCurrentDocument()}
-                className="hidden rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-950 sm:inline-flex"
+                className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                title="分享文件"
+                aria-label="分享文件"
               >
-                Share
+                <Share2 className="h-4 w-4" strokeWidth={2} />
+                <span className="hidden xl:inline">Share</span>
               </button>
             )}
             <button
               type="button"
               onClick={() => setIsAssistDrawerOpen(true)}
-              className="inline-flex h-10 items-center gap-2 rounded-xl bg-slate-950 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+              className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl bg-slate-950 px-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-2"
+              title="开启 AI Assist"
             >
-              AI Assist
+              <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
+              <span className="hidden lg:inline">AI Assist</span>
             </button>
             <button
               type="button"
               onClick={() => setIsAgentDrawerOpen(true)}
-              className="inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
+              className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+              title="开启 AI Agent"
             >
-              AI Agent
+              <Beaker className="h-4 w-4" strokeWidth={2} />
+              <span className="hidden lg:inline">AI Agent</span>
             </button>
 
             <div ref={advancedMenuRef} className="relative">
@@ -6855,6 +6895,7 @@ function WorkspaceApp({
                 onClick={() => setIsAdvancedMenuOpen((current) => !current)}
                 className="grid h-10 w-10 place-items-center rounded-xl text-slate-400 transition hover:bg-slate-100 hover:text-slate-950"
                 title="進階操作"
+                aria-label="更多操作"
               >
                 <MoreHorizontal className="h-5 w-5" strokeWidth={2} />
               </button>
@@ -6904,17 +6945,6 @@ function WorkspaceApp({
                   >
                     <CheckSquare className="h-4 w-4" strokeWidth={2} />
                     報告完整度檢查
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsAdvancedMenuOpen(false)
-                      setIsAgentDrawerOpen(true)
-                    }}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
-                  >
-                    <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
-                    AI Agent
                   </button>
                   <button
                     type="button"
@@ -7200,249 +7230,208 @@ function WorkspaceApp({
         />
       ) : (
       <>
-      <div className="flex border-b border-slate-200 bg-white p-2 lg:hidden">
-        {([
-          ['edit', '編輯'],
-          ['preview', '預覽'],
-        ] as const).map(([pane, label]) => (
-          <button
-            key={pane}
-            type="button"
-            onClick={() => setMobileEditorPane(pane)}
-            className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition ${
-              mobileEditorPane === pane
-                ? 'bg-slate-950 text-white'
-                : 'text-slate-500 hover:bg-slate-100'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-      <main className="relative grid min-h-0 flex-1 grid-cols-1 bg-slate-50 lg:grid-cols-2">
-        <section
-          className={`min-h-0 flex-grow flex-col border-b border-slate-200 bg-slate-50 transition-colors duration-300 lg:flex lg:border-b-0 lg:border-r ${
-            mobileEditorPane === 'edit' ? 'flex' : 'hidden'
-          }`}
-        >
-          <div className="flex min-h-12 shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-3 py-2">
-            <div className={`flex min-w-0 flex-1 items-center gap-1 overflow-x-auto ${SCROLLBAR_HIDE}`}>
-              {editorToolbarGroups.map((group, groupIndex) => (
-                <div key={groupIndex} className="flex items-center gap-1 border-r border-slate-200 pr-2 last:border-r-0 last:pr-0">
-                  {group.map((item) => (
-                    <button
-                      key={item.label}
-                      type="button"
-                      onClick={item.action}
-                      disabled={!canEditActiveDocument}
-                      className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-35"
-                      title={item.label}
-                      aria-label={item.label}
-                    >
-                      <item.icon className="h-4 w-4" strokeWidth={2} />
-                    </button>
-                  ))}
-                </div>
-              ))}
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <ScreenRecorderControls
-                supabase={supabase}
-                userId={user?.id ?? null}
-                documentId={activeDocumentId || null}
-                onUploaded={() => setBridgeToast('錄影已上傳')}
-                onError={setBridgeToast}
-              />
-              <button
-                type="button"
-                onClick={() => setIsAssistDrawerOpen(true)}
-                className="inline-flex h-8 shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
-              >
-                <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
-                AI Assist
-              </button>
-            </div>
-          </div>
-          <div className="relative min-h-[280px] flex-1 flex-grow bg-slate-50 font-mono leading-relaxed lg:min-h-0">
-            {aiSelectionMenu.visible && (
-              <div
-                className="absolute z-50 flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-1.5 py-1.5 text-sm shadow-xl shadow-slate-200/80 transition-colors duration-200"
-                style={{
-                  top: aiSelectionMenu.top,
-                  left: aiSelectionMenu.left,
-                }}
-              >
-                <button
-                  type="button"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => wrapSelection('**', '**', '粗體文字')}
-                  className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
-                  title="粗體"
-                >
-                  <Bold className="h-4 w-4" strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={headingSelection}
-                  className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
-                  title="標題"
-                >
-                  <Heading2 className="h-4 w-4" strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => insertAtCursor('| 欄位 A | 欄位 B |\n|---|---|\n|  |  |')}
-                  className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
-                  title="表格"
-                >
-                  <Table2 className="h-4 w-4" strokeWidth={2} />
-                </button>
-                <span className="mx-1 h-5 w-px bg-slate-200" />
-                <button
-                  type="button"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => setIsAssistDrawerOpen(true)}
-                  className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 hover:text-slate-950"
-                  title="AI Assist"
-                >
-                  <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
-                  AI Assist
-                </button>
+      {visibleEditorViewMode !== 'preview' && canEditActiveDocument && (
+        <div className="editor-format-toolbar flex min-h-12 shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-3 py-2">
+          <div className={`flex min-w-0 flex-1 items-center gap-1 overflow-x-auto ${SCROLLBAR_HIDE}`}>
+            {editorToolbarGroups.map((group, groupIndex) => (
+              <div key={groupIndex} className="flex shrink-0 items-center gap-1 border-r border-slate-200 pr-2 last:border-r-0 last:pr-0">
+                {group.map((item) => (
+                  <button
+                    key={item.label}
+                    type="button"
+                    onClick={item.action}
+                    className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-35"
+                    title={item.label}
+                    aria-label={item.label}
+                  >
+                    <item.icon className="h-4 w-4" strokeWidth={2} />
+                  </button>
+                ))}
               </div>
-            )}
-            <Suspense
-              fallback={
-                <div className="flex h-full items-center justify-center text-sm font-medium text-zinc-500">
-                  正在載入編輯器...
+            ))}
+          </div>
+          <div className="shrink-0 border-l border-slate-200 pl-3">
+            <ScreenRecorderControls
+              supabase={supabase}
+              userId={user?.id ?? null}
+              documentId={activeDocumentId || null}
+              onUploaded={() => setBridgeToast('錄影已上傳')}
+              onError={setBridgeToast}
+            />
+          </div>
+        </div>
+      )}
+
+      <EditorWorkspaceLayout
+        mode={visibleEditorViewMode}
+        canEdit={canEditActiveDocument}
+        splitRatio={editorSplitRatio}
+        onSplitRatioChange={setEditorSplitRatio}
+        onSplitRatioCommit={commitEditorSplitRatio}
+        onCompactChange={setIsEditorWorkspaceCompact}
+        editor={
+          <>
+            <div className="relative min-h-[280px] flex-1 bg-slate-50 font-mono leading-relaxed">
+              {aiSelectionMenu.visible && (
+                <div
+                  className="absolute z-50 flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-1.5 py-1.5 text-sm shadow-xl shadow-slate-200/80"
+                  style={{ top: aiSelectionMenu.top, left: aiSelectionMenu.left }}
+                >
+                  <button
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => wrapSelection('**', '**', '粗體文字')}
+                    className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                    title="粗體"
+                    aria-label="将选中文字设为粗体"
+                  >
+                    <Bold className="h-4 w-4" strokeWidth={2} />
+                  </button>
+                  <button
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={headingSelection}
+                    className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                    title="標題"
+                    aria-label="将选中文字设为标题"
+                  >
+                    <Heading2 className="h-4 w-4" strokeWidth={2} />
+                  </button>
+                  <button
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => insertAtCursor('| 欄位 A | 欄位 B |\n|---|---|\n|  |  |')}
+                    className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                    title="表格"
+                    aria-label="插入表格"
+                  >
+                    <Table2 className="h-4 w-4" strokeWidth={2} />
+                  </button>
+                  <span className="mx-1 h-5 w-px bg-slate-200" />
+                  <button
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => setIsAssistDrawerOpen(true)}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                    title="用 AI 处理选中文字"
+                  >
+                    <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
+                    AI 改写所选
+                  </button>
                 </div>
-              }
-            >
-              <MarkdownEditor
-                height="100%"
-                defaultLanguage="markdown"
-                theme="vs"
-                value={markdown}
-                onMount={(ed) => {
-                  editorRef.current = ed
-                  editorScrollDisposableRef.current?.dispose()
-                  editorScrollDisposableRef.current = ed.onDidScrollChange((event) => {
-                    if (event.scrollTopChanged) {
-                      syncPreviewScroll()
-                      updateAiSelectionMenu(ed)
-                    }
-                  })
-                  editorContentDisposableRef.current?.dispose()
-                  editorContentDisposableRef.current = ed.onDidChangeModelContent(
-                    (event) => {
+              )}
+              <Suspense
+                fallback={
+                  <div className="flex h-full items-center justify-center text-sm font-medium text-zinc-500">
+                    正在載入編輯器...
+                  </div>
+                }
+              >
+                <MarkdownEditor
+                  height="100%"
+                  defaultLanguage="markdown"
+                  theme="vs"
+                  value={markdown}
+                  onMount={(ed) => {
+                    editorRef.current = ed
+                    editorScrollDisposableRef.current?.dispose()
+                    editorScrollDisposableRef.current = ed.onDidScrollChange((event) => {
+                      if (event.scrollTopChanged) {
+                        syncPreviewScroll()
+                        updateAiSelectionMenu(ed)
+                      }
+                    })
+                    editorContentDisposableRef.current?.dispose()
+                    editorContentDisposableRef.current = ed.onDidChangeModelContent((event) => {
                       applyMonacoChangesToYText(event)
                       updateEditorStats(ed)
-                    },
-                  )
-                  editorSelectionDisposableRef.current?.dispose()
-                  editorSelectionDisposableRef.current = ed.onDidChangeCursorSelection(() => {
+                    })
+                    editorSelectionDisposableRef.current?.dispose()
+                    editorSelectionDisposableRef.current = ed.onDidChangeCursorSelection(() => {
+                      updateLocalCursorAwareness(ed)
+                      updateAiSelectionMenu(ed)
+                      updateEditorStats(ed)
+                    })
+
+                    editorPasteCleanupRef.current?.()
+                    const editorDomNode = ed.getDomNode()
+                    editorDomNode?.addEventListener('paste', handleEditorPaste)
+                    editorPasteCleanupRef.current = () => editorDomNode?.removeEventListener('paste', handleEditorPaste)
                     updateLocalCursorAwareness(ed)
-                    updateAiSelectionMenu(ed)
                     updateEditorStats(ed)
-                  })
-
-                  editorPasteCleanupRef.current?.()
-                  const editorDomNode = ed.getDomNode()
-                  editorDomNode?.addEventListener('paste', handleEditorPaste)
-                  editorPasteCleanupRef.current = () => {
-                    editorDomNode?.removeEventListener('paste', handleEditorPaste)
-                  }
-                  updateLocalCursorAwareness(ed)
-                  updateEditorStats(ed)
-                }}
-                options={{
-                  readOnly: !canEditActiveDocument,
-                  domReadOnly: !canEditActiveDocument,
-                  readOnlyMessage: { value: '此文件目前為唯讀模式' },
-                  lineNumbers: 'on',
-                  minimap: { enabled: false },
-                  wordWrap: 'on',
-                  fontSize: notePreferences.editorFontSize,
-                  lineHeight: notePreferences.editorLineHeight,
-                  fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-                  scrollBeyondLastLine: false,
-                  overviewRulerBorder: false,
-                  overviewRulerLanes: 0,
-                  hideCursorInOverviewRuler: true,
-                  glyphMargin: false,
-                  folding: false,
-                  lineDecorationsWidth: 8,
-                  lineNumbersMinChars: 3,
-                  renderLineHighlight: 'none',
-                  scrollbar: {
-                    verticalScrollbarSize: 8,
-                    horizontalScrollbarSize: 8,
-                  },
-                  padding: { top: 48, bottom: 48 },
-                  placeholder: '在此貼上 ChatGPT / Gemini 產生的實驗報告...',
-                }}
-              />
-            </Suspense>
-          </div>
-          <div className="flex h-9 shrink-0 items-center justify-between border-t border-slate-200 bg-white px-3 text-xs font-medium text-slate-500">
-            <div className="flex min-w-0 items-center gap-3">
-              <span>第 {editorStats.lineNumber} 行，第 {editorStats.column} 欄</span>
-              <span className="hidden sm:inline">共 {editorStats.lineCount} 行</span>
-              {editorStats.selectedLength > 0 && (
-                <span className="hidden sm:inline">已選 {editorStats.selectedLength} 字</span>
-              )}
+                  }}
+                  options={{
+                    readOnly: !canEditActiveDocument,
+                    domReadOnly: !canEditActiveDocument,
+                    readOnlyMessage: { value: '此文件目前為唯讀模式' },
+                    lineNumbers: 'on',
+                    minimap: { enabled: false },
+                    wordWrap: 'on',
+                    fontSize: notePreferences.editorFontSize,
+                    lineHeight: notePreferences.editorLineHeight,
+                    fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+                    scrollBeyondLastLine: false,
+                    overviewRulerBorder: false,
+                    overviewRulerLanes: 0,
+                    hideCursorInOverviewRuler: true,
+                    glyphMargin: false,
+                    folding: false,
+                    lineDecorationsWidth: 8,
+                    lineNumbersMinChars: 3,
+                    renderLineHighlight: 'none',
+                    scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
+                    padding: { top: 48, bottom: 48 },
+                    placeholder: '在此貼上 ChatGPT / Gemini 產生的實驗報告...',
+                  }}
+                />
+              </Suspense>
             </div>
-            <div className="flex items-center gap-3">
-              <span className="hidden sm:inline">空白寬度：4</span>
-              <span>換行</span>
-              <span>Markdown</span>
-              <span>長度：{editorStats.length}</span>
+            <div className="flex h-9 shrink-0 items-center justify-between gap-3 overflow-hidden border-t border-slate-200 bg-white px-3 text-xs font-medium text-slate-500">
+              <div className="flex min-w-0 items-center gap-3 whitespace-nowrap">
+                <span>第 {editorStats.lineNumber} 行，第 {editorStats.column} 欄</span>
+                <span className="hidden sm:inline">共 {editorStats.lineCount} 行</span>
+                {editorStats.selectedLength > 0 && <span className="hidden sm:inline">已選 {editorStats.selectedLength} 字</span>}
+              </div>
+              <div className="flex shrink-0 items-center gap-3 whitespace-nowrap">
+                <span className="hidden md:inline">空白寬度：4</span>
+                <span className="hidden sm:inline">換行</span>
+                <span>Markdown</span>
+                <span>長度：{editorStats.length}</span>
+              </div>
             </div>
-          </div>
-        </section>
-
-        <section
-          className={`min-h-0 flex-grow flex-col bg-white transition-colors duration-300 lg:flex ${
-            mobileEditorPane === 'preview' ? 'flex' : 'hidden'
-          }`}
-        >
+          </>
+        }
+        preview={
           <div
             ref={previewRef}
-            className={`preview-pane flex-1 overflow-auto bg-white px-8 py-10 transition-colors duration-300 lg:px-14 ${SCROLLBAR_HIDE}`}
+            onScroll={syncEditorScroll}
+            className={`preview-pane h-full overflow-auto bg-slate-100/70 px-3 py-6 transition-colors sm:px-6 sm:py-8 lg:px-10 ${SCROLLBAR_HIDE}`}
           >
             {renderError ? (
               <p className="text-sm text-red-500">預覽錯誤：{renderError}</p>
             ) : isEditorEmpty ? (
-              <div className="mx-auto flex h-full min-h-[420px] max-w-4xl flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white px-12 py-16 text-center">
+              <div className="mx-auto flex h-full min-h-[360px] max-w-4xl flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center">
                 <p className="max-w-md text-base leading-relaxed text-slate-500">
-                  開始在左側撰寫或貼上內容，右側會即時形成乾淨的報告預覽。
+                  开始撰写或贴上内容，这里会即时显示报告预览。
                 </p>
               </div>
             ) : preview ? (
               <div
                 id="pdf-preview-content"
-                className={`pdf-export-surface markdown-preview prose prose-slate mx-auto min-h-[calc(100vh-9rem)] max-w-4xl bg-white text-slate-900 transition-colors duration-300 prose-headings:font-semibold prose-p:leading-loose ${
+                className={`pdf-export-surface markdown-preview prose prose-slate mx-auto min-h-full max-w-4xl rounded-sm bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/80 transition-colors prose-headings:font-semibold prose-p:leading-loose ${
                   notePreferences.compactPreview
-                    ? 'px-3 py-5 prose-p:my-2 lg:px-6 lg:py-8'
-                    : 'px-4 py-8 lg:px-10 lg:py-12'
+                    ? 'px-4 py-6 prose-p:my-2 sm:px-6 sm:py-8'
+                    : 'px-5 py-8 sm:px-8 sm:py-10 lg:px-12 lg:py-12'
                 }`}
               >
-                <ReactMarkdown
-                  remarkPlugins={REMARK_PLUGINS}
-                  rehypePlugins={REHYPE_PLUGINS}
-                  urlTransform={safeMarkdownUrlTransform}
-                  components={MARKDOWN_COMPONENTS}
-                >
-                  {preview}
-                </ReactMarkdown>
+                <MarkdownRenderer markdown={preview} />
               </div>
             ) : (
               <p className="text-sm text-zinc-500">正在準備預覽…</p>
             )}
           </div>
-        </section>
-      </main>
+        }
+      />
 
       {currentView === 'editor' && (
         <div className={`pointer-events-none fixed inset-0 z-50 ${isAssistDrawerOpen ? '' : 'hidden'}`}>
@@ -7742,9 +7731,9 @@ function WorkspaceApp({
                           {agentResult.proposed_markdown.length} 字
                         </span>
                       </div>
-                      <pre className={`max-h-52 overflow-auto rounded-2xl bg-slate-950 p-4 text-xs leading-5 text-slate-100 ${SCROLLBAR_HIDE}`}>
-                        {agentResult.proposed_markdown}
-                      </pre>
+                      <div className={`markdown-preview max-h-64 overflow-auto rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-800 ${SCROLLBAR_HIDE}`}>
+                        <MarkdownRenderer markdown={agentResult.proposed_markdown} />
+                      </div>
                       <button
                         type="button"
                         onClick={applyAgentResult}
@@ -8244,12 +8233,13 @@ function App() {
       window.history.replaceState(null, '', '/')
       return
     }
+    const sharingSupabase = supabase
 
     let isCancelled = false
     const loadTimer = window.setTimeout(async () => {
       setPublicRouteLoading(true)
       try {
-        const { data, error } = await supabase
+        const { data, error } = await sharingSupabase
           .from('documents')
           .select('*')
           .eq('id', sharedDocId)
@@ -8356,8 +8346,9 @@ function App() {
 
   if (authLoading || publicRouteLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#FAFAFC] text-sm font-medium text-zinc-500">
-        {authLoading ? '正在確認登入狀態...' : '正在開啟共享文件...'}
+      <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-[#FAFAFC] text-sm font-medium text-zinc-500">
+        <BrandMark size="default" />
+        <span>{authLoading ? '正在確認登入狀態...' : '正在開啟共享文件...'}</span>
       </div>
     )
   }
