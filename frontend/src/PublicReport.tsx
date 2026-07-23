@@ -9,9 +9,6 @@ type PublicDocumentRow = {
   content: string | null
   share_setting: 'private' | 'view' | 'edit' | null
   is_trashed: boolean | null
-  updated_at?: string | null
-  created_at?: string | null
-  view_count?: number | null
 }
 
 type PublicReportProps = {
@@ -32,7 +29,7 @@ function getPlainSummary(markdown: string) {
   return markdown
     .replace(/```[\s\S]*?```/g, '')
     .replace(/!\[[^\]]*]\([^)]*\)/g, '')
-    .replace(/\[[^\]]+]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]+)]\([^)]*\)/g, '$1')
     .replace(/[#*_`>|~$-]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
@@ -87,7 +84,7 @@ export default function PublicReport({ shareId }: PublicReportProps) {
 
       const { data, error: loadError } = await supabaseClient!
         .from('documents')
-        .select('id,title,content,share_setting,is_trashed,created_at,updated_at,view_count')
+        .select('id,title,content,share_setting,is_trashed')
         .eq('id', shareId)
         .eq('is_trashed', false)
         .maybeSingle()
@@ -95,7 +92,7 @@ export default function PublicReport({ shareId }: PublicReportProps) {
       if (isCancelled) return
 
       if (loadError) {
-        setError(loadError.message)
+        setError('公開報告暫時無法載入，請稍後重試或聯絡報告擁有者。')
         setPublicDocument(null)
         setIsLoading(false)
         return
@@ -112,9 +109,6 @@ export default function PublicReport({ shareId }: PublicReportProps) {
       setPublicDocument(nextDocument)
       setIsLoading(false)
 
-      void supabaseClient!.rpc('increment_document_view_count', {
-        p_document_id: nextDocument.id,
-      })
     }
 
     void loadPublicReport()
@@ -178,7 +172,7 @@ export default function PublicReport({ shareId }: PublicReportProps) {
             {summary && <p className="mt-3 max-w-3xl text-sm leading-6 text-slate-500">{summary}</p>}
           </div>
           <div className="rounded-full bg-slate-100 px-3 py-1 text-xs font-semibold text-slate-500">
-            {publicDocument.view_count ?? 0} views
+            唯讀分享
           </div>
         </div>
       </header>

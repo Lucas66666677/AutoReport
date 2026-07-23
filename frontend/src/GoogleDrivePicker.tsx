@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Cloud, FileText, Loader2, RefreshCcw, X } from 'lucide-react'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '')
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 
 type DriveFile = {
@@ -52,8 +52,11 @@ export default function GoogleDrivePicker({
     setLoading(true)
     setError(null)
     try {
-      const params = new URLSearchParams({ access_token: accessToken })
-      const response = await fetch(`${API_BASE_URL}/api/drive/files?${params.toString()}`)
+      const response = await fetch(`${API_BASE_URL}/api/drive/files`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ access_token: accessToken }),
+      })
       const data = (await response.json().catch(() => null)) as DriveFilesResponse | { detail?: string } | null
       if (!response.ok) {
         throw new Error(data && 'detail' in data && data.detail ? data.detail : `HTTP ${response.status}`)

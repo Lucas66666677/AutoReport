@@ -57,7 +57,7 @@ export const SANITIZE_SCHEMA = {
   },
   protocols: {
     ...defaultSchema.protocols,
-    src: ['http', 'https', 'data'],
+    src: ['http', 'https', 'data', 'supabase-image'],
   },
 }
 
@@ -72,6 +72,10 @@ export function safeMarkdownUrlTransform(value: string): string {
   if (!trimmedValue) return ''
 
   if (/^data:image\/(?:png|jpe?g|gif|webp);base64,/i.test(trimmedValue)) {
+    return trimmedValue
+  }
+
+  if (/^supabase-image:\/\/[A-Za-z0-9%._~-]+$/i.test(trimmedValue)) {
     return trimmedValue
   }
 

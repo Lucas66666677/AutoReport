@@ -207,9 +207,9 @@ create index if not exists profiles_stripe_customer_id_idx on public.profiles(st
 create index if not exists profiles_stripe_subscription_id_idx on public.profiles(stripe_subscription_id);
 
 insert into storage.buckets (id, name, public)
-values ('report_images', 'report_images', true)
+values ('report_images', 'report_images', false)
 on conflict (id) do update
-set public = excluded.public;
+set public = false;
 
 create or replace function public.is_document_owner(
   p_document_id uuid,
@@ -280,10 +280,6 @@ alter table public.ai_usage_logs enable row level security;
 alter table public.report_templates enable row level security;
 
 drop policy if exists "report_images_public_read" on storage.objects;
-create policy "report_images_public_read"
-on storage.objects for select
-to anon, authenticated
-using (bucket_id = 'report_images');
 
 drop policy if exists "report_images_authenticated_insert_own_folder" on storage.objects;
 create policy "report_images_authenticated_insert_own_folder"

@@ -9,6 +9,12 @@ import ReactMarkdown, { type Components, type ExtraProps } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkMath from 'remark-math'
 import { REHYPE_PLUGINS, safeMarkdownUrlTransform } from './markdownSafety'
+import {
+  parseLegacyPublicReportImagePath,
+  parsePrivateReportImagePath,
+  REPORT_IMAGE_BUCKET,
+} from './reportImageStorage'
+import { SUPABASE_URL, supabaseClient } from './supabaseClient'
 
 const MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkMath]
 
@@ -88,8 +94,46 @@ export function MermaidBlock({ chart }: { chart: string }) {
 type MarkdownImageProps = ComponentProps<'img'> & ExtraProps
 
 function MarkdownImage({ node, alt, className, onError, ...props }: MarkdownImageProps) {
-  const [failed, setFailed] = useState(false)
+  const source = typeof props.src === 'string' ? props.src : undefined
+  const privatePath =
+    parsePrivateReportImagePath(source) ?? parseLegacyPublicReportImagePath(source, SUPABASE_URL)
+  const [failedSource, setFailedSource] = useState<string | null>(null)
+  const [signedImage, setSignedImage] = useState<{
+    path: string
+    url: string
+    failed: boolean
+  } | null>(null)
   void node
+
+  useEffect(() => {
+    let isCancelled = false
+    if (!privatePath || !supabaseClient) return
+
+    void supabaseClient.storage
+      .from(REPORT_IMAGE_BUCKET)
+      .createSignedUrl(privatePath, 3600)
+      .then(({ data, error }) => {
+        if (isCancelled) return
+        if (error || !data.signedUrl) {
+          setSignedImage({ path: privatePath, url: '', failed: true })
+          return
+        }
+        setSignedImage({ path: privatePath, url: data.signedUrl, failed: false })
+      })
+
+    return () => {
+      isCancelled = true
+    }
+  }, [privatePath, source])
+
+  const resolvedSource = privatePath
+    ? signedImage?.path === privatePath
+      ? signedImage.url
+      : ''
+    : source
+  const failed =
+    failedSource === source ||
+    Boolean(privatePath && (!supabaseClient || (signedImage?.path === privatePath && signedImage.failed)))
 
   if (failed) {
     return (
@@ -99,16 +143,21 @@ function MarkdownImage({ node, alt, className, onError, ...props }: MarkdownImag
     )
   }
 
+  if (privatePath && !resolvedSource) {
+    return <span className="markdown-image-loading">正在安全載入圖片…</span>
+  }
+
   return (
     <img
       {...props}
+      src={resolvedSource}
       alt={alt ?? '報告圖片'}
       className={className}
       loading="lazy"
       decoding="async"
       onError={(event) => {
         onError?.(event)
-        setFailed(true)
+        setFailedSource(source ?? '')
       }}
     />
   )

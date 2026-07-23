@@ -90,6 +90,12 @@ import {
   readDocumentVersions,
   type DocumentVersion,
 } from './documentVersions'
+import {
+  queueDocumentSave,
+  readDocumentSaveOutbox,
+  removeDocumentSave,
+  type PendingDocumentSave,
+} from './documentSaveOutbox'
 import { BrandLockup, BrandMark } from './Brand'
 import EditorWorkspaceLayout from './EditorWorkspaceLayout'
 import {
@@ -103,23 +109,35 @@ import GoogleDrivePicker from './GoogleDrivePicker'
 import MarkdownRenderer from './MarkdownRenderer'
 import PublicReport from './PublicReport'
 import { analyzeReportQuality } from './reportQuality'
+import { createPrivateReportImageUrl, REPORT_IMAGE_BUCKET } from './reportImageStorage'
 import ScreenRecorderControls from './ScreenRecorderControls'
 import { supabaseClient as supabase } from './supabaseClient'
 import { useExtensionBridge } from './useExtensionBridge'
 import { useSettings, type NotePreferences } from './useSettings'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-const COLLABORATION_URL = import.meta.env.VITE_COLLABORATION_URL || 'ws://localhost:1234'
+const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '')
+const COLLABORATION_URL = import.meta.env.VITE_COLLABORATION_URL || (import.meta.env.DEV ? 'ws://localhost:1234' : '')
 const RENDER_DEBOUNCE_MS = 300
+const ENABLE_BILLING = import.meta.env.VITE_ENABLE_BILLING === 'true'
+const ENABLE_GITHUB_AUTH = import.meta.env.VITE_ENABLE_GITHUB_AUTH === 'true'
+const ENABLE_GITHUB_SYNC = import.meta.env.VITE_ENABLE_GITHUB_SYNC === 'true'
+const ENABLE_SCREEN_RECORDING = import.meta.env.VITE_ENABLE_SCREEN_RECORDING === 'true'
+const ENABLE_REALTIME_COLLABORATION = import.meta.env.VITE_ENABLE_REALTIME_COLLABORATION === 'true'
+const ENABLE_GOOGLE_DRIVE = import.meta.env.VITE_ENABLE_GOOGLE_DRIVE === 'true'
+const ENABLE_BROWSER_EXTENSION = import.meta.env.VITE_ENABLE_BROWSER_EXTENSION === 'true'
 const THEME_STORAGE_KEY = 'autolabreport-theme'
-const CONTENT_STORAGE_KEY = 'autoLabReport_content'
-const DOCUMENTS_STORAGE_KEY = 'autoLabReport_documents'
-const ACTIVE_DOCUMENT_ID_STORAGE_KEY = 'autoLabReport_activeDocumentId'
+const CONTENT_STORAGE_KEY = 'autoLabReport_guestContent:v2'
+const DOCUMENTS_STORAGE_KEY = 'autoLabReport_guestDocuments:v2'
+const ACTIVE_DOCUMENT_ID_STORAGE_KEY = 'autoLabReport_guestActiveDocumentId:v2'
+const GUEST_SESSION_STORAGE_KEY = 'autoLabReport_guestSession:v1'
 const ANONYMOUS_IDENTITY_STORAGE_KEY = 'autoLabReport_anonymousIdentity'
 const AI_SETTINGS_STORAGE_KEY = 'autoLabReport_aiSettings'
 const USER_TEMPLATES_STORAGE_KEY = 'autoLabReport_userTemplates'
 const DOCUMENT_VERSIONS_STORAGE_KEY = 'autoLabReport_documentVersions'
-const REPORT_IMAGE_BUCKET = 'report_images'
+
+function getDocumentVersionsStorageKey(userId: string | null): string {
+  return `${DOCUMENT_VERSIONS_STORAGE_KEY}:${userId ?? 'guest-v2'}`
+}
 const MarkdownEditor = lazy(() => import('@monaco-editor/react'))
 const PrismLandingScene = lazy(() => import('./PrismLandingScene'))
 const documentYDocs = new Map<string, YDoc>()
@@ -312,6 +330,8 @@ type SyncStatus =
   | 'exporting'
   | 'exportingPdf'
 
+type DocumentSaveStatus = 'saved' | 'unsaved' | 'saving' | 'error'
+
 type ShareSetting = 'private' | 'view' | 'edit'
 type CollaboratorRole = 'view' | 'edit'
 type DocumentPermission = 'owner' | 'edit' | 'view' | 'none'
@@ -495,6 +515,14 @@ type PendingAiSelection = {
   startOffset: number
   endOffset: number
   text: string
+}
+
+type PendingAiChange = {
+  title: string
+  originalText: string
+  proposedText: string
+  mode: 'replace-selection' | 'append-document'
+  selection: PendingAiSelection | null
 }
 
 type CollaboratorPresence = {
@@ -786,6 +814,17 @@ function createReportImagePath(file: File, userId: string, documentId: string | 
   return `${userId}/${safeDocumentId}/${Date.now()}-${randomId}.${extension}`
 }
 
+function createSafeExportFilename(title: string | undefined, extension: 'docx' | 'pdf' | 'md'): string {
+  const safeTitle = Array.from(title || 'AutoLabReport')
+    .filter((character) => character.charCodeAt(0) >= 32)
+    .join('')
+    .replace(/[<>:"/\\|?*]/g, '-')
+    .replace(/[.\s]+$/g, '')
+    .trim()
+    .slice(0, 100)
+  return `${safeTitle || 'AutoLabReport'}.${extension}`
+}
+
 function applyAutoNumbering(
   text: string,
   options: { figures?: boolean; tables?: boolean } = { figures: true, tables: true },
@@ -1041,13 +1080,15 @@ function DocumentSidebar({
       isActive: currentView === 'settings',
       onClick: () => onChangeView('settings'),
     },
-    {
-      id: 'extensions',
-      label: '擴充功能',
-      icon: Puzzle,
-      isActive: false,
-      onClick: onOpenExtensionModal,
-    },
+    ...(ENABLE_BROWSER_EXTENSION
+      ? [{
+          id: 'extensions',
+          label: '擴充功能',
+          icon: Puzzle,
+          isActive: false,
+          onClick: onOpenExtensionModal,
+        }]
+      : []),
     {
       id: 'prompts',
       label: '我的提示詞庫',
@@ -1210,7 +1251,7 @@ function DocumentSidebar({
         </button>
         <button
           type="button"
-          title="登出"
+          title={user ? '登出' : '返回登入'}
           onClick={onSignOut}
           className="mt-2 grid h-10 w-10 place-items-center rounded-xl transition hover:bg-white hover:text-slate-950 hover:shadow-sm"
         >
@@ -1474,16 +1515,16 @@ function DocumentSidebar({
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold text-slate-950">{userName}</p>
             <p className="truncate text-xs text-slate-400">
-              {user?.email ?? '已登入'}
+              {user?.email ?? '本機訪客模式'}
             </p>
           </div>
           <button
             type="button"
             onClick={onSignOut}
-            title="登出"
+            title={user ? '登出' : '返回登入'}
             className="rounded-lg px-2 py-1.5 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-950"
           >
-            登出
+            {user ? '登出' : '登入'}
           </button>
         </div>
       </div>
@@ -1530,7 +1571,7 @@ function getUserDisplayName(user: User | null): string {
   const name = user?.user_metadata?.name
   if (typeof name === 'string' && name.trim()) return name.trim()
 
-  return user?.email ?? 'AutoLabReport 使用者'
+  return user?.email ?? '訪客使用者'
 }
 
 function getUserAvatarUrl(user: User | null): string {
@@ -1685,8 +1726,8 @@ function getDocumentPermission(
 ): DocumentPermission {
   if (!document || document.type !== 'file' || document.isTrashed) return 'none'
   if (!user) {
-    if (document.shareSetting === 'edit') return 'edit'
-    if (document.shareSetting === 'view') return 'view'
+    if (!document.userId) return 'owner'
+    if (document.shareSetting === 'edit' || document.shareSetting === 'view') return 'view'
     return 'none'
   }
 
@@ -1701,8 +1742,7 @@ function getDocumentPermission(
     : undefined
 
   if (invitedCollaborator) return invitedCollaborator.role
-  if (document.shareSetting === 'edit') return 'edit'
-  if (document.shareSetting === 'view') return 'view'
+  if (document.shareSetting === 'edit' || document.shareSetting === 'view') return 'view'
   return 'none'
 }
 
@@ -1837,13 +1877,15 @@ function AiSettingsView({
       description: isPro ? '付費版直接使用 AutoLabReport 的高級 AI。' : '免費版先提供 3 次測試額度，適合確認流程。',
       icon: Gauge,
     },
-    {
-      id: 'extension' as AiProvider,
-      title: '瀏覽器插件',
-      status: '待測試連接',
-      description: '用你自己的 ChatGPT、Gemini 或其他網頁 AI，不消耗內建額度。',
-      icon: Puzzle,
-    },
+    ...(ENABLE_BROWSER_EXTENSION
+      ? [{
+          id: 'extension' as AiProvider,
+          title: '瀏覽器插件',
+          status: '實驗功能',
+          description: '用你自己的 ChatGPT、Gemini 或其他網頁 AI，不消耗內建額度。',
+          icon: Puzzle,
+        }]
+      : []),
     {
       id: 'user_api_key' as AiProvider,
       title: '自備 API Key',
@@ -1853,8 +1895,18 @@ function AiSettingsView({
     },
   ]
   const toolCards = [
-    { title: 'Google Drive', description: '匯出、同步與備份文件。', status: '待連接', icon: Cloud },
-    { title: 'GitHub 同步', description: '將 Markdown 報告推送到自己的 Repo。', status: '可綁定', icon: FileCode2 },
+    {
+      title: 'Google Drive',
+      description: '從雲端硬碟匯入 Word 或 PDF。',
+      status: ENABLE_GOOGLE_DRIVE ? '待連接' : 'Closed Beta 後',
+      icon: Cloud,
+    },
+    {
+      title: 'GitHub 同步',
+      description: '將 Markdown 報告推送到自己的 Repo。',
+      status: ENABLE_GITHUB_SYNC ? '可綁定' : 'Closed Beta 後',
+      icon: FileCode2,
+    },
     { title: 'Markdown 匯入', description: '上傳 .md 後直接進入編輯器。', status: '已可用', icon: FileUp },
     { title: 'Word / PDF 匯出', description: '把報告交付成常用格式。', status: '已可用', icon: Download },
     { title: '新增工具', description: '之後可讓使用者添加自己的工具列。', status: '預留', icon: Plus },
@@ -2133,7 +2185,7 @@ function AiSettingsView({
                   <button
                     key={tool.title}
                     type="button"
-                    onClick={tool.title === 'GitHub 同步' ? onConnectGithub : undefined}
+                    onClick={tool.title === 'GitHub 同步' && ENABLE_GITHUB_SYNC ? onConnectGithub : undefined}
                     className="rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:-translate-y-0.5 hover:shadow-md"
                   >
                     <div className="flex items-start justify-between gap-3">
@@ -3723,6 +3775,7 @@ function ReportQualityView({
                 <div>
                   <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-50">{item.label}</h2>
                   <p className="mt-1 text-sm leading-6 text-zinc-500 dark:text-zinc-400">{item.description}</p>
+                  <p className="mt-1 text-xs font-medium text-zinc-400">位置：{item.location}</p>
                   {!item.passed && (
                     <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
                       {item.suggestion}
@@ -3818,11 +3871,13 @@ function VersionHistoryView({
 function LandingPage({
   onOAuthLogin,
   onSendMagicLink,
+  onContinueAsGuest,
   authLoading,
   authMessage,
 }: {
   onOAuthLogin: (provider: Provider) => void
   onSendMagicLink: (email: string) => Promise<boolean>
+  onContinueAsGuest: () => void
   authLoading: boolean
   authMessage: string | null
 }) {
@@ -3982,19 +4037,29 @@ function LandingPage({
                 </span>
                 使用 Google 繼續
               </button>
+              {ENABLE_GITHUB_AUTH && (
+                <button
+                  type="button"
+                  onClick={() => handleOAuthLogin('github')}
+                  disabled={authLoading}
+                  className="flex w-full items-center justify-center gap-3 rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm font-semibold text-white/82 transition-all hover:border-white/20 hover:bg-black/35 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <span className="text-xs font-semibold tracking-wide text-white/58">GH</span>
+                  使用 GitHub 繼續
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => handleOAuthLogin('github')}
+                onClick={onContinueAsGuest}
                 disabled={authLoading}
-                className="flex w-full items-center justify-center gap-3 rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm font-semibold text-white/82 transition-all hover:border-white/20 hover:bg-black/35 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex w-full items-center justify-center rounded-2xl border border-white/10 px-4 py-3 text-sm font-semibold text-white/68 transition-all hover:border-white/20 hover:bg-white/[0.04] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <span className="text-xs font-semibold tracking-wide text-white/58">GH</span>
-                使用 GitHub 繼續
+                先以訪客模式試用
               </button>
             </div>
 
             <p className="mt-6 text-xs leading-6 text-white/36">
-              登入只負責同步你的工作區；報告內容、預覽與匯出設定會在工作區內管理。
+              訪客草稿只保存在這台瀏覽器；登入後的文件才會同步到雲端。目前不會自動搬移訪客草稿。
             </p>
           </div>
         </section>
@@ -4021,15 +4086,19 @@ function WorkspaceApp({
         activeDocumentId: initialSharedDocument.id,
       }
     }
+    if (user) return { documents: [], activeDocumentId: '' }
     return getInitialWorkspace()
   })
   const [documents, setDocuments] = useState<Document[]>(initialWorkspace.documents)
   const [documentVersions, setDocumentVersions] = useState<DocumentVersion[]>(() =>
-    readDocumentVersions(DOCUMENT_VERSIONS_STORAGE_KEY),
+    readDocumentVersions(getDocumentVersionsStorageKey(user?.id ?? null)),
   )
   const [activeDocumentId, setActiveDocumentId] = useState(initialWorkspace.activeDocumentId)
   const [currentView, setCurrentView] = useState<AppView>(() => getInitialAppView(initialSharedDocument))
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(Boolean(initialSharedDocument))
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(
+    Boolean(initialSharedDocument) ||
+      (typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches),
+  )
   const activeDocument =
     documents.find((document) => document.id === activeDocumentId && document.type === 'file' && !document.isTrashed) ??
     documents.find((document) => document.type === 'file' && !document.isTrashed)
@@ -4037,6 +4106,7 @@ function WorkspaceApp({
   const [preview, setPreview] = useState('')
   const [theme] = useState<'light' | 'dark'>(getInitialTheme)
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('synced')
+  const [documentSaveStatus, setDocumentSaveStatus] = useState<DocumentSaveStatus>('saved')
   const [collaborationStatus, setCollaborationStatus] =
     useState<WebSocketStatus | 'idle'>('idle')
   const [renderError, setRenderError] = useState<string | null>(null)
@@ -4073,9 +4143,17 @@ function WorkspaceApp({
   const [isTitleEditing, setIsTitleEditing] = useState(false)
   const [titleDraft, setTitleDraft] = useState(activeDocument?.title ?? '')
   const [outlineExampleText, setOutlineExampleText] = useState('')
+  const [outlineBrief, setOutlineBrief] = useState({
+    experimentName: '',
+    purpose: '',
+    requirements: '',
+    rawData: '',
+    formatRequirements: '',
+  })
   const [outlineLoading, setOutlineLoading] = useState(false)
   const [aiSettings, setAiSettings] = useState<AiSettings>(getInitialAiSettings)
   const [aiTaskLoading, setAiTaskLoading] = useState<AiAction | null>(null)
+  const [pendingAiChange, setPendingAiChange] = useState<PendingAiChange | null>(null)
   const [userApiKeySaving, setUserApiKeySaving] = useState(false)
   const [aiQuota, setAiQuota] = useState<AiQuota | null>(null)
   const [aiQuotaLoading, setAiQuotaLoading] = useState(false)
@@ -4125,6 +4203,11 @@ function WorkspaceApp({
   const shareResetTimerRef = useRef<number | null>(null)
   const hasOpenedSharedDocRef = useRef(false)
   const scrollSyncSourceRef = useRef<'editor' | 'preview' | null>(null)
+  const pendingDocumentSaveRef = useRef<PendingDocumentSave | null>(null)
+  const documentSaveTimerRef = useRef<number | null>(null)
+  const documentSaveRevisionRef = useRef(0)
+  const documentSaveQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const isWorkspaceMountedRef = useRef(true)
 
   const isEditorEmpty = !markdown.trim()
   const isDarkMode = theme === 'dark'
@@ -4138,15 +4221,11 @@ function WorkspaceApp({
   const canEditActiveDocument =
     activeDocumentPermission === 'owner' || activeDocumentPermission === 'edit'
   const isReadOnlyMode = activeDocumentPermission === 'view'
-  const activeDocumentVersions = useMemo(
-    () =>
-      activeDocument
-        ? documentVersions
-            .filter((version) => version.documentId === activeDocument.id)
-            .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
-        : [],
-    [activeDocument, documentVersions],
-  )
+  const activeDocumentVersions = activeDocument
+    ? documentVersions
+        .filter((version) => version.documentId === activeDocument.id)
+        .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
+    : []
 
   const changeEditorViewMode = useCallback((nextMode: EditorViewMode) => {
     if (!canEditActiveDocument && nextMode !== 'preview') return
@@ -4167,6 +4246,23 @@ function WorkspaceApp({
     visibleEditorViewMode === 'split' && isEditorWorkspaceCompact
       ? 'edit'
       : visibleEditorViewMode
+
+  const updateMarkdownValue = useCallback(
+    (value: string) => {
+      setMarkdown(value)
+      if (!isApplyingRemoteRef.current && shouldUseSupabaseDocuments && canEditActiveDocumentRef.current) {
+        setDocumentSaveStatus('unsaved')
+      }
+      if (!value.trim()) {
+        setPreview('')
+        setRenderError(null)
+        setSyncStatus('synced')
+      } else {
+        setSyncStatus('pending')
+      }
+    },
+    [shouldUseSupabaseDocuments],
+  )
 
   useEffect(() => {
     if (typeof window === 'undefined' || currentView === 'editor') return
@@ -4213,7 +4309,7 @@ function WorkspaceApp({
     updateMarkdownValue(document.content)
     editorRef.current?.setValue(document.content)
     isApplyingRemoteRef.current = false
-  }, [])
+  }, [updateMarkdownValue])
 
   const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
     if (!supabase || !user) return {}
@@ -4279,7 +4375,7 @@ function WorkspaceApp({
         setDocumentCollaboratorsLoading(false)
       }
     },
-    [readDocumentCollaborators, shouldUseSupabaseDocuments],
+    [readDocumentCollaborators, setBridgeToast, shouldUseSupabaseDocuments],
   )
 
   const refreshSupabaseDocuments = useCallback(
@@ -4291,14 +4387,16 @@ function WorkspaceApp({
         const { data, error } = await supabase
           .from('documents')
           .select('*')
-          .eq('is_trashed', false)
           .order('updated_at', { ascending: false })
 
         if (error) throw error
 
         const nextDocuments = ((data ?? []) as SupabaseDocumentRow[])
           .map(mapSupabaseDocument)
-          .filter((document) => getDocumentPermission(document, user) !== 'none')
+          .filter(
+            (document) =>
+              document.userId === user?.id || getDocumentPermission(document, user) !== 'none',
+          )
         setDocuments(nextDocuments)
 
         const documentToOpen = openDocumentId
@@ -4319,7 +4417,7 @@ function WorkspaceApp({
         setDatabaseLoading(false)
       }
     },
-    [applyLoadedDocument, shouldUseSupabaseDocuments, user],
+    [applyLoadedDocument, setBridgeToast, shouldUseSupabaseDocuments, user],
   )
 
   useEffect(() => {
@@ -4328,16 +4426,21 @@ function WorkspaceApp({
   }, [theme, isDarkMode])
 
   useEffect(() => {
+    if (user) return
     window.localStorage.setItem(DOCUMENTS_STORAGE_KEY, JSON.stringify(documents))
-  }, [documents])
+  }, [documents, user])
 
   useEffect(() => {
-    window.localStorage.setItem(DOCUMENT_VERSIONS_STORAGE_KEY, JSON.stringify(documentVersions.slice(0, 120)))
-  }, [documentVersions])
+    window.localStorage.setItem(
+      getDocumentVersionsStorageKey(user?.id ?? null),
+      JSON.stringify(documentVersions.slice(0, 120)),
+    )
+  }, [documentVersions, user?.id])
 
   useEffect(() => {
+    if (user) return
     window.localStorage.setItem(ACTIVE_DOCUMENT_ID_STORAGE_KEY, activeDocumentId)
-  }, [activeDocumentId])
+  }, [activeDocumentId, user])
 
   useEffect(() => {
     window.localStorage.setItem(AI_SETTINGS_STORAGE_KEY, JSON.stringify(getPersistableAiSettings(aiSettings)))
@@ -4394,6 +4497,7 @@ function WorkspaceApp({
   }
 
   useEffect(() => {
+    if (!ENABLE_BILLING) return
     let isCancelled = false
 
     async function fetchBillingConfig() {
@@ -4419,7 +4523,7 @@ function WorkspaceApp({
     return () => {
       isCancelled = true
     }
-  }, [])
+  }, [updateMarkdownValue])
 
   async function openStripeSession(endpoint: string, loadingState: 'checkout' | 'portal') {
     if (!user) {
@@ -4472,6 +4576,10 @@ function WorkspaceApp({
   }
 
   async function connectGithub() {
+    if (!ENABLE_GITHUB_SYNC) {
+      setBridgeToast('GitHub 同步不在本次 Closed Beta 範圍內')
+      return
+    }
     if (!user) {
       setBridgeToast('請先登入後再綁定 GitHub')
       return
@@ -4584,30 +4692,150 @@ function WorkspaceApp({
     }
   }, [])
 
-  useEffect(() => {
-    if (!canEditActiveDocument) return
-
-    const timer = window.setTimeout(() => {
-      window.localStorage.setItem(CONTENT_STORAGE_KEY, markdown)
-      setDocuments((currentDocuments) =>
-        currentDocuments.map((document) =>
-          document.id === activeDocumentId && document.content !== markdown
-            ? { ...document, content: markdown, updatedAt: new Date().toISOString() }
-            : document,
-        ),
-      )
-      if (supabase && activeDocumentId) {
-        void supabase
-          .from('documents')
-          .update({ content: markdown })
-          .eq('id', activeDocumentId)
+  const enqueueRemoteDocumentSave = useCallback(
+    (pendingSave: PendingDocumentSave) => {
+      if (!supabase || !user) {
+        return Promise.resolve()
       }
-    }, 300)
+      const documentClient = supabase
+      const saveOwnerKey = user.id
 
-    return () => {
-      clearTimeout(timer)
+      if (pendingSave.documentId === activeDocumentId && isWorkspaceMountedRef.current) {
+        setDocumentSaveStatus('saving')
+      }
+
+      const request = documentSaveQueueRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          const { data, error } = await documentClient
+            .from('documents')
+            .update({ content: pendingSave.content, updated_at: pendingSave.queuedAt })
+            .eq('id', pendingSave.documentId)
+            .select('id')
+            .maybeSingle()
+
+          if (error) throw error
+          if (!data) throw new Error('文件不存在或目前帳號沒有編輯權限')
+
+          removeDocumentSave(window.localStorage, saveOwnerKey, pendingSave.documentId, pendingSave.revision)
+          if (
+            isWorkspaceMountedRef.current &&
+            pendingSave.documentId === activeDocumentId &&
+            pendingSave.revision === documentSaveRevisionRef.current &&
+            pendingDocumentSaveRef.current === null
+          ) {
+            setDocumentSaveStatus('saved')
+          }
+        })
+        .catch((err: unknown) => {
+          if (
+            isWorkspaceMountedRef.current &&
+            pendingSave.documentId === activeDocumentId &&
+            pendingSave.revision === documentSaveRevisionRef.current
+          ) {
+            setDocumentSaveStatus('error')
+            setBridgeToast(`雲端儲存失敗，草稿已保留在本機：${getErrorMessage(err, '未知錯誤')}`)
+          }
+        })
+
+      documentSaveQueueRef.current = request
+      return request
+    },
+    [activeDocumentId, setBridgeToast, user],
+  )
+
+  const flushPendingDocumentSave = useCallback(() => {
+    if (documentSaveTimerRef.current !== null) {
+      window.clearTimeout(documentSaveTimerRef.current)
+      documentSaveTimerRef.current = null
     }
-  }, [activeDocumentId, canEditActiveDocument, markdown])
+    const pendingSave = pendingDocumentSaveRef.current
+    if (!pendingSave) return Promise.resolve()
+    pendingDocumentSaveRef.current = null
+    return enqueueRemoteDocumentSave(pendingSave)
+  }, [enqueueRemoteDocumentSave])
+
+  const retryQueuedDocumentSaves = useCallback(() => {
+    if (!user) return
+    const queuedSaves = readDocumentSaveOutbox(window.localStorage, user.id)
+    if (!queuedSaves.length) return
+    documentSaveRevisionRef.current = Math.max(
+      documentSaveRevisionRef.current,
+      ...queuedSaves.map((item) => item.revision),
+    )
+    for (const queuedSave of queuedSaves) {
+      void enqueueRemoteDocumentSave(queuedSave)
+    }
+  }, [enqueueRemoteDocumentSave, user])
+
+  useEffect(() => {
+    if (!canEditActiveDocument || !activeDocumentId) return
+
+    const existingDocument = documentsRef.current.find(
+      (document) => document.id === activeDocumentId,
+    )
+    if (existingDocument?.content === markdown) return
+
+    const queuedAt = new Date().toISOString()
+    if (!user) window.localStorage.setItem(CONTENT_STORAGE_KEY, markdown)
+    setDocuments((currentDocuments) =>
+      currentDocuments.map((document) =>
+        document.id === activeDocumentId && document.content !== markdown
+          ? { ...document, content: markdown, updatedAt: queuedAt }
+          : document,
+      ),
+    )
+
+    if (!shouldUseSupabaseDocuments) {
+      return
+    }
+
+    const previousPendingSave = pendingDocumentSaveRef.current
+    if (previousPendingSave && previousPendingSave.documentId !== activeDocumentId) {
+      void enqueueRemoteDocumentSave(previousPendingSave)
+    }
+
+    const pendingSave: PendingDocumentSave = {
+      documentId: activeDocumentId,
+      content: markdown,
+      revision: documentSaveRevisionRef.current + 1,
+      queuedAt,
+    }
+    documentSaveRevisionRef.current = pendingSave.revision
+    pendingDocumentSaveRef.current = pendingSave
+    if (user) queueDocumentSave(window.localStorage, user.id, pendingSave)
+
+    if (documentSaveTimerRef.current !== null) {
+      window.clearTimeout(documentSaveTimerRef.current)
+    }
+    documentSaveTimerRef.current = window.setTimeout(() => {
+      void flushPendingDocumentSave()
+    }, 500)
+  }, [
+    activeDocumentId,
+    canEditActiveDocument,
+    enqueueRemoteDocumentSave,
+    flushPendingDocumentSave,
+    markdown,
+    shouldUseSupabaseDocuments,
+    user,
+  ])
+
+  useEffect(() => {
+    if (!shouldUseSupabaseDocuments) return
+
+    retryQueuedDocumentSaves()
+    window.addEventListener('online', retryQueuedDocumentSaves)
+    return () => window.removeEventListener('online', retryQueuedDocumentSaves)
+  }, [retryQueuedDocumentSaves, shouldUseSupabaseDocuments])
+
+  useEffect(() => {
+    isWorkspaceMountedRef.current = true
+    return () => {
+      isWorkspaceMountedRef.current = false
+      void flushPendingDocumentSave()
+    }
+  }, [flushPendingDocumentSave])
 
   useEffect(() => {
     return () => {
@@ -4774,49 +5002,30 @@ function WorkspaceApp({
         return
       }
 
-      const ytext = ytextRef.current
       const ed = editorRef.current
       const model = ed?.getModel()
-      const position = ed?.getPosition()
-      const cursorOffset = model && position ? model.getOffsetAt(position) : ytext?.length ?? 0
       const pendingReplacement = pendingAiSelectionRef.current
+      const currentSelection = ed?.getSelection()
+      const capturedSelection =
+        pendingReplacement ??
+        (model && currentSelection
+          ? {
+              range: currentSelection,
+              startOffset: model.getOffsetAt(currentSelection.getStartPosition()),
+              endOffset: model.getOffsetAt(currentSelection.getEndPosition()),
+              text: model.getValueInRange(currentSelection),
+            }
+          : null)
 
-      if (ytext && pendingReplacement) {
-        ytext.doc?.transact(() => {
-          ytext.delete(
-            pendingReplacement.startOffset,
-            pendingReplacement.endOffset - pendingReplacement.startOffset,
-          )
-          ytext.insert(pendingReplacement.startOffset, incomingText)
-        }, LOCAL_YJS_ORIGIN)
-        pendingAiSelectionRef.current = null
-        setAiSelectionMenu((current) => ({ ...current, visible: false }))
-      } else if (ytext) {
-        ytext.doc?.transact(() => {
-          ytext.insert(cursorOffset, incomingText)
-        }, LOCAL_YJS_ORIGIN)
-      } else if (ed && pendingReplacement) {
-        ed.executeEdits('extension-bridge', [
-          {
-            range: pendingReplacement.range,
-            text: incomingText,
-            forceMoveMarkers: true,
-          },
-        ])
-        ed.focus()
-        pendingAiSelectionRef.current = null
-        setAiSelectionMenu((current) => ({ ...current, visible: false }))
-      } else if (ed) {
-        const selection = ed.getSelection()
-        if (selection) {
-          ed.executeEdits('extension-bridge', [
-            { range: selection, text: incomingText, forceMoveMarkers: true },
-          ])
-          ed.focus()
-        }
-      }
-
-      setBridgeToast('成功接收 AI 內容並同步至協作房間')
+      setPendingAiChange({
+        title: '確認瀏覽器插件回傳內容',
+        originalText: capturedSelection?.text || markdown,
+        proposedText: incomingText,
+        mode: capturedSelection ? 'replace-selection' : 'append-document',
+        selection: capturedSelection,
+      })
+      setAiSelectionMenu((current) => ({ ...current, visible: false }))
+      setBridgeToast('已收到 AI 內容，請預覽後確認是否套用')
   })
 
   useEffect(() => {
@@ -4832,8 +5041,10 @@ function WorkspaceApp({
   }, [bridgeToast])
 
   useEffect(() => {
+    if (!ENABLE_REALTIME_COLLABORATION) return
     if (!activeDocumentId || !user || !supabase) return
     const collaborationSupabase = supabase
+    const collaborationUser = user
 
     let isCancelled = false
     let cleanupCollaboration: (() => void) | null = null
@@ -4854,7 +5065,7 @@ function WorkspaceApp({
       if (isCancelled) return
 
       const localPersistence = new IndexeddbPersistence(
-        `autolabreport-yjs-${activeDocumentId}`,
+        `autolabreport-yjs-${collaborationUser.id}-${activeDocumentId}`,
         roomDoc,
       )
       await localPersistence.whenSynced
@@ -4980,7 +5191,7 @@ function WorkspaceApp({
       providerRef.current = null
       ytextRef.current = null
     }
-  }, [activeDocumentId, awarenessUser, user])
+  }, [activeDocumentId, awarenessUser, updateMarkdownValue, user])
 
   useEffect(() => {
     if (isEditorEmpty) {
@@ -5028,17 +5239,6 @@ function WorkspaceApp({
       controller.abort()
     }
   }, [markdown, isEditorEmpty, notePreferences.autoNumberFigures, notePreferences.autoNumberTables])
-
-  function updateMarkdownValue(value: string) {
-    setMarkdown(value)
-    if (!value.trim()) {
-      setPreview('')
-      setRenderError(null)
-      setSyncStatus('synced')
-    } else {
-      setSyncStatus('pending')
-    }
-  }
 
   function syncEditorValue(value: string) {
     if (!canEditActiveDocumentRef.current) {
@@ -5218,6 +5418,10 @@ function WorkspaceApp({
 
   async function runAiTask(request: AiTaskRequest): Promise<string | null> {
     const provider = request.provider ?? aiSettings.preferredProvider
+    if (provider === 'extension' && !ENABLE_BROWSER_EXTENSION) {
+      setBridgeToast('瀏覽器插件不在本次 Closed Beta 範圍內，請改用內建 AI 或自備 API Key')
+      return null
+    }
     const cleanText = request.text.trim()
     if (!cleanText) {
       setBridgeToast('請先提供要處理的文字')
@@ -5370,6 +5574,43 @@ function WorkspaceApp({
     setBridgeToast('已套用 Agent 修改，原版本已備份')
   }
 
+  function applyPendingAiChange() {
+    if (!pendingAiChange || !canEditActiveDocumentRef.current) return
+
+    saveActiveDocumentVersion('AI 修改前自動備份')
+    if (pendingAiChange.mode === 'append-document') {
+      const nextMarkdown = markdown.trim()
+        ? `${markdown}\n\n${pendingAiChange.proposedText}\n`
+        : `${pendingAiChange.proposedText}\n`
+      syncEditorValue(nextMarkdown)
+    } else if (pendingAiChange.selection) {
+      const selection = pendingAiChange.selection
+      const ytext = ytextRef.current
+      const ed = editorRef.current
+      if (ytext) {
+        ytext.doc?.transact(() => {
+          ytext.delete(selection.startOffset, selection.endOffset - selection.startOffset)
+          ytext.insert(selection.startOffset, pendingAiChange.proposedText)
+        }, LOCAL_YJS_ORIGIN)
+      } else if (ed) {
+        ed.executeEdits('ai-confirmed-edit', [
+          {
+            range: selection.range,
+            text: pendingAiChange.proposedText,
+            forceMoveMarkers: true,
+          },
+        ])
+        updateMarkdownValue(ed.getValue())
+        ed.focus()
+      }
+    }
+
+    pendingAiSelectionRef.current = null
+    setPendingAiChange(null)
+    setAiSelectionMenu((current) => ({ ...current, visible: false }))
+    setBridgeToast('已套用 AI 修改，原版本已備份')
+  }
+
   async function requestAiEdit(action: 'rewrite' | 'expand') {
     if (!canEditActiveDocumentRef.current) {
       setBridgeToast('此文件目前為唯讀模式，無法發送重寫請求')
@@ -5387,8 +5628,13 @@ function WorkspaceApp({
       insertMode: 'replace-selection',
     })
     if (result) {
-      insertAtCursor(result)
-      pendingAiSelectionRef.current = null
+      setPendingAiChange({
+        title: action === 'rewrite' ? '確認 AI 重寫' : '確認 AI 擴寫',
+        originalText: activeSelection.text,
+        proposedText: result,
+        mode: 'replace-selection',
+        selection: activeSelection,
+      })
     }
     setAiSelectionMenu((current) => ({ ...current, visible: false }))
   }
@@ -5506,11 +5752,7 @@ function WorkspaceApp({
       })
 
     if (error) throw error
-
-    const { data } = supabase.storage.from(REPORT_IMAGE_BUCKET).getPublicUrl(path)
-    if (!data.publicUrl) throw new Error('Supabase 未回傳圖片公開網址')
-
-    return data.publicUrl
+    return createPrivateReportImageUrl(path)
   }
 
   function handleEditorPaste(event: ClipboardEvent) {
@@ -5587,24 +5829,39 @@ function WorkspaceApp({
 
     setOutlineLoading(true)
     try {
+      const structuredBrief = [
+        outlineBrief.experimentName && `實驗名稱：${outlineBrief.experimentName}`,
+        outlineBrief.purpose && `實驗目的：${outlineBrief.purpose}`,
+        outlineBrief.requirements && `老師要求：${outlineBrief.requirements}`,
+        outlineBrief.rawData && `原始資料（只能原樣保留數字與單位）：\n${outlineBrief.rawData}`,
+        outlineBrief.formatRequirements && `格式要求：${outlineBrief.formatRequirements}`,
+        outlineExampleText && `參考章節結構：\n${outlineExampleText}`,
+      ].filter(Boolean).join('\n\n')
       const outlineMarkdown = await runAiTask({
         action: 'outline',
-        text: outlineExampleText || markdown || '# 實驗報告\n## 實驗目的\n## 實驗原理\n## 實驗步驟\n## 結果與討論',
+        text: structuredBrief || markdown || '# 實驗報告\n## 實驗目的\n## 實驗原理\n## 實驗步驟\n## 結果與討論',
         documentId: activeDocumentId,
         insertMode: 'insert-at-cursor',
       })
       if (!outlineMarkdown) {
         return
       }
-
-      if (editorRef.current) {
-        insertAtCursor(`${markdown.trim() ? '\n\n' : ''}${outlineMarkdown}\n`)
-      } else {
-        syncEditorValue(markdown.trim() ? `${markdown}\n\n${outlineMarkdown}\n` : `${outlineMarkdown}\n`)
-      }
-
+      setPendingAiChange({
+        title: '確認 AI 報告大綱',
+        originalText: markdown,
+        proposedText: outlineMarkdown,
+        mode: 'append-document',
+        selection: null,
+      })
       setIsOutlineModalOpen(false)
       setOutlineExampleText('')
+      setOutlineBrief({
+        experimentName: '',
+        purpose: '',
+        requirements: '',
+        rawData: '',
+        formatRequirements: '',
+      })
     } catch (err) {
       const message = err instanceof Error ? err.message : '產生大綱失敗'
       setBridgeToast(`產生大綱失敗：${message}`)
@@ -5634,7 +5891,13 @@ function WorkspaceApp({
       try {
         const { data, error } = await supabase
           .from('documents')
-          .insert([{ title: '未命名報告', content: '', share_setting: 'private' }])
+          .insert([{
+            title: '未命名報告',
+            content: '',
+            share_setting: 'private',
+            user_id: user?.id,
+            parent_id: parentId,
+          }])
           .select('*')
           .single()
 
@@ -5685,6 +5948,10 @@ function WorkspaceApp({
   }
 
   function openGoogleDrivePicker() {
+    if (!ENABLE_GOOGLE_DRIVE) {
+      setBridgeToast('Google Drive 匯入不在本次 Closed Beta 範圍內')
+      return
+    }
     if (!googleDriveAccessToken) {
       setBridgeToast('請使用 Google 重新登入並授權 Google Drive readonly')
       return
@@ -5700,7 +5967,7 @@ function WorkspaceApp({
       try {
         const { data, error } = await supabase
           .from('documents')
-          .insert([{ title: safeTitle, content: importedMarkdown, share_setting: 'private' }])
+          .insert([{ title: safeTitle, content: importedMarkdown, share_setting: 'private', user_id: user?.id }])
           .select('*')
           .single()
         if (error) throw error
@@ -5733,7 +6000,7 @@ function WorkspaceApp({
       try {
         const { data, error } = await supabase
           .from('documents')
-          .insert([{ title: template.title, content: template.content, share_setting: 'private' }])
+          .insert([{ title: template.title, content: template.content, share_setting: 'private', user_id: user?.id }])
           .select('*')
           .single()
 
@@ -5765,9 +6032,30 @@ function WorkspaceApp({
     }, 0)
   }
 
-  function createNewFolder(parentId: string | null = null) {
+  async function createNewFolder(parentId: string | null = null) {
     const title = window.prompt('資料夾名稱', '新資料夾')?.trim()
     if (!title) return
+
+    if (supabase && user) {
+      setDatabaseLoading(true)
+      try {
+        const { error } = await supabase.from('documents').insert([{
+          title,
+          content: '',
+          type: 'folder',
+          parent_id: parentId,
+          share_setting: 'private',
+          user_id: user.id,
+        }])
+        if (error) throw error
+        await refreshSupabaseDocuments()
+      } catch (err) {
+        setBridgeToast(`建立資料夾失敗：${getErrorMessage(err, '未知錯誤')}`)
+      } finally {
+        setDatabaseLoading(false)
+      }
+      return
+    }
 
     const nextFolder = createFolder(title, parentId)
     setDocuments((currentDocuments) => [...currentDocuments, nextFolder])
@@ -5777,18 +6065,41 @@ function WorkspaceApp({
     void createDocumentForParent(parentId)
   }
 
-  function createDocumentFromPreset(title: string, content: string) {
-    const nextDocument = createDocument(title, content, null)
-    setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
-    loadDocument(nextDocument)
-    setIsSidebarCollapsed(true)
-    setCurrentView('editor')
+  async function createDocumentFromPreset(title: string, content: string) {
+    await createDocumentFromTemplate({
+      id: 'closed-beta-preset',
+      title,
+      description: '',
+      category: 'preset',
+      content,
+    })
     setIsCreateModalOpen(false)
   }
 
-  function duplicateDocument(id: string) {
+  async function duplicateDocument(id: string) {
     const sourceDocument = documents.find((document) => document.id === id && document.type === 'file' && !document.isTrashed)
     if (!sourceDocument) return
+
+    if (supabase && user) {
+      setDatabaseLoading(true)
+      try {
+        const { error } = await supabase.from('documents').insert([{
+          title: `${sourceDocument.title} Copy`,
+          content: sourceDocument.content,
+          parent_id: sourceDocument.parentId,
+          share_setting: 'private',
+          user_id: user.id,
+        }])
+        if (error) throw error
+        await refreshSupabaseDocuments()
+        setBridgeToast('已建立副本')
+      } catch (err) {
+        setBridgeToast(`建立副本失敗：${getErrorMessage(err, '未知錯誤')}`)
+      } finally {
+        setDatabaseLoading(false)
+      }
+      return
+    }
 
     const nextDocument = createDocument(`${sourceDocument.title} Copy`, sourceDocument.content, sourceDocument.parentId)
     setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
@@ -5962,20 +6273,34 @@ function WorkspaceApp({
     const deleteLabel = targetDocument.type === 'folder' ? '資料夾與其中所有項目' : '檔案'
     if (!window.confirm(`將${deleteLabel}「${targetDocument.title}」移至垃圾桶？`)) return
 
-    if (supabase && shouldUseSupabaseDocuments && targetDocument.type === 'file') {
+    const idsToDelete = new Set<string>([id])
+    let previousSize = 0
+    while (idsToDelete.size !== previousSize) {
+      previousSize = idsToDelete.size
+      documents.forEach((document) => {
+        if (document.parentId && idsToDelete.has(document.parentId)) {
+          idsToDelete.add(document.id)
+        }
+      })
+    }
+
+    if (supabase && shouldUseSupabaseDocuments) {
       setDatabaseLoading(true)
       try {
-        const { error } = await supabase.from('documents').update({ is_trashed: true }).eq('id', id)
+        const { error } = await supabase
+          .from('documents')
+          .update({ is_trashed: true })
+          .in('id', [...idsToDelete])
         if (error) throw error
 
         const now = new Date().toISOString()
         const nextDocuments = documents.map((document) =>
-          document.id === id ? { ...document, isTrashed: true, updatedAt: now } : document,
+          idsToDelete.has(document.id) ? { ...document, isTrashed: true, updatedAt: now } : document,
         )
         const remainingFiles = nextDocuments.filter((document) => document.type === 'file' && !document.isTrashed)
         setDocuments(nextDocuments)
 
-        if (id === activeDocumentId) {
+        if (idsToDelete.has(activeDocumentId)) {
           const nextDocument = remainingFiles[0]
           if (nextDocument) {
             loadDocument(nextDocument)
@@ -5995,17 +6320,6 @@ function WorkspaceApp({
         setDatabaseLoading(false)
       }
       return
-    }
-
-    const idsToDelete = new Set<string>([id])
-    let previousSize = 0
-    while (idsToDelete.size !== previousSize) {
-      previousSize = idsToDelete.size
-      documents.forEach((document) => {
-        if (document.parentId && idsToDelete.has(document.parentId)) {
-          idsToDelete.add(document.id)
-        }
-      })
     }
 
     const now = new Date().toISOString()
@@ -6030,9 +6344,13 @@ function WorkspaceApp({
     }
   }
 
-  function restoreDocument(id: string) {
+  async function restoreDocument(id: string) {
     const targetDocument = documents.find((document) => document.id === id)
     if (!targetDocument) return
+    if (getDocumentPermission({ ...targetDocument, isTrashed: false }, user) !== 'owner') {
+      setBridgeToast('只有文件擁有者可以恢復文件')
+      return
+    }
 
     const idsToRestore = new Set<string>([id])
     let parentId = targetDocument.parentId
@@ -6044,6 +6362,21 @@ function WorkspaceApp({
     }
 
     const now = new Date().toISOString()
+    if (supabase && user) {
+      setDatabaseLoading(true)
+      try {
+        const { error } = await supabase
+          .from('documents')
+          .update({ is_trashed: false, updated_at: now })
+          .in('id', [...idsToRestore])
+        if (error) throw error
+      } catch (err) {
+        setBridgeToast(`恢復文件失敗：${getErrorMessage(err, '未知錯誤')}`)
+        return
+      } finally {
+        setDatabaseLoading(false)
+      }
+    }
     setDocuments((currentDocuments) =>
       currentDocuments.map((document) =>
         idsToRestore.has(document.id) ? { ...document, isTrashed: false, updatedAt: now } : document,
@@ -6051,9 +6384,13 @@ function WorkspaceApp({
     )
   }
 
-  function hardDeleteDocument(id: string) {
+  async function hardDeleteDocument(id: string) {
     const targetDocument = documents.find((document) => document.id === id)
     if (!targetDocument) return
+    if (getDocumentPermission({ ...targetDocument, isTrashed: false }, user) !== 'owner') {
+      setBridgeToast('只有文件擁有者可以永久刪除文件')
+      return
+    }
     if (!window.confirm(`永久刪除「${targetDocument.title}」？此操作無法復原。`)) return
 
     const idsToDelete = new Set<string>([id])
@@ -6065,6 +6402,19 @@ function WorkspaceApp({
           idsToDelete.add(document.id)
         }
       })
+    }
+
+    if (supabase && user) {
+      setDatabaseLoading(true)
+      try {
+        const { error } = await supabase.from('documents').delete().in('id', [...idsToDelete])
+        if (error) throw error
+      } catch (err) {
+        setBridgeToast(`永久刪除失敗：${getErrorMessage(err, '未知錯誤')}`)
+        return
+      } finally {
+        setDatabaseLoading(false)
+      }
     }
 
     setDocuments((currentDocuments) => currentDocuments.filter((document) => !idsToDelete.has(document.id)))
@@ -6156,7 +6506,11 @@ function WorkspaceApp({
       setRenderError('請先貼上或撰寫報告內容再匯出')
       return
     }
-    return downloadExportFile('/api/export', 'AutoLabReport.docx', 'exporting')
+    return downloadExportFile(
+      '/api/export',
+      createSafeExportFilename(activeDocument?.title, 'docx'),
+      'exporting',
+    )
   }
 
   async function exportPdfReport() {
@@ -6165,8 +6519,17 @@ function WorkspaceApp({
       return
     }
 
+    const previousViewMode = editorViewMode
+    if (displayedEditorViewMode === 'edit') {
+      changeEditorViewMode('preview')
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()))
+      })
+    }
+
     const element = document.getElementById('pdf-preview-content')
     if (!element) {
+      if (displayedEditorViewMode === 'edit') changeEditorViewMode(previousViewMode)
       setRenderError('找不到預覽內容，請稍後再試')
       return
     }
@@ -6181,7 +6544,7 @@ function WorkspaceApp({
 
       const pdfOptions = {
         margin: [12, 12, 12, 12] as [number, number, number, number],
-        filename: 'AutoLabReport.pdf',
+        filename: createSafeExportFilename(activeDocument?.title, 'pdf'),
         image: { type: 'jpeg' as const, quality: 0.98 },
         html2canvas: {
           scale: 2,
@@ -6208,6 +6571,7 @@ function WorkspaceApp({
       setSyncStatus('error')
     } finally {
       element.classList.remove('pdf-print-mode')
+      if (displayedEditorViewMode === 'edit') changeEditorViewMode(previousViewMode)
       setExporting(false)
     }
   }
@@ -6218,7 +6582,7 @@ function WorkspaceApp({
       return
     }
 
-    const filename = `${activeDocument?.title ?? 'AutoLabReport'}.md`
+    const filename = createSafeExportFilename(activeDocument?.title, 'md')
     const exportMarkdown = applyAutoNumbering(markdown, {
       figures: notePreferences.autoNumberFigures,
       tables: notePreferences.autoNumberTables,
@@ -6288,6 +6652,10 @@ function WorkspaceApp({
   }
 
   async function syncWithGithub() {
+    if (!ENABLE_GITHUB_SYNC) {
+      setBridgeToast('GitHub 同步不在本次 Closed Beta 範圍內')
+      return
+    }
     if (!activeDocument) {
       setBridgeToast('請先開啟一份報告')
       return
@@ -6389,10 +6757,10 @@ function WorkspaceApp({
   }
 
   async function updateShareSetting(nextShareSetting: ShareSetting) {
-    if (!activeDocument) return
+    if (!activeDocument) return false
     if (!isActiveDocumentOwner) {
       setBridgeToast('只有文件擁有者可以修改分享權限')
-      return
+      return false
     }
 
     setShareSettingLoading(true)
@@ -6414,12 +6782,23 @@ function WorkspaceApp({
         ),
       )
       setBridgeToast('分享權限已更新')
+      return true
     } catch (err) {
       const message = err instanceof Error ? err.message : '分享權限更新失敗'
       setBridgeToast(`分享權限更新失敗：${message}`)
+      return false
     } finally {
       setShareSettingLoading(false)
     }
+  }
+
+  async function publishAndCopyShareLink() {
+    if (!activeDocument) return
+    if (activeDocument.shareSetting === 'private') {
+      const published = await updateShareSetting('view')
+      if (!published) return
+    }
+    await shareDocument(activeDocument.id, true)
   }
 
   async function inviteDocumentCollaborator() {
@@ -6537,7 +6916,7 @@ function WorkspaceApp({
   }
 
   const isGenerating = syncStatus === 'pending' || syncStatus === 'rendering'
-  const shouldShowSidebar = Boolean(user && currentView !== 'editor')
+  const shouldShowSidebar = Boolean(!initialSharedDocument && currentView !== 'editor')
   const topbarAvatarUrl = getUserAvatarUrl(user)
   const topbarUserName = getUserDisplayName(user)
   const topbarUserInitial = getUserInitial(user)
@@ -6574,6 +6953,8 @@ function WorkspaceApp({
       onClick: handleSmartFormat,
     },
   ]
+  // The callbacks in this render-time configuration only access refs after a user event.
+  // eslint-disable-next-line react-hooks/refs
   const activeAssistTaskConfig = assistTasks.find((task) => task.title === activeAssistTask) ?? null
   const activeAgentModeConfig = AGENT_MODE_CONFIG.find((config) => config.mode === agentMode) ?? AGENT_MODE_CONFIG[0]
   const agentCanApply = Boolean(agentResult?.proposed_markdown?.trim()) && canEditActiveDocument
@@ -6642,6 +7023,18 @@ function WorkspaceApp({
       )}
 
       <div className="flex min-w-0 flex-1 flex-col">
+      {!user && !initialSharedDocument && (
+        <div className="flex min-h-10 items-center justify-center gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs font-medium text-amber-900">
+          <span>訪客模式：草稿只保存在這台瀏覽器，清除網站資料可能會遺失。</span>
+          <button
+            type="button"
+            onClick={onSignOut}
+            className="shrink-0 underline decoration-amber-400 underline-offset-2 hover:text-amber-700"
+          >
+            登入以啟用雲端同步
+          </button>
+        </div>
+      )}
       {currentView === 'editor' ? (
         <header className="sticky top-0 z-40 flex min-h-16 shrink-0 flex-col items-stretch justify-between gap-2 border-b border-slate-200 bg-white px-3 py-2 text-slate-700 shadow-sm sm:flex-row sm:items-center sm:gap-3 sm:px-5">
           <div className="flex min-w-0 w-full flex-1 items-center gap-2 sm:w-auto sm:gap-3">
@@ -6700,12 +7093,29 @@ function WorkspaceApp({
             {syncStatus === 'exportingPdf' && (
               <span className="text-sm font-medium text-amber-600">正在編譯 PDF</span>
             )}
-            {isGenerating && <span className="text-sm font-medium text-amber-600">同步中</span>}
-            {syncStatus === 'synced' && !isGenerating && !isEditorEmpty && (
-              <span className="text-sm font-medium text-slate-400">已儲存</span>
+            {isGenerating && <span className="text-sm font-medium text-amber-600">預覽更新中</span>}
+            {documentSaveStatus === 'saving' && (
+              <span className="text-sm font-medium text-amber-600">正在儲存</span>
+            )}
+            {documentSaveStatus === 'unsaved' && (
+              <span className="text-sm font-medium text-slate-500">尚未同步</span>
+            )}
+            {documentSaveStatus === 'saved' && !isEditorEmpty && (
+              <span className="text-sm font-medium text-slate-400">
+                {user ? '已儲存' : '已儲存在本機'}
+              </span>
+            )}
+            {documentSaveStatus === 'error' && (
+              <button
+                type="button"
+                onClick={retryQueuedDocumentSaves}
+                className="text-sm font-medium text-red-500 hover:text-red-600"
+              >
+                雲端儲存失敗・重試
+              </button>
             )}
             {syncStatus === 'error' && (
-              <span className="text-sm font-medium text-red-500">同步失敗</span>
+              <span className="text-sm font-medium text-red-500">預覽或匯出失敗</span>
             )}
             {collaborationStatus === 'connecting' && (
               <span className="hidden text-xs font-medium text-amber-600 sm:inline">
@@ -6823,11 +7233,13 @@ function WorkspaceApp({
                         icon: Users,
                         action: () => setBridgeToast('團隊功能準備中'),
                       },
-                      {
-                        label: '付費',
-                        icon: CreditCard,
-                        action: () => setCurrentView('billing'),
-                      },
+                      ...(ENABLE_BILLING
+                        ? [{
+                            label: '付費',
+                            icon: CreditCard,
+                            action: () => setCurrentView('billing'),
+                          }]
+                        : []),
                     ].map((item) => (
                       <button
                         key={item.label}
@@ -6901,18 +7313,20 @@ function WorkspaceApp({
               </button>
               {isAdvancedMenuOpen && (
                 <div className={`absolute right-0 top-full z-50 mt-2 max-h-[calc(100vh-6rem)] w-80 overflow-auto rounded-2xl border border-slate-200 bg-white py-2 text-sm text-slate-600 shadow-2xl shadow-slate-200/80 ${SCROLLBAR_HIDE}`}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsAdvancedMenuOpen(false)
-                      saveActiveDocumentVersion()
-                      void syncWithGithub()
-                    }}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
-                  >
-                    <History className="h-4 w-4" strokeWidth={2} />
-                    同步到 GitHub
-                  </button>
+                  {ENABLE_GITHUB_SYNC && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAdvancedMenuOpen(false)
+                        saveActiveDocumentVersion()
+                        void syncWithGithub()
+                      }}
+                      className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
+                    >
+                      <History className="h-4 w-4" strokeWidth={2} />
+                      同步到 GitHub
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -7026,17 +7440,19 @@ function WorkspaceApp({
                     <FileUp className="h-4 w-4" strokeWidth={2} />
                     匯入 Markdown
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsAdvancedMenuOpen(false)
-                      openGoogleDrivePicker()
-                    }}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
-                  >
-                    <Cloud className="h-4 w-4" strokeWidth={2} />
-                    從 Google Drive 匯入
-                  </button>
+                  {ENABLE_GOOGLE_DRIVE && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAdvancedMenuOpen(false)
+                        openGoogleDrivePicker()
+                      }}
+                      className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
+                    >
+                      <Cloud className="h-4 w-4" strokeWidth={2} />
+                      從 Google Drive 匯入
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -7101,14 +7517,28 @@ function WorkspaceApp({
             {syncStatus === 'exportingPdf' && (
               <span className="hidden text-sm font-medium text-amber-500 lg:inline">正在編譯 PDF</span>
             )}
-            {isGenerating && (
-              <span className="hidden text-sm font-medium text-amber-500 lg:inline">報告同步中</span>
+            {documentSaveStatus === 'saving' && (
+              <span className="hidden text-sm font-medium text-amber-500 lg:inline">正在儲存</span>
             )}
-            {syncStatus === 'synced' && !isGenerating && !isEditorEmpty && (
-              <span className="hidden text-sm font-medium text-emerald-600 lg:inline">已同步</span>
+            {documentSaveStatus === 'unsaved' && (
+              <span className="hidden text-sm font-medium text-slate-500 lg:inline">尚未同步</span>
+            )}
+            {documentSaveStatus === 'saved' && !isEditorEmpty && (
+              <span className="hidden text-sm font-medium text-emerald-600 lg:inline">
+                {user ? '已同步' : '已儲存在本機'}
+              </span>
+            )}
+            {documentSaveStatus === 'error' && (
+              <button
+                type="button"
+                onClick={retryQueuedDocumentSaves}
+                className="hidden text-sm font-medium text-red-500 hover:text-red-600 lg:inline"
+              >
+                雲端儲存失敗・重試
+              </button>
             )}
             {syncStatus === 'error' && (
-              <span className="hidden text-sm font-medium text-red-500 lg:inline">同步失敗</span>
+              <span className="hidden text-sm font-medium text-red-500 lg:inline">預覽或匯出失敗</span>
             )}
             <button
               type="button"
@@ -7233,6 +7663,7 @@ function WorkspaceApp({
       {visibleEditorViewMode !== 'preview' && canEditActiveDocument && (
         <div className="editor-format-toolbar flex min-h-12 shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-3 py-2">
           <div className={`flex min-w-0 flex-1 items-center gap-1 overflow-x-auto ${SCROLLBAR_HIDE}`}>
+            {/* eslint-disable-next-line react-hooks/refs */}
             {editorToolbarGroups.map((group, groupIndex) => (
               <div key={groupIndex} className="flex shrink-0 items-center gap-1 border-r border-slate-200 pr-2 last:border-r-0 last:pr-0">
                 {group.map((item) => (
@@ -7250,15 +7681,17 @@ function WorkspaceApp({
               </div>
             ))}
           </div>
-          <div className="shrink-0 border-l border-slate-200 pl-3">
-            <ScreenRecorderControls
-              supabase={supabase}
-              userId={user?.id ?? null}
-              documentId={activeDocumentId || null}
-              onUploaded={() => setBridgeToast('錄影已上傳')}
-              onError={setBridgeToast}
-            />
-          </div>
+          {ENABLE_SCREEN_RECORDING && (
+            <div className="shrink-0 border-l border-slate-200 pl-3">
+              <ScreenRecorderControls
+                supabase={supabase}
+                userId={user?.id ?? null}
+                documentId={activeDocumentId || null}
+                onUploaded={() => setBridgeToast('錄影已上傳')}
+                onError={setBridgeToast}
+              />
+            </div>
+          )}
         </div>
       )}
 
@@ -7529,6 +7962,7 @@ function WorkspaceApp({
                   </div>
                 ) : (
                   <div className="space-y-3">
+                    {/* eslint-disable-next-line react-hooks/refs */}
                     {assistTasks.map((task) => (
                       <button
                         key={task.title}
@@ -7793,6 +8227,8 @@ function WorkspaceApp({
                   </div>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {/* These actions access editor refs only after the user clicks a card. */}
+                  {/* eslint-disable-next-line react-hooks/refs */}
                   {[
                     {
                       title: '空白 Markdown',
@@ -7879,23 +8315,71 @@ function WorkspaceApp({
 
       {isOutlineModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/30 px-4 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-2xl border border-zinc-100 bg-white p-8 shadow-2xl transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950">
+          <div className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-2xl border border-zinc-100 bg-white p-8 shadow-2xl transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950">
             <div>
               <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
                 生成報告大綱
               </h2>
               <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-                貼上範例結構，系統會生成對應的 Markdown 實驗報告大綱。
+                分欄提供已知資料；資料不足可以留白，AI 會標記待補，不應虛構實驗結果。
               </p>
             </div>
 
-            <div className="py-6">
+            <div className="grid gap-4 py-6 sm:grid-cols-2">
+              <label className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                實驗名稱
+                <input
+                  value={outlineBrief.experimentName}
+                  onChange={(event) => setOutlineBrief((current) => ({ ...current, experimentName: event.target.value }))}
+                  placeholder="例如：RC 電路暫態響應"
+                  className="mt-2 h-11 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 font-normal outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-900"
+                />
+              </label>
+              <label className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                實驗目的
+                <input
+                  value={outlineBrief.purpose}
+                  onChange={(event) => setOutlineBrief((current) => ({ ...current, purpose: event.target.value }))}
+                  placeholder="要量測或驗證什麼？"
+                  className="mt-2 h-11 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 font-normal outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-900"
+                />
+              </label>
+              <label className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                老師要求
+                <textarea
+                  value={outlineBrief.requirements}
+                  onChange={(event) => setOutlineBrief((current) => ({ ...current, requirements: event.target.value }))}
+                  placeholder="必备章节、字数、问题或评分标准"
+                  className="mt-2 h-28 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-3 font-normal leading-6 outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-900"
+                />
+              </label>
+              <label className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                原始数据
+                <textarea
+                  value={outlineBrief.rawData}
+                  onChange={(event) => setOutlineBrief((current) => ({ ...current, rawData: event.target.value }))}
+                  placeholder="可貼上 Excel/CSV 数据；数字和单位会被标记为不可擅改"
+                  className="mt-2 h-28 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-3 font-mono text-xs font-normal leading-6 outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-900"
+                />
+              </label>
+              <label className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 sm:col-span-2">
+                格式要求
+                <input
+                  value={outlineBrief.formatRequirements}
+                  onChange={(event) => setOutlineBrief((current) => ({ ...current, formatRequirements: event.target.value }))}
+                  placeholder="例如：中英双语摘要、图表编号、IEEE 引用"
+                  className="mt-2 h-11 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 font-normal outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-900"
+                />
+              </label>
+              <label className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 sm:col-span-2">
+                参考章节结构（可选）
               <textarea
                 value={outlineExampleText}
                 onChange={(event) => setOutlineExampleText(event.target.value)}
                 placeholder={'# 實驗報告\n## 實驗目的\n## 實驗原理\n## 實驗步驟\n## 結果與討論'}
-                className={`h-64 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-sm leading-6 text-zinc-900 outline-none transition-all focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:bg-zinc-950 ${SCROLLBAR_HIDE}`}
+                className={`mt-2 h-32 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-sm font-normal leading-6 text-zinc-900 outline-none transition-all focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:bg-zinc-950 ${SCROLLBAR_HIDE}`}
               />
+              </label>
             </div>
 
             <div className="flex items-center justify-end gap-2">
@@ -8031,11 +8515,16 @@ function WorkspaceApp({
                 >
                   <option value="private">只有你可以訪問</option>
                   <option value="view">知道連結的人可以檢視</option>
-                  <option value="edit">知道連結的人可以編輯</option>
+                  {activeDocument.shareSetting === 'edit' && (
+                    <option value="edit" disabled>舊版公開編輯連結（目前只讀）</option>
+                  )}
                 </select>
+                <p className="mt-2 text-xs leading-5 text-slate-500">
+                  Closed Beta 的公開連結一律只讀；需要共同編輯時，請以 Email 加入明確協作者。
+                </p>
                 <button
                   type="button"
-                  onClick={() => void shareDocument(activeDocument.id, true)}
+                  onClick={() => void publishAndCopyShareLink()}
                   className="mt-4 flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-slate-950 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
                 >
                   <Link className="h-4 w-4" strokeWidth={2} />
@@ -8049,8 +8538,12 @@ function WorkspaceApp({
                   {[
                     { label: '下載', icon: Download, action: () => void exportWordReport() },
                     { label: '公開查看', icon: ExternalLink, action: () => void updateShareSetting('view') },
-                    { label: '錄製', icon: Video, action: () => setBridgeToast('錄製功能準備中') },
-                    { label: 'Google Drive', icon: Cloud, action: openGoogleDrivePicker },
+                    ...(ENABLE_SCREEN_RECORDING
+                      ? [{ label: '錄製', icon: Video, action: () => setBridgeToast('錄製功能準備中') }]
+                      : []),
+                    ...(ENABLE_GOOGLE_DRIVE
+                      ? [{ label: 'Google Drive', icon: Cloud, action: openGoogleDrivePicker }]
+                      : []),
                   ].map((item) => (
                     <button
                       key={item.label}
@@ -8152,6 +8645,72 @@ function WorkspaceApp({
         </div>
       )}
 
+      {pendingAiChange && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/45 px-4 py-8 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="ai-change-title"
+        >
+          <div className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-6 py-5">
+              <div>
+                <h2 id="ai-change-title" className="text-lg font-semibold text-slate-950">
+                  {pendingAiChange.title}
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  請先核對數字、單位與語意。只有按下「套用修改」才會更動文件，並會先建立版本備份。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  pendingAiSelectionRef.current = null
+                  setPendingAiChange(null)
+                }}
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-slate-400 hover:bg-slate-100 hover:text-slate-900"
+                aria-label="取消 AI 修改"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="grid min-h-0 flex-1 overflow-auto md:grid-cols-2">
+              <section className="border-b border-slate-200 p-5 md:border-b-0 md:border-r">
+                <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">原始內容</h3>
+                <pre className="max-h-[52vh] overflow-auto whitespace-pre-wrap rounded-2xl bg-slate-50 p-4 text-sm leading-6 text-slate-700">
+                  {pendingAiChange.originalText || '（空白文件）'}
+                </pre>
+              </section>
+              <section className="p-5">
+                <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">AI 建議</h3>
+                <div className="prose prose-slate max-h-[52vh] max-w-none overflow-auto rounded-2xl border border-slate-200 bg-white p-4 text-sm">
+                  <MarkdownRenderer markdown={pendingAiChange.proposedText} />
+                </div>
+              </section>
+            </div>
+            <div className="flex justify-end gap-3 border-t border-slate-200 px-6 py-4">
+              <button
+                type="button"
+                onClick={() => {
+                  pendingAiSelectionRef.current = null
+                  setPendingAiChange(null)
+                }}
+                className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                保留原文
+              </button>
+              <button
+                type="button"
+                onClick={applyPendingAiChange}
+                className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+              >
+                套用修改
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       <GoogleDrivePicker
         isOpen={isGoogleDrivePickerOpen}
         accessToken={googleDriveAccessToken ?? null}
@@ -8174,6 +8733,9 @@ function App() {
     typeof window !== 'undefined' ? window.location.pathname.match(/^\/p\/([^/]+)/) : null
   const publicReportShareId = publicReportId?.[1] ? decodeURIComponent(publicReportId[1]) : null
   const [user, setUser] = useState<User | null>(null)
+  const [isGuestMode, setIsGuestMode] = useState(
+    () => window.localStorage.getItem(GUEST_SESSION_STORAGE_KEY) === 'true',
+  )
   const [googleDriveAccessToken, setGoogleDriveAccessToken] = useState<string | null>(null)
   const [authLoading, setAuthLoading] = useState(Boolean(supabase))
   const [authMessage, setAuthMessage] = useState<string | null>(null)
@@ -8188,6 +8750,10 @@ function App() {
     function syncSession(session: Session | null | undefined) {
       setUser(session?.user ?? null)
       setGoogleDriveAccessToken(session?.provider_token ?? null)
+      if (session?.user) {
+        setIsGuestMode(false)
+        window.localStorage.removeItem(GUEST_SESSION_STORAGE_KEY)
+      }
     }
 
     supabase.auth.getSession().then(({ data }) => {
@@ -8289,19 +8855,7 @@ function App() {
     }
 
     setAuthLoading(true)
-    const oauthOptions =
-      provider === 'google'
-        ? {
-            redirectTo: window.location.origin,
-            scopes: 'https://www.googleapis.com/auth/drive.readonly',
-            queryParams: {
-              access_type: 'offline',
-              prompt: 'consent',
-            },
-          }
-        : {
-            redirectTo: window.location.origin,
-          }
+    const oauthOptions = { redirectTo: window.location.origin }
 
     const { error } = await supabase.auth.signInWithOAuth({
       provider,
@@ -8366,11 +8920,30 @@ function App() {
     )
   }
 
+  if (!user && isGuestMode) {
+    return (
+      <WorkspaceApp
+        user={null}
+        googleDriveAccessToken={null}
+        onSignOut={() => {
+          setIsGuestMode(false)
+          window.localStorage.removeItem(GUEST_SESSION_STORAGE_KEY)
+          window.history.replaceState(null, '', '/')
+        }}
+      />
+    )
+  }
+
   if (!user) {
     return (
       <LandingPage
         onOAuthLogin={signInWithOAuth}
         onSendMagicLink={sendMagicLink}
+        onContinueAsGuest={() => {
+          setIsGuestMode(true)
+          window.localStorage.setItem(GUEST_SESSION_STORAGE_KEY, 'true')
+          window.history.replaceState(null, '', '/dashboard/home')
+        }}
         authLoading={authLoading}
         authMessage={authMessage}
       />
@@ -8379,6 +8952,7 @@ function App() {
 
   return (
     <WorkspaceApp
+      key={user.id}
       user={user}
       googleDriveAccessToken={googleDriveAccessToken}
       onSignOut={signOut}

@@ -1,7 +1,8 @@
 import base64
+from collections import Counter
+from decimal import Decimal, InvalidOperation
 import hashlib
 import hmac
-import html
 import io
 import json
 import logging
@@ -9,7 +10,6 @@ import os
 import re
 import secrets
 import tempfile
-import traceback
 import urllib.error
 import urllib.request
 import urllib.parse
@@ -20,23 +20,6 @@ from uuid import UUID
 
 logger = logging.getLogger(__name__)
 
-import matplotlib
-
-matplotlib.use("Agg")
-
-import matplotlib.pyplot as plt
-
-def _configure_matplotlib_cjk() -> None:
-    """Matplotlib 圖表標題/軸標籤中文防豆腐塊（每次 exec 前也會重設）。"""
-    plt.rcParams["font.sans-serif"] = ["Microsoft JhengHei", "SimHei", "Arial"]
-    plt.rcParams["axes.unicode_minus"] = False
-    plt.rcParams["text.usetex"] = False
-    plt.rcParams["mathtext.fontset"] = "cm"
-
-
-_configure_matplotlib_cjk()
-
-import numpy as np
 import stripe
 from cryptography.fernet import Fernet, InvalidToken
 from dotenv import load_dotenv
@@ -46,18 +29,22 @@ from pypdf import PdfReader
 from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-try:
-    import scipy
-except ImportError:
-    scipy = None
+app = FastAPI(title="AutoLabReport API", version="0.4.0")
 
-app = FastAPI(title="AutoLabReport API", version="0.3.0")
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173",
+    ).split(",")
+    if origin.strip()
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -78,6 +65,7 @@ ENCRYPTION_KEY = os.getenv("ENCRYPTION_KEY")
 GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID")
 GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET")
 GITHUB_OAUTH_STATE_SECRET = os.getenv("GITHUB_OAUTH_STATE_SECRET") or ENCRYPTION_KEY
+OWNERSHIP_TRANSFER_EMAIL_CONFIGURED = os.getenv("OWNERSHIP_TRANSFER_EMAIL_CONFIGURED") == "true"
 if STRIPE_SECRET_KEY:
     stripe.api_key = STRIPE_SECRET_KEY
 
@@ -91,6 +79,10 @@ if STRIPE_SECRET_KEY:
 # GEMINI_MODELS=gemini-2.0-flash,gemini-1.5-flash
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+GITHUB_SYNC_ENABLED = os.getenv("GITHUB_SYNC_ENABLED") == "true"
+STRIPE_BILLING_ENABLED = os.getenv("STRIPE_BILLING_ENABLED") == "true"
+GOOGLE_DRIVE_ENABLED = os.getenv("GOOGLE_DRIVE_ENABLED") == "true"
 
 
 def _parse_model_list(*values: str | None, default: str) -> list[str]:
@@ -141,7 +133,7 @@ PYTHON_BLOCK_RE = re.compile(r"```python\s*\n(.*?)```", re.DOTALL | re.IGNORECAS
 
 
 class RenderRequest(BaseModel):
-    markdown: str
+    markdown: str = Field(max_length=2_000_000)
 
 
 class RenderResponse(BaseModel):
@@ -149,7 +141,7 @@ class RenderResponse(BaseModel):
 
 
 class OutlineRequest(BaseModel):
-    sample_structure: str
+    sample_structure: str = Field(max_length=100_000)
 
 
 class OutlineResponse(BaseModel):
@@ -159,9 +151,9 @@ class OutlineResponse(BaseModel):
 class AiRunRequest(BaseModel):
     provider: Literal["built_in", "extension", "user_api_key"] = "built_in"
     action: Literal["outline", "rewrite", "expand", "format", "summarize", "custom"]
-    text: str
+    text: str = Field(max_length=200_000)
     document_id: str | None = None
-    prompt: str | None = None
+    prompt: str | None = Field(default=None, max_length=300_000)
     api_provider: Literal["openai", "gemini", "anthropic", "deepseek", "none"] | None = None
     model: str | None = None
 
@@ -186,9 +178,9 @@ AgentMode = Literal[
 class AgentRunRequest(BaseModel):
     provider: Literal["built_in", "user_api_key"] = "built_in"
     mode: AgentMode
-    goal: str = ""
-    document_markdown: str
-    selected_text: str | None = None
+    goal: str = Field(default="", max_length=10_000)
+    document_markdown: str = Field(max_length=500_000)
+    selected_text: str | None = Field(default=None, max_length=200_000)
     document_id: str | None = None
     api_provider: Literal["openai", "gemini", "anthropic", "deepseek", "none"] | None = None
     model: str | None = None
@@ -257,9 +249,13 @@ class DriveFilesResponse(BaseModel):
     files: list[DriveFileItem]
 
 
+class DriveFilesRequest(BaseModel):
+    access_token: str = Field(max_length=4096)
+
+
 class DriveImportRequest(BaseModel):
-    access_token: str
-    file_id: str
+    access_token: str = Field(max_length=4096)
+    file_id: str = Field(max_length=256)
 
 
 class DriveImportResponse(BaseModel):
@@ -348,119 +344,14 @@ class OwnershipTransferConfirmResponse(BaseModel):
     to_user: UUID
 
 
-def _noop_show(*_args: Any, **_kwargs: Any) -> None:
-    """讓 plt.show() 在伺服器上安全通過，不彈窗、不阻塞。"""
-    return None
-
-
-def _run_python_code(code: str) -> tuple[list[plt.Figure], str | None]:
-    _configure_matplotlib_cjk()
-    plt.close("all")
-    plt.clf()
-
-    original_show = plt.show
-    plt.show = _noop_show
-
-    namespace: dict[str, Any] = {
-        "__builtins__": __builtins__,
-        "np": np,
-        "plt": plt,
-    }
-    if scipy is not None:
-        namespace["scipy"] = scipy
-
-    try:
-        exec(code, namespace)
-    except Exception as exc:
-        return [], str(exc)
-    finally:
-        plt.show = original_show
-
-    figures: list[plt.Figure] = []
-    for fig_num in list(plt.get_fignums()):
-        fig = plt.figure(fig_num)
-        if fig.get_axes():
-            figures.append(fig)
-        else:
-            plt.close(fig)
-
-    return figures, None
-
-
-def _close_figures(figures: list[plt.Figure]) -> None:
-    for fig in figures:
-        plt.close(fig)
-
-
-def _figure_to_img_tag(fig: plt.Figure) -> str:
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", bbox_inches="tight", dpi=120)
-    encoded_str = base64.b64encode(buf.getvalue()).decode("utf-8")
-    return (
-        f'<img src="data:image/png;base64,{encoded_str}" '
-        'alt="matplotlib plot" />'
-    )
-
-
-def _execute_python_block_for_render(code: str) -> str:
-    figures, error = _run_python_code(code)
-    if error:
-        return f'<p style="color:#f87171;">Python 執行錯誤：{html.escape(error)}</p>'
-
-    try:
-        if not figures:
-            return "<p><em>（程式碼已執行，未產生圖表）</em></p>"
-        return "\n\n".join(_figure_to_img_tag(fig) for fig in figures)
-    finally:
-        _close_figures(figures)
-
-
-def _execute_python_block_for_export(
-    code: str, assets_dir: Path, plot_counter: list[int]
-) -> str:
-    figures, error = _run_python_code(code)
-    if error:
-        return f"*Python 執行錯誤：{error}*"
-
-    try:
-        if not figures:
-            return "*（程式碼已執行，未產生圖表）*"
-
-        md_parts: list[str] = []
-        for fig in figures:
-            plot_counter[0] += 1
-            filename = f"plot_{plot_counter[0]}.png"
-            image_path = assets_dir / filename
-            fig.savefig(
-                image_path,
-                format="png",
-                bbox_inches="tight",
-                dpi=120,
-            )
-            # Pandoc on Windows 需要正斜線的絕對路徑才能穩定找到圖片
-            image_ref = image_path.resolve().as_posix()
-            md_parts.append(f"![圖表]({image_ref})")
-        return "\n\n".join(md_parts)
-    finally:
-        _close_figures(figures)
-
-
 def render_markdown(text: str) -> str:
-    def replace_block(match: re.Match[str]) -> str:
-        code = match.group(1).strip("\n")
-        return _execute_python_block_for_render(code)
-
-    return PYTHON_BLOCK_RE.sub(replace_block, text)
+    # Closed Beta treats every fenced code block as inert report content.
+    return text
 
 
-def _process_markdown_for_file_export(text: str, assets_dir: Path) -> str:
-    plot_counter = [0]
-
-    def replace_block(match: re.Match[str]) -> str:
-        code = match.group(1).strip("\n")
-        return _execute_python_block_for_export(code, assets_dir, plot_counter)
-
-    return PYTHON_BLOCK_RE.sub(replace_block, text)
+def _process_markdown_for_file_export(text: str, _assets_dir: Path) -> str:
+    # Export keeps code visible; no dynamic-code executor exists in this process.
+    return text
 
 
 def export_markdown_to_docx(text: str) -> bytes:
@@ -483,23 +374,17 @@ def export_markdown_to_docx(text: str) -> bytes:
                     encoding="utf-8",
                 )
             except OSError as exc:
-                traceback.print_exc()
-                logger.exception("Pandoc 執行失敗（可能未安裝或不在 PATH）")
+                logger.error("Pandoc unavailable. error_type=%s", type(exc).__name__)
                 raise HTTPException(
                     status_code=500,
-                    detail=(
-                        "Pandoc 未安裝或無法執行。請先安裝 Pandoc 並加入 PATH："
-                        "https://pandoc.org/installing.html"
-                        f"（{type(exc).__name__}: {exc}）"
-                    ),
-                ) from exc
+                    detail="Pandoc 未安裝或無法執行，請聯絡管理員。",
+                ) from None
             except RuntimeError as exc:
-                traceback.print_exc()
-                logger.exception("pypandoc 轉換 Word 失敗")
+                logger.error("Pandoc conversion failed. error_type=%s", type(exc).__name__)
                 raise HTTPException(
                     status_code=500,
-                    detail=f"Word 匯出失敗（Pandoc）：{exc}",
-                ) from exc
+                    detail="Word 匯出轉換失敗，請稍後重試。",
+                ) from None
 
             if not docx_file.is_file():
                 raise HTTPException(
@@ -511,12 +396,11 @@ def export_markdown_to_docx(text: str) -> bytes:
     except HTTPException:
         raise
     except Exception as exc:
-        traceback.print_exc()
-        logger.exception("Word 匯出流程發生未預期錯誤")
+        logger.error("Word export failed. error_type=%s", type(exc).__name__)
         raise HTTPException(
             status_code=500,
-            detail=f"Word 匯出失敗：{type(exc).__name__}: {exc}",
-        ) from exc
+            detail="Word 匯出失敗，請稍後重試。",
+        ) from None
 
 
 def _google_drive_request(
@@ -712,10 +596,11 @@ def _post_json(url: str, headers: dict[str, str], payload: dict[str, Any]) -> di
         with urllib.request.urlopen(request, timeout=45) as response:
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise HTTPException(status_code=502, detail=f"AI provider error: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise HTTPException(status_code=502, detail=f"AI provider unavailable: {exc}") from exc
+        logger.warning("AI upstream rejected a request. status=%s", exc.code)
+        raise HTTPException(status_code=502, detail="AI 服務暫時拒絕請求，請稍後重試") from None
+    except urllib.error.URLError:
+        logger.warning("AI upstream is unavailable")
+        raise HTTPException(status_code=502, detail="AI 服務暫時無法連線，請稍後重試") from None
 
 
 def _post_form(url: str, headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
@@ -726,10 +611,11 @@ def _post_form(url: str, headers: dict[str, str], payload: dict[str, Any]) -> di
             raw = response.read().decode("utf-8")
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise HTTPException(status_code=502, detail=f"OAuth provider error: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise HTTPException(status_code=502, detail=f"OAuth provider unavailable: {exc}") from exc
+        logger.warning("OAuth upstream rejected a request. status=%s", exc.code)
+        raise HTTPException(status_code=502, detail="OAuth 服務暫時拒絕請求，請稍後重試") from None
+    except urllib.error.URLError:
+        logger.warning("OAuth upstream is unavailable")
+        raise HTTPException(status_code=502, detail="OAuth 服務暫時無法連線，請稍後重試") from None
 
 
 def _supabase_configured() -> bool:
@@ -885,14 +771,8 @@ def _send_transfer_confirmation_email(
     confirmation_url: str,
     expires_at: datetime,
 ) -> None:
-    # Development placeholder. Replace this with Resend/Postmark/SES in production.
-    print(
-        "[DEV EMAIL] Report ownership transfer\n"
-        f"To: {recipient_email}\n"
-        f"Report: {report_title}\n"
-        f"Expires: {expires_at.isoformat()}\n"
-        f"Confirm: {confirmation_url}"
-    )
+    del recipient_email, report_title, confirmation_url, expires_at
+    raise RuntimeError("Ownership transfer email provider is not configured")
 
 
 def _today_iso() -> str:
@@ -1020,8 +900,17 @@ def _verify_github_state(state: str) -> dict[str, Any]:
 
 
 def _safe_frontend_redirect(value: str | None, fallback: str = "/dashboard/settings") -> str:
-    if value and value.startswith(FRONTEND_URL):
-        return value
+    if value:
+        candidate = urllib.parse.urlparse(value)
+        configured = urllib.parse.urlparse(FRONTEND_URL)
+        if (
+            candidate.scheme == configured.scheme
+            and candidate.hostname == configured.hostname
+            and candidate.port == configured.port
+            and not candidate.username
+            and not candidate.password
+        ):
+            return value
     if value and value.startswith("/"):
         return f"{FRONTEND_URL}{value}"
     return f"{FRONTEND_URL}{fallback}"
@@ -1161,6 +1050,10 @@ def _get_or_create_stripe_customer(user: dict[str, Any]) -> tuple[str, dict[str,
     profile = _get_or_create_profile(user)
     existing_customer_id = profile.get("stripe_customer_id")
     if existing_customer_id:
+        customer = stripe.Customer.retrieve(existing_customer_id)
+        customer_metadata = customer.get("metadata", {}) if isinstance(customer, dict) else customer.metadata
+        if str(customer_metadata.get("supabase_user_id") or "") != str(user.get("id") or ""):
+            raise HTTPException(status_code=403, detail="Stripe 客戶資料與目前帳號不一致")
         return existing_customer_id, profile
 
     user_id = user.get("id")
@@ -1254,20 +1147,30 @@ def _get_ai_quota(user: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _consume_ai_quota(user: dict[str, Any]) -> dict[str, Any]:
-    quota = _get_ai_quota(user)
-    if quota["remaining"] <= 0:
-        raise HTTPException(status_code=402, detail="今日內建 AI 免費額度已用完")
-
-    next_used = quota["used"] + 1
-    _supabase_request(
-        f"/rest/v1/profiles?id=eq.{user['id']}",
-        method="PATCH",
-        payload={"ai_daily_used": next_used},
+def _reserve_ai_quota(user: dict[str, Any]) -> dict[str, Any]:
+    result = _supabase_request(
+        "/rest/v1/rpc/reserve_ai_quota",
+        method="POST",
+        payload={
+            "p_user_id": user["id"],
+            "p_free_limit": FREE_DAILY_AI_QUOTA,
+            "p_pro_limit": PRO_DAILY_AI_QUOTA,
+        },
     )
-    quota["used"] = next_used
-    quota["remaining"] = max(quota["limit"] - next_used, 0)
-    return quota
+    if not isinstance(result, dict) or not result.get("reserved"):
+        raise HTTPException(status_code=402, detail="今日內建 AI 免費額度已用完")
+    return result
+
+
+def _refund_ai_quota(user: dict[str, Any]) -> None:
+    try:
+        _supabase_request(
+            "/rest/v1/rpc/refund_ai_quota",
+            method="POST",
+            payload={"p_user_id": user["id"]},
+        )
+    except Exception as exc:
+        logger.error("AI quota refund failed. error_type=%s", type(exc).__name__)
 
 
 def _log_ai_usage(
@@ -1314,7 +1217,10 @@ def _run_openai_compatible(
             "messages": [
                 {
                     "role": "system",
-                    "content": "You are AutoLabReport's academic Markdown writing assistant.",
+                    "content": (
+                        "You are AutoLabReport's academic Markdown writing assistant. "
+                        "Never change, invent, remove, or convert experimental numbers or units."
+                    ),
                 },
                 {"role": "user", "content": prompt},
             ],
@@ -1330,7 +1236,10 @@ def _run_openai_client_chat(client: OpenAI, prompt: str, model: str) -> str:
         messages=[
             {
                 "role": "system",
-                "content": "You are AutoLabReport's academic Markdown writing assistant.",
+                "content": (
+                    "You are AutoLabReport's academic Markdown writing assistant. "
+                    "Never change, invent, remove, or convert experimental numbers or units."
+                ),
             },
             {"role": "user", "content": prompt},
         ],
@@ -1352,14 +1261,13 @@ def _run_builtin_dual_engine(prompt: str) -> tuple[str, str]:
                 return _run_openai_client_chat(groq_client, prompt, model), f"groq:{model}"
             except Exception as exc:
                 logger.warning(
-                    "Groq built-in AI failed for model %s; trying next fallback. error=%s",
+                    "Groq built-in AI failed for model %s; trying next fallback. error_type=%s",
                     model,
-                    exc,
-                    exc_info=True,
+                    type(exc).__name__,
                 )
 
     if gemini_client is not None:
-        last_exc: Exception | None = None
+        last_error_type = "unknown"
         for model in GEMINI_MODELS:
             try:
                 return (
@@ -1367,16 +1275,15 @@ def _run_builtin_dual_engine(prompt: str) -> tuple[str, str]:
                     f"gemini:{model}",
                 )
             except Exception as exc:
-                last_exc = exc
+                last_error_type = type(exc).__name__
                 logger.warning(
-                    "Gemini built-in AI failed for model %s; trying next fallback. error=%s",
+                    "Gemini built-in AI failed for model %s; trying next fallback. error_type=%s",
                     model,
-                    exc,
-                    exc_info=True,
+                    last_error_type,
                 )
         raise HTTPException(
             status_code=502,
-            detail=f"內建 AI 暫時無法使用（所有 Gemini fallback model 也失敗）：{last_exc}",
+            detail=f"內建 AI 暫時無法使用（錯誤類型：{last_error_type}）",
         )
 
     raise HTTPException(
@@ -1409,6 +1316,58 @@ def _run_anthropic(api_key: str, prompt: str, model: str) -> str:
         },
     )
     return result["content"][0]["text"].strip()
+
+
+NUMERIC_FACT_RE = re.compile(
+    r"(?<![\w])(?P<number>[-+]?(?:\d+(?:[.,]\d+)?|\.\d+)(?:[eE][-+]?\d+)?)"
+    r"(?P<spacing>\s*)"
+    r"(?P<unit>%|°[CFK]|(?:[kMmunpµμ]?)(?:m|s|g|A|V|W|J|N|Pa|Hz|Ω|ohm|mol|L)(?:[²³23]|\^[-+]?\d+)?)?"
+    r"(?![\w])"
+)
+
+
+def _canonical_number(value: str) -> str:
+    normalized = value.replace(",", ".")
+    try:
+        decimal_value = Decimal(normalized)
+    except InvalidOperation:
+        return normalized.lower()
+    if decimal_value == 0:
+        return "0"
+    return format(decimal_value.normalize(), "f")
+
+
+def extract_numeric_facts(text: str) -> Counter[tuple[str, str]]:
+    """Extract experimental numeric facts while ignoring Markdown list numbering."""
+    without_list_numbers = re.sub(r"(?m)^\s*\d+[.)]\s+", "", text)
+    facts: Counter[tuple[str, str]] = Counter()
+    for match in NUMERIC_FACT_RE.finditer(without_list_numbers):
+        unit = (match.group("unit") or "").replace("μ", "µ").lower()
+        facts[(_canonical_number(match.group("number")), unit)] += 1
+    return facts
+
+
+def validate_numeric_integrity(source: str, candidate: str) -> tuple[bool, dict[str, int]]:
+    source_facts = extract_numeric_facts(source)
+    candidate_facts = extract_numeric_facts(candidate)
+    missing = sum((source_facts - candidate_facts).values())
+    added = sum((candidate_facts - source_facts).values())
+    return missing == 0 and added == 0, {"missing": missing, "added": added}
+
+
+def _enforce_numeric_integrity(source: str, candidate: str) -> None:
+    is_valid, differences = validate_numeric_integrity(source, candidate)
+    if is_valid:
+        return
+    logger.warning(
+        "AI output blocked by numeric-integrity guard. missing=%s added=%s",
+        differences["missing"],
+        differences["added"],
+    )
+    raise HTTPException(
+        status_code=422,
+        detail="AI 結果未通過數字與單位完整性檢查，文件未被修改。請縮小選取範圍後重試。",
+    )
 
 
 def _run_ai_provider(
@@ -1702,6 +1661,7 @@ def _build_agent_prompt(body: AgentRunRequest) -> str:
     }
     return (
         "你是 AutoLabReport 的 STEM 實驗報告 Agent。"
+        "不得改寫、刪除、新增或換算任何實驗數字與單位；資料不足時必須保留原值並提出問題。"
         "只回傳有效 JSON，不要 markdown code fence，不要額外解釋。\n\n"
         f"Agent 模式：{body.mode} - {mode_instructions[body.mode]}\n"
         f"使用者目標：{body.goal or '未提供，請根據模式處理'}\n"
@@ -1734,6 +1694,28 @@ def _run_agent_provider(
 @app.get("/api/health")
 def health():
     return {"status": "ok", "service": "AutoLabReport API"}
+
+
+@app.get("/api/readiness")
+def readiness():
+    checks = {
+        "supabase": _supabase_configured(),
+        "encryption": bool(ENCRYPTION_KEY),
+        "pandoc": False,
+        "built_in_ai": groq_client is not None or gemini_client is not None,
+    }
+    try:
+        checks["pandoc"] = bool(pypandoc.get_pandoc_path())
+    except OSError:
+        checks["pandoc"] = False
+
+    required_ready = checks["supabase"] and checks["encryption"] and checks["pandoc"]
+    if not required_ready:
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "not_ready", "checks": checks},
+        )
+    return {"status": "ready", "checks": checks}
 
 
 @app.get("/keep-alive")
@@ -1790,13 +1772,13 @@ def run_ai(body: AiRunRequest, authorization: str | None = Header(default=None))
     model: str | None = None
     decrypted_user_api_key: str | None = None
     decrypted_user_api_provider: str | None = None
+    quota_reserved = False
     try:
         if body.provider == "built_in":
             if user is None:
                 raise HTTPException(status_code=401, detail="內建 AI 需要登入後使用")
-            quota = _get_ai_quota(user)
-            if quota["remaining"] <= 0:
-                raise HTTPException(status_code=402, detail="今日內建 AI 免費額度已用完")
+            quota = _reserve_ai_quota(user)
+            quota_reserved = True
         elif body.provider == "user_api_key":
             if user is None:
                 raise HTTPException(status_code=401, detail="自備 API Key 需要登入後使用")
@@ -1806,11 +1788,17 @@ def run_ai(body: AiRunRequest, authorization: str | None = Header(default=None))
             )
 
         markdown, model = _run_ai_provider(body, decrypted_user_api_key, decrypted_user_api_provider)
-        if body.provider == "built_in" and user is not None:
-            quota = _consume_ai_quota(user)
+        if body.action != "outline":
+            _enforce_numeric_integrity(text, markdown)
         _log_ai_usage(user, body, model, "success")
     except HTTPException:
+        if quota_reserved and user is not None:
+            _refund_ai_quota(user)
         _log_ai_usage(user, body, model, "error")
+        raise
+    except Exception:
+        if quota_reserved and user is not None:
+            _refund_ai_quota(user)
         raise
     finally:
         decrypted_user_api_key = None
@@ -1842,14 +1830,14 @@ def run_agent(body: AgentRunRequest, authorization: str | None = Header(default=
     model: str | None = None
     decrypted_user_api_key: str | None = None
     decrypted_user_api_provider: str | None = None
+    quota_reserved = False
 
     try:
         if body.provider == "built_in":
             if user is None:
                 raise HTTPException(status_code=401, detail="Agent 需要登入後使用內建 AI")
-            quota = _get_ai_quota(user)
-            if quota["remaining"] <= 0:
-                raise HTTPException(status_code=402, detail="今日內建 AI 免費額度已用完")
+            quota = _reserve_ai_quota(user)
+            quota_reserved = True
         elif body.provider == "user_api_key":
             if user is None:
                 raise HTTPException(status_code=401, detail="自備 API Key 需要登入後使用")
@@ -1877,13 +1865,19 @@ def run_agent(body: AgentRunRequest, authorization: str | None = Header(default=
             response = _fallback_agent_response(body)
             model = response.model
 
-        if body.provider == "built_in" and user is not None:
-            quota = _consume_ai_quota(user)
+        if response.proposed_markdown:
+            _enforce_numeric_integrity(body.document_markdown, response.proposed_markdown)
 
         response.remaining_quota = quota["remaining"] if quota else None
         response.model = model
         return response
     except HTTPException:
+        if quota_reserved and user is not None:
+            _refund_ai_quota(user)
+        raise
+    except Exception:
+        if quota_reserved and user is not None:
+            _refund_ai_quota(user)
         raise
     finally:
         decrypted_user_api_key = None
@@ -1973,6 +1967,11 @@ def request_report_ownership_transfer(
     body: OwnershipTransferRequest,
     authorization: str | None = Header(default=None),
 ):
+    if not OWNERSHIP_TRANSFER_EMAIL_CONFIGURED:
+        raise HTTPException(
+            status_code=503,
+            detail="Closed Beta 尚未啟用所有權轉移郵件；請聯絡產品管理員處理。",
+        )
     sender = _require_user(authorization)
     sender_id = sender.get("id")
     if not isinstance(sender_id, str) or not sender_id:
@@ -2104,7 +2103,7 @@ def confirm_report_ownership_transfer(
 
 @app.get("/api/billing/config", response_model=BillingConfigResponse)
 def get_billing_config():
-    enabled = bool(STRIPE_SECRET_KEY and STRIPE_PRO_PRICE_ID)
+    enabled = bool(STRIPE_BILLING_ENABLED and STRIPE_SECRET_KEY and STRIPE_PRO_PRICE_ID)
     return BillingConfigResponse(
         enabled=enabled,
         pro_price_id_configured=bool(STRIPE_PRO_PRICE_ID),
@@ -2118,6 +2117,8 @@ def create_checkout_session(
     body: StripeSessionRequest,
     authorization: str | None = Header(default=None),
 ):
+    if not STRIPE_BILLING_ENABLED:
+        raise HTTPException(status_code=503, detail="Stripe 不在本次 Closed Beta 範圍內")
     user = _get_user_from_authorization(authorization)
     if user is None:
         raise HTTPException(status_code=401, detail="請先登入")
@@ -2147,6 +2148,8 @@ def create_portal_session(
     body: StripeSessionRequest,
     authorization: str | None = Header(default=None),
 ):
+    if not STRIPE_BILLING_ENABLED:
+        raise HTTPException(status_code=503, detail="Stripe 不在本次 Closed Beta 範圍內")
     user = _get_user_from_authorization(authorization)
     if user is None:
         raise HTTPException(status_code=401, detail="請先登入")
@@ -2166,6 +2169,8 @@ def start_github_oauth(
     body: GithubOAuthStartRequest,
     authorization: str | None = Header(default=None),
 ):
+    if not GITHUB_SYNC_ENABLED:
+        raise HTTPException(status_code=503, detail="GitHub 同步不在本次 Closed Beta 範圍內")
     user = _require_user(authorization)
     if not _github_configured():
         raise HTTPException(
@@ -2196,6 +2201,8 @@ def start_github_oauth(
 
 @app.get("/api/github/oauth/callback")
 def github_oauth_callback(code: str | None = None, state: str | None = None, error: str | None = None):
+    if not GITHUB_SYNC_ENABLED:
+        raise HTTPException(status_code=503, detail="GitHub 同步不在本次 Closed Beta 範圍內")
     fallback_url = _safe_frontend_redirect(None)
     if error:
         return RedirectResponse(f"{fallback_url}?github=error&message={urllib.parse.quote(error)}")
@@ -2228,6 +2235,8 @@ def sync_report_to_github(
     body: GithubSyncRequest,
     authorization: str | None = Header(default=None),
 ):
+    if not GITHUB_SYNC_ENABLED:
+        raise HTTPException(status_code=503, detail="GitHub 同步不在本次 Closed Beta 範圍內")
     user = _require_user(authorization)
     if not body.markdown.strip():
         raise HTTPException(status_code=400, detail="Markdown 內容不可為空")
@@ -2278,6 +2287,8 @@ def sync_report_to_github(
 
 @app.post("/api/stripe/webhook")
 async def stripe_webhook(request: Request, stripe_signature: str | None = Header(default=None)):
+    if not STRIPE_BILLING_ENABLED:
+        raise HTTPException(status_code=503, detail="Stripe 不在本次 Closed Beta 範圍內")
     if not STRIPE_WEBHOOK_SECRET:
         raise HTTPException(status_code=503, detail="STRIPE_WEBHOOK_SECRET 尚未設定")
 
@@ -2320,12 +2331,11 @@ def export_docx(body: RenderRequest):
     except HTTPException:
         raise
     except Exception as exc:
-        traceback.print_exc()
-        logger.exception("/api/export 未處理的錯誤")
+        logger.error("/api/export failed. error_type=%s", type(exc).__name__)
         raise HTTPException(
             status_code=500,
-            detail=f"Word 匯出失敗：{type(exc).__name__}: {exc}",
-        ) from exc
+            detail="Word 匯出失敗，請確認 Pandoc 已安裝後重試。",
+        ) from None
 
     return StreamingResponse(
         io.BytesIO(docx_bytes),
@@ -2339,8 +2349,11 @@ def export_docx(body: RenderRequest):
     )
 
 
-@app.get("/api/drive/files", response_model=DriveFilesResponse)
-def list_drive_files(access_token: str):
+@app.post("/api/drive/files", response_model=DriveFilesResponse)
+def list_drive_files(body: DriveFilesRequest):
+    if not GOOGLE_DRIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Google Drive 不在本次 Closed Beta 範圍內")
+    access_token = body.access_token
     query = " or ".join(f"mimeType='{mime_type}'" for mime_type in sorted(DRIVE_ALLOWED_MIME_TYPES))
     params = urllib.parse.urlencode(
         {
@@ -2382,6 +2395,8 @@ def list_drive_files(access_token: str):
 
 @app.post("/api/drive/import", response_model=DriveImportResponse)
 def import_drive_file(body: DriveImportRequest):
+    if not GOOGLE_DRIVE_ENABLED:
+        raise HTTPException(status_code=503, detail="Google Drive 不在本次 Closed Beta 範圍內")
     metadata = _get_drive_file_metadata(body.file_id, body.access_token)
     name = str(metadata.get("name") or "Google Drive 匯入檔案")
     mime_type = str(metadata.get("mimeType") or "")
@@ -2399,4 +2414,9 @@ def import_drive_file(body: DriveImportRequest):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(
+        "main:app",
+        host=os.getenv("HOST", "0.0.0.0"),
+        port=int(os.getenv("PORT", "8000")),
+        reload=os.getenv("UVICORN_RELOAD") == "true",
+    )

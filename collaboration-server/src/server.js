@@ -7,6 +7,7 @@ const PORT = Number.parseInt(process.env.PORT || '1234', 10)
 const HOST = process.env.HOST || '0.0.0.0'
 const SUPABASE_URL = process.env.SUPABASE_URL
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY
+const COLLABORATION_ENABLED = process.env.COLLABORATION_ENABLED === 'true'
 const YJS_STORE_DEBOUNCE_MS = Number.parseInt(
   process.env.YJS_STORE_DEBOUNCE_MS || '2000',
   10,
@@ -193,6 +194,9 @@ const server = new Server({
   maxDebounce: YJS_STORE_MAX_DEBOUNCE_MS,
 
   async onAuthenticate({ documentName, token, requestHeaders }) {
+    if (!COLLABORATION_ENABLED) {
+      throw new Error('Realtime collaboration is disabled for Closed Beta')
+    }
     return authenticateConnection(documentName, token, requestHeaders)
   },
 
