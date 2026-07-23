@@ -2,45 +2,45 @@
 
 Updated: 2026-07-23
 
-Do not paste secret values into this file, chat, screenshots or Git. Enter them directly in each platform's encrypted environment-variable UI.
+不要把真实 Secret 写入本文件、聊天、截图或 Git；请直接填入平台的加密环境变量界面。
 
-## Blocking actions
+| 平台 | 要做什么 | 控制台位置 | 所需值 | 为什么 | 如何验证 | 是否阻塞 Beta |
+|---|---|---|---|---|---|---|
+| Supabase Database | 在干净 staging 依序执行 schema 与全部 migration，最后执行 20260723_closed_beta_security.sql | SQL Editor／Migration 管理 | 无真实 Secret；使用仓库 SQL | 建立 RLS、trigger、quota RPC 与私有 Storage | 完成下方三账号权限矩阵 | 是 |
+| Supabase Auth URL | 配置正式与 staging URL | Authentication → URL Configuration | Site URL、允许的 redirect URL | OAuth／Magic Link 必须回到正确网站 | 两个域名登录后不循环、不跳错站 | 是 |
+| Supabase Email | 启用 Magic Link 与邮件模板 | Authentication → Providers → Email | 发件设置、模板、redirect | Google 故障时仍能登录 | Beta 邮箱收到链接并完成登录 | 若承诺 Email 则是 |
+| Google OAuth | 发布或配置测试用户；填入 Supabase provider | Google Cloud → OAuth consent screen／Credentials；Supabase → Providers → Google | Client ID、Client Secret、Supabase callback URI、授权域名 | 解决 403 access_denied 并提供主要登录 | 非项目拥有者账号成功登录／登出／重登 | 若承诺 Google 则是 |
+| Google Cloud Billing | 只在另一个 Google API 明确要求时关联 Billing | Google Cloud → Billing | 结算账号（通常基本 OAuth 登录不需要） | 避免把无关警示误当 OAuth 阻塞 | Drive 关闭时基本登录仍成功 | 否 |
+| Supabase Storage | 确认 report_images 与 report_recordings 为 private，并执行 policies | Storage → Buckets／Policies | 两个 bucket 名与仓库 policy | 防止实验图片和录屏被公开枚举 | 未授权读取失败；授权 signed URL 成功 | 是 |
+| Groq | 配置至少一个内建 AI provider | Groq Console → API Keys；Render Env | GROQ_API_KEY、GROQ_MODEL(S) | 提供内建 AI | 大纲与改写各成功一次；额度只扣一次 | Groq／Gemini 至少一个是 |
+| Gemini | 配置至少一个内建 AI provider | Google AI Studio／Cloud；Render Env | GEMINI_API_KEY、GEMINI_MODEL(S) | 提供 Groq fallback 或主要 AI | 大纲与改写各成功一次；失败不泄露响应 | Groq／Gemini 至少一个是 |
+| Google Drive scopes | 本轮保持关闭，不把 Drive scope 加到 Google 登录 | Google OAuth consent screen；Vercel／Render Env | VITE_ENABLE_GOOGLE_DRIVE=false、GOOGLE_DRIVE_ENABLED=false | 基本登录不应索取不必要的 Drive 权限 | Consent 只显示 openid／email／profile | 否；保持关闭 |
+| Vercel | 配置前端环境变量与 feature flags | Project → Settings → Environment Variables | VITE_API_URL、Supabase URL／anon key；未验收 flags=false | 防止 localhost 回退与死入口 | Network 只请求正式 HTTPS；隐藏功能不出现 | 是 |
+| Render | 配置后端 URL、Supabase service role、加密、CORS 与 flags | Service → Environment | SUPABASE_URL、SERVICE_ROLE、ENCRYPTION_KEY、FRONTEND_URL、BACKEND_URL、CORS allowlist | 后端认证写入、加密与跨域安全 | /api/readiness=200；恶意 Origin 被拒 | 是 |
+| Pandoc | 安装并加入 PATH | Render Build／Dockerfile | 可执行 Pandoc 版本 | Word 导出依赖 | readiness pandoc=true；标准 DOCX 可打开 | 是 |
+| Stripe | 本轮维持关闭，不建立真实收费 | Stripe Dashboard；Vercel／Render Env | 前后端 billing flags=false | 防止未验收收费入口 | UI 无升级入口；后端 route=503 | 否；保持关闭 |
+| GitHub OAuth | GitHub 登录与 Sync 都维持关闭 | Supabase Providers／GitHub OAuth Apps；Env | VITE_ENABLE_GITHUB_AUTH=false、同步 flags=false | 避免未配置或缺 CSRF 验收的流程 | 登录页无 GitHub；sync route=503 | 否；保持关闭 |
+| Collaboration server | 本轮不部署或保持拒绝连接 | 服务环境变量 | COLLABORATION_ENABLED=false | 避免 Yjs 与 HTTP 双写覆盖 | 前端不开连接；server 拒绝认证 | 否；保持关闭 |
+| Error monitoring | 选择并配置 Sentry 或同类服务 | 监控平台项目设置／Vercel／Render | DSN、release tag、告警收件人；先做 PII 审查 | 20 位学生发生错误时 Owner 能主动发现 | staging 发送测试事件并收到告警 | 是 |
+| Feedback | 指定学生可见的回报渠道与负责人 | Owner 选择的 Email／表单／群组 | 公开联系地址、负责人、响应时间 | 保存／登录／导出受阻时有升级路径 | 从应用入口发送测试消息并收到 | 是 |
 
-| Platform | Console location | Required value / change | Why needed | How to verify | Blocks Beta? |
-| --- | --- | --- | --- | --- | --- |
-| Supabase | SQL Editor / Migrations | Apply schema and every dated migration, ending with 20260723_closed_beta_security.sql | Enforces ownership, collaborator permissions, protected profiles, atomic quota and private Storage | Run the permission matrix below in a clean staging project | Yes |
-| Supabase | Authentication → URL Configuration | Final Vercel Site URL plus allowed redirect URLs for production and staging | OAuth and Magic Link must return to the correct app | Login from both domains; no redirect loop | Yes |
-| Supabase | Authentication → Providers → Email | Enable Email / Magic Link and set sender template | Provides fallback login if Google is unavailable | Send a link to a Beta mailbox and complete login | Yes, unless Google-only is an explicit decision |
-| Supabase | Authentication → Providers → Google | Enable provider; enter Google client ID and secret | Enables the intended social login | Login, logout and login again from final domain | Yes, unless Email-only is an explicit decision |
-| Google Cloud | APIs & Services → OAuth consent screen | External app, product name, support email, developer contact, authorized domains; request only openid, email and profile for login | Prevents the 403 access_denied testing-screen problem | A non-owner test account can complete consent | Yes if Google login is offered |
-| Google Cloud | APIs & Services → Credentials → OAuth 2.0 Client | Supabase callback URI and approved web origins | Links Google to Supabase safely | Callback reaches Supabase and then the app | Yes if Google login is offered |
-| Google Cloud | Billing | No billing account is normally required merely to use OAuth consent. Attach billing only if a separately enabled Google API or quota explicitly requires it | Avoids treating an unrelated console warning as an OAuth blocker | Basic Google login works with Drive disabled | No for basic login |
-| Vercel | Project → Settings → Environment Variables | VITE_API_URL, VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY and all VITE_ENABLE flags set to false except explicitly accepted Beta features | Connects frontend to staging／production without localhost fallbacks | Inspect deployed network calls and landing feature visibility | Yes |
-| Render | Service → Environment | SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, stable ENCRYPTION_KEY, FRONTEND_URL, BACKEND_URL, CORS_ALLOWED_ORIGINS and at least one AI provider | Enables authenticated server operations, encrypted BYOK and correct CORS | GET /api/readiness returns 200; evil-origin preflight is denied | Yes |
-| Render | Service → Build / Runtime | Pandoc installed and available in PATH | Word export depends on Pandoc | readiness pandoc=true and standard DOCX export opens | Yes |
-| Groq or Gemini | Provider console | One active server-side API key and an allowed model | Enables built-in AI for the Beta | One outline and one rewrite complete; quota decrements once | Yes if built-in AI is promised |
-| Monitoring | Sentry or equivalent | Frontend and backend projects, release tag, alert recipient, PII review | Owner needs visibility before students report silent failures | Send a staging test event and receive an alert | Yes |
-| Operations | Owner-selected channel | Support Email or form, response owner and expected response window | Students need a known path for blocked save, auth or export | Link is visible and a test message reaches the owner | Yes |
+## 三账号权限矩阵
 
-## Supabase permission matrix
+使用三个 disposable staging 账号与一个未登录浏览器：
 
-Use three disposable staging accounts and one signed-out browser.
+| 情境 | 预期 |
+|---|---|
+| Owner 新建、编辑、删除、恢复自己的报告 | 允许 |
+| 账号 B 未受邀直接改 URL documentId | 拒绝 |
+| 账号 B 为 Viewer | 可读；写入拒绝 |
+| 账号 C 为 Editor | 只可更新 content；不能改 owner、title、share、trash 或权限 |
+| Owner 开启公开 view | 未登录可读 |
+| 数据库残留 legacy edit | 未登录仍只读 |
+| Owner 把共享报告移入垃圾桶 | Viewer／Editor／Anonymous 都失去访问 |
+| 浏览器直接修改 profile plan／quota／Stripe 字段 | 拒绝或值不变 |
+| 未授权直接读取 report_images | 拒绝 |
 
-| Scenario | Expected |
-| --- | --- |
-| Owner creates, edits, trashes, restores and deletes own report | Allowed |
-| Account B opens owner's private report without invitation | Denied |
-| Account B is invited view | Read allowed, write denied |
-| Account C is invited edit | Content update allowed; title, owner, share, trash and permissions denied |
-| Owner enables public view | Signed-out reader can read |
-| Owner selects legacy edit setting | Signed-out reader remains read-only |
-| Owner trashes shared report | Collaborator and public reader lose access |
-| Browser updates profile plan or AI quota directly | Denied or protected values remain unchanged |
-| Browser reads report_images without a signed authorized request | Denied |
-
-## Environment policy for Closed Beta
-
-Frontend flags:
+## Closed Beta flags
 
 ~~~text
 VITE_ENABLE_BILLING=false
@@ -50,47 +50,23 @@ VITE_ENABLE_GOOGLE_DRIVE=false
 VITE_ENABLE_SCREEN_RECORDING=false
 VITE_ENABLE_REALTIME_COLLABORATION=false
 VITE_ENABLE_BROWSER_EXTENSION=false
-~~~
 
-Backend flags:
-
-~~~text
 STRIPE_BILLING_ENABLED=false
 GITHUB_SYNC_ENABLED=false
 GOOGLE_DRIVE_ENABLED=false
 OWNERSHIP_TRANSFER_EMAIL_CONFIGURED=false
-~~~
 
-Collaboration server:
-
-~~~text
 COLLABORATION_ENABLED=false
 ~~~
 
-Do not deploy the collaboration server for this Beta unless the realtime collaboration scope is separately reopened and re-audited.
+## 正常浏览器手动验收
 
-## Manual browser acceptance
-
-Run in normal Chrome or Edge after staging deployment:
-
-1. Test landing and login at 390, 768, 1024 and 1440 pixels.
-2. Enter guest mode, create and edit a report, reload, and confirm the report remains listed.
-3. Sign in as the owner and repeat create, rename, folder, favorite, trash, restore and delete.
-4. Simulate offline mode while typing, return online, press retry and confirm the latest text wins.
-5. Run structured outline and AI rewrite; reject one proposal, then apply one and restore the previous version.
-6. Ask AI to change 1.00 ms to 2.00 ms and confirm application is rejected.
-7. Upload an image, reload and verify the signed image still renders.
-8. Run the public／viewer／editor matrix.
-9. Export the standard fixture to Word and PDF, open both, and inspect every page.
-10. Confirm DevTools Console has no new warning or error and Network contains no localhost, token query string or failed hidden-feature request.
-
-## Optional systems that do not block this Beta
-
-| Platform | Current decision | Reopen criteria |
-| --- | --- | --- |
-| Stripe | Disabled | Test checkout, portal, webhook signatures, replay and subscription authorization |
-| GitHub Auth / Sync | Disabled | Configure separate OAuth app and complete state／redirect security review |
-| Google Drive | Disabled | Add separate Drive consent, minimal scope and token-handling E2E |
-| Realtime collaboration | Disabled | Establish one authoritative persistence path and conflict tests |
-| Browser extension | Disabled | Security review, versioned release and store／manual installation instructions |
-| Screen recording | Disabled | Consent, private retention, deletion and access-control review |
+1. 在 Chrome／Edge 以 390×844、768×1024、1024×768、1440×900 测试。
+2. Guest 新建、编辑、刷新并确认报告仍存在。
+3. Owner 跑完整云端 CRUD 与 offline／online 重试。
+4. 跑结构化大纲、AI 改写、拒绝提案、套用提案与恢复版本。
+5. 要求 AI 把 1.00 ms 改成 2.00 ms，确认后端拒绝。
+6. 上传图片、刷新并确认 signed URL 仍可显示。
+7. 完成上方权限矩阵。
+8. 用标准 fixture 导出 Word／PDF，逐页检查中文、公式、图表、图片与分页。
+9. Console 无未解释 warning／error；Network 无 localhost、token query string 或隐藏功能请求。
