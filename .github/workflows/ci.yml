@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm audit --audit-level=high
+        working-directory: frontend
+      - run: npm run lint
+        working-directory: frontend
+      - run: npm run typecheck
+        working-directory: frontend
+      - run: npm test
+        working-directory: frontend
+      - run: npm run build
+        working-directory: frontend
+
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: python -m pip install -r backend/requirements.txt
+      - run: python -m unittest discover -s tests -v
+        working-directory: backend
+      - run: python -m py_compile main.py
+        working-directory: backend
+
+  supporting-services:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            collaboration-server/package-lock.json
+      - run: npm ci
+      - run: npm audit --omit=dev --audit-level=moderate
+      - run: npm ci
+        working-directory: collaboration-server
+      - run: npm audit --omit=dev --audit-level=moderate
+        working-directory: collaboration-server
+      - run: npm run check
+        working-directory: collaboration-server
+      - run: node --check extension/background.js
+      - run: node --check extension/content.js
+      - run: node --check extension/popup.js

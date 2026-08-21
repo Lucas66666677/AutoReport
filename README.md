@@ -38,10 +38,10 @@ Closed Beta 默认关闭：
 - 登录账号、访客草稿、保存 outbox 与 Yjs 缓存使用隔离命名空间。
 - CORS 使用明确 allowlist；生产环境不会回退到学生电脑的 localhost。
 
-必须在目标 Supabase 环境应用全部迁移，尤其是：
+必须在目标 Supabase 环境按文件名顺序应用全部迁移，直到：
 
 ~~~text
-supabase/migrations/20260723_closed_beta_security.sql
+supabase/migrations/20260724_staging_bringup_hardening.sql
 ~~~
 
 在未完成 staging 迁移验证前，不应邀请 Beta 用户。
@@ -93,9 +93,12 @@ cd D:\AutoLabReport\backend
 .\.venv\Scripts\python.exe -m py_compile main.py
 
 cd D:\AutoLabReport
-npm run check:deploy
+npm run check:local
+npm run audit:prod
 git diff --check
 ~~~
+
+`check:local` 會執行各服務的靜態檢查、測試與正式建置，不要求本機已填入部署密鑰或正在運行後端。`check:deploy` 另會嚴格檢查目標環境變數與後端 health／readiness，應在 staging 或 production preflight 使用。
 
 ## 运行状态
 

@@ -94,6 +94,7 @@ import {
   queueDocumentSave,
   readDocumentSaveOutbox,
   removeDocumentSave,
+  removeDocumentSaves,
   type PendingDocumentSave,
 } from './documentSaveOutbox'
 import { BrandLockup, BrandMark } from './Brand'
@@ -105,12 +106,8 @@ import {
   readStoredSplitRatio,
   type EditorViewMode,
 } from './editorViewMode'
-import GoogleDrivePicker from './GoogleDrivePicker'
-import MarkdownRenderer from './MarkdownRenderer'
-import PublicReport from './PublicReport'
 import { analyzeReportQuality } from './reportQuality'
 import { createPrivateReportImageUrl, REPORT_IMAGE_BUCKET } from './reportImageStorage'
-import ScreenRecorderControls from './ScreenRecorderControls'
 import { supabaseClient as supabase } from './supabaseClient'
 import { useExtensionBridge } from './useExtensionBridge'
 import { useSettings, type NotePreferences } from './useSettings'
@@ -139,11 +136,22 @@ function getDocumentVersionsStorageKey(userId: string | null): string {
   return `${DOCUMENT_VERSIONS_STORAGE_KEY}:${userId ?? 'guest-v2'}`
 }
 const MarkdownEditor = lazy(() => import('@monaco-editor/react'))
-const PrismLandingScene = lazy(() => import('./PrismLandingScene'))
+const LazyGoogleDrivePicker = lazy(() => import('./GoogleDrivePicker'))
+const LazyMarkdownRenderer = lazy(() => import('./MarkdownRenderer'))
+const LazyPublicReport = lazy(() => import('./PublicReport'))
+const LazyScreenRecorderControls = lazy(() => import('./ScreenRecorderControls'))
 const documentYDocs = new Map<string, YDoc>()
 let sharedYDoc: YDoc | null = null
 const YTEXT_NAME = 'monaco-or-textarea'
 const LOCAL_YJS_ORIGIN = 'local-monaco'
+
+function MarkdownRenderer({ markdown }: { markdown: string }) {
+  return (
+    <Suspense fallback={<p className="text-sm text-slate-400">正在準備預覽…</p>}>
+      <LazyMarkdownRenderer markdown={markdown} />
+    </Suspense>
+  )
+}
 
 const DEFAULT_TEMPLATES = [
   {
@@ -1186,7 +1194,7 @@ function DocumentSidebar({
               event.stopPropagation()
               onTogglePin()
             }}
-            className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-indigo-600 group-hover:opacity-100"
+            className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-blue-700 group-hover:opacity-100"
           >
             {pinState === 'pinned' ? (
               <PinOff className="h-3.5 w-3.5" strokeWidth={2} />
@@ -1245,7 +1253,7 @@ function DocumentSidebar({
           type="button"
           title="新增報告"
           onClick={onCreateDocument}
-          className="mt-auto grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-lg shadow-indigo-500/20 transition hover:brightness-110"
+          className="mt-auto grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-blue-700 to-teal-600 text-white shadow-lg shadow-blue-700/20 transition hover:brightness-110"
         >
           <Plus className="h-[18px] w-[18px]" strokeWidth={2} />
         </button>
@@ -1301,7 +1309,7 @@ function DocumentSidebar({
                 setExpandedFolderIds((current) => new Set(current).add(document.id))
                 onCreateDocumentInFolder(document.id)
               }}
-              className="rounded-lg p-1 text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-indigo-600 group-hover:opacity-100"
+              className="rounded-lg p-1 text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-blue-700 group-hover:opacity-100"
             >
               <Plus className="h-4 w-4" strokeWidth={2} />
             </button>
@@ -1362,7 +1370,7 @@ function DocumentSidebar({
         <button
           type="button"
           onClick={onCreateDocument}
-          className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 transition-all hover:brightness-110 active:scale-[0.99]"
+          className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-blue-700 to-teal-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-700/20 transition-all hover:brightness-110 active:scale-[0.99]"
         >
           <Plus className="h-4 w-4" strokeWidth={2.2} />
           建立新報告
@@ -2611,8 +2619,8 @@ function DashboardView({
       title: '貼上 AI 生成內容',
       description: '整理亂格式',
       icon: PenLine,
-      tint: 'from-violet-50 to-indigo-100/70',
-      iconTone: 'text-indigo-700',
+      tint: 'from-teal-50 to-blue-100/70',
+      iconTone: 'text-blue-700',
       action: 'create',
     },
     {
@@ -2860,7 +2868,7 @@ function ProjectsView({
   function getStatusStyle(status: string) {
     if (status === '已匯出' || status === '已轉換') return 'bg-emerald-50 text-emerald-700 ring-emerald-100'
     if (status === '需檢查') return 'bg-amber-50 text-amber-700 ring-amber-100'
-    if (status === '已共用') return 'bg-indigo-50 text-indigo-700 ring-indigo-100'
+    if (status === '已共用') return 'bg-blue-50 text-blue-700 ring-blue-100'
     return 'bg-slate-100 text-slate-600 ring-slate-200'
   }
 
@@ -3884,38 +3892,17 @@ function LandingPage({
   const [email, setEmail] = useState('')
   const [magicLinkSent, setMagicLinkSent] = useState(false)
   const [magicLinkLoading, setMagicLinkLoading] = useState(false)
-  const [prismActivationKey, setPrismActivationKey] = useState(0)
-  const oauthTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
-
-  useEffect(() => {
-    return () => {
-      if (oauthTimerRef.current) {
-        window.clearTimeout(oauthTimerRef.current)
-      }
-    }
-  }, [])
-
-  function ignitePrism() {
-    setPrismActivationKey((current) => current + 1)
-  }
 
   function handleOAuthLogin(provider: Provider) {
     if (authLoading) return
-
-    ignitePrism()
-    if (oauthTimerRef.current) {
-      window.clearTimeout(oauthTimerRef.current)
-    }
-    oauthTimerRef.current = window.setTimeout(() => onOAuthLogin(provider), 620)
+    onOAuthLogin(provider)
   }
 
   async function handleMagicLinkSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!email.trim() || magicLinkSent) return
 
-    ignitePrism()
     setMagicLinkLoading(true)
-    await new Promise((resolve) => window.setTimeout(resolve, 520))
     const didSend = await onSendMagicLink(email.trim())
     setMagicLinkLoading(false)
     if (didSend) {
@@ -3924,70 +3911,63 @@ function LandingPage({
   }
 
   return (
-    <div className={`relative isolate min-h-screen overflow-x-hidden bg-[#050507] text-white ${SCROLLBAR_HIDE}`}>
-      <Suspense
-        fallback={
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_44%,rgba(255,255,255,0.12),transparent_34%),#050507]" />
-        }
-      >
-        <PrismLandingScene activationKey={prismActivationKey} />
-      </Suspense>
-
-      <nav className="pointer-events-none relative z-10 mx-auto flex max-w-7xl items-center justify-between px-6 py-6 sm:px-8">
-        <BrandLockup size="compact" surface="dark" hideTextOnMobile />
+    <div className={`min-h-screen overflow-x-hidden bg-[#f7f7f4] text-[#17181d] ${SCROLLBAR_HIDE}`}>
+      <nav className="mx-auto flex max-w-7xl items-center justify-between border-b border-[#dcddd8] px-6 py-5 sm:px-8">
+        <BrandLockup size="compact" hideTextOnMobile />
         <button
           type="button"
           onClick={() => handleOAuthLogin('google')}
           disabled={authLoading}
-          className="pointer-events-auto rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/70 backdrop-blur-md transition-all hover:border-white/20 hover:bg-white/[0.08] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-full border border-[#b8bab4] bg-white px-4 py-2 text-sm font-semibold text-[#4f525b] transition hover:border-[#246bfd] hover:text-[#174ea6] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#246bfd]/25 disabled:cursor-not-allowed disabled:opacity-50"
         >
           登入
         </button>
       </nav>
 
-      <main className="pointer-events-none relative z-10 flex min-h-[calc(100vh-88px)] items-center px-6 pb-12 pt-8 sm:px-8">
+      <main className="flex min-h-[calc(100vh-81px)] items-center px-6 py-12 sm:px-8">
         <section className="mx-auto grid w-full max-w-7xl grid-cols-1 items-center gap-12 lg:grid-cols-[minmax(0,1fr)_420px]">
-          <div className="max-w-3xl py-12">
-            <BrandMark size="large" decorative className="mb-8" />
-            <p className="mb-5 text-xs font-semibold uppercase text-white/45">
-              Laboratory writing, clarified.
+          <div className="max-w-3xl py-8">
+            <BrandMark size="large" decorative className="mb-8 shadow-sm" />
+            <p className="mb-5 text-xs font-bold uppercase tracking-[0.12em] text-[#174ea6]">
+              Laboratory writing, made clear.
             </p>
-            <h1 className="max-w-3xl text-4xl font-semibold leading-tight text-white sm:text-7xl lg:text-8xl">
-              AutoLabReport
+            <h1 className="max-w-3xl text-4xl font-semibold leading-[1.05] tracking-[-0.045em] text-[#17181d] sm:text-6xl lg:text-7xl">
+              從實驗紀錄到可提交報告，一處完成。
             </h1>
-            <p className="mt-6 max-w-xl text-base leading-8 text-white/58 sm:text-lg">
-              把原始筆記、表格與草稿整理成可提交的實驗報告。登入後進入極簡寫作空間，專注編輯、預覽與匯出。
+            <p className="mt-6 max-w-xl text-base leading-8 text-[#4f525b] sm:text-lg">
+              整理原始筆記、表格、公式與草稿，在同一個安靜的寫作空間完成編輯、預覽與 Word 匯出。
             </p>
-            <div className="mt-10 flex flex-wrap gap-3 text-xs text-white/48">
-              <span className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-2 backdrop-blur">
+            <div className="mt-10 flex flex-wrap gap-3 text-xs font-medium text-[#4f525b]">
+              <span className="rounded-full border border-[#dcddd8] bg-white px-3 py-2">
                 Markdown 編輯
               </span>
-              <span className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-2 backdrop-blur">
+              <span className="rounded-full border border-[#dcddd8] bg-white px-3 py-2">
                 即時預覽
               </span>
-              <span className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-2 backdrop-blur">
+              <span className="rounded-full border border-[#dcddd8] bg-white px-3 py-2">
                 Word 匯出
               </span>
             </div>
           </div>
 
-          <div className="pointer-events-auto border-white/10 bg-white/[0.045] p-6 shadow-2xl shadow-black/35 backdrop-blur-2xl sm:rounded-[2rem] sm:border sm:p-7">
+          <div className="border border-[#dcddd8] bg-white p-6 shadow-[0_10px_30px_rgba(18,20,26,0.10)] sm:rounded-3xl sm:p-7">
             <div className="mb-7">
-              <p className="text-sm font-medium text-white/45">進入工作區</p>
-              <h2 className="mt-2 text-2xl font-semibold text-white">登入你的報告空間</h2>
+              <p className="text-xs font-bold uppercase tracking-[0.1em] text-[#087d78]">進入工作區</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-tight text-[#17181d]">登入你的報告空間</h2>
+              <p className="mt-2 text-sm leading-6 text-[#6d7078]">登入後同步雲端文件；也可以先用訪客模式在本機試寫。</p>
             </div>
 
             <form onSubmit={handleMagicLinkSubmit} className="space-y-4">
               {authMessage && (
-                <div className="rounded-2xl border border-amber-300/25 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-100">
+                <div className="rounded-xl border border-[#dcd7c5] border-l-4 border-l-[#9a6700] bg-[#fff8df] px-4 py-3 text-sm leading-6 text-[#684700]" role="status">
                   {authMessage}
                 </div>
               )}
-              <label className="block text-sm font-medium text-white/72" htmlFor="magic-link-email">
+              <label className="block text-sm font-medium text-[#17181d]" htmlFor="magic-link-email">
                 Email
               </label>
-              <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 transition-all focus-within:border-white/25 focus-within:bg-black/28">
-                <Mail className="h-4 w-4 shrink-0 text-white/38" aria-hidden="true" />
+              <div className="flex items-center gap-3 rounded-xl border border-[#b8bab4] bg-white px-4 py-3 transition focus-within:border-[#246bfd] focus-within:ring-4 focus-within:ring-[#246bfd]/20">
+                <Mail className="h-4 w-4 shrink-0 text-[#6d7078]" aria-hidden="true" />
                 <input
                   id="magic-link-email"
                   type="email"
@@ -3997,7 +3977,7 @@ function LandingPage({
                     setMagicLinkSent(false)
                   }}
                   placeholder="you@example.com"
-                  className="w-full bg-transparent text-sm text-white outline-none placeholder:text-white/28"
+                  className="w-full bg-transparent text-sm text-[#17181d] outline-none placeholder:text-[#969ba6]"
                   disabled={magicLinkLoading || magicLinkSent}
                   autoComplete="email"
                   required
@@ -4006,7 +3986,7 @@ function LandingPage({
               <button
                 type="submit"
                 disabled={!email.trim() || magicLinkLoading || magicLinkSent}
-                className="group flex w-full items-center justify-center gap-2 rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-black transition-all hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-50"
+                className="group flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-[#246bfd] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#174ea6] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#246bfd]/25 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {magicLinkSent
                   ? '連結已發送，請檢查信箱'
@@ -4019,10 +3999,10 @@ function LandingPage({
               </button>
             </form>
 
-            <div className="my-6 flex items-center gap-4 text-white/30">
-              <div className="h-px flex-1 bg-white/10" />
+            <div className="my-6 flex items-center gap-4 text-[#6d7078]">
+              <div className="h-px flex-1 bg-[#dcddd8]" />
               <span className="text-xs font-medium uppercase tracking-wider">或</span>
-              <div className="h-px flex-1 bg-white/10" />
+              <div className="h-px flex-1 bg-[#dcddd8]" />
             </div>
 
             <div className="space-y-3">
@@ -4030,9 +4010,9 @@ function LandingPage({
                 type="button"
                 onClick={() => handleOAuthLogin('google')}
                 disabled={authLoading}
-                className="flex w-full items-center justify-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-white/82 transition-all hover:border-white/20 hover:bg-white/[0.08] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex min-h-12 w-full items-center justify-center gap-3 rounded-full border border-[#b8bab4] bg-white px-4 py-3 text-sm font-semibold text-[#17181d] transition hover:border-[#246bfd] hover:bg-[#f7f7f4] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#246bfd]/20 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white text-xs font-semibold text-black">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#e6eeff] text-xs font-semibold text-[#174ea6]">
                   G
                 </span>
                 使用 Google 繼續
@@ -4042,9 +4022,9 @@ function LandingPage({
                   type="button"
                   onClick={() => handleOAuthLogin('github')}
                   disabled={authLoading}
-                  className="flex w-full items-center justify-center gap-3 rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm font-semibold text-white/82 transition-all hover:border-white/20 hover:bg-black/35 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  className="flex min-h-12 w-full items-center justify-center gap-3 rounded-full border border-[#b8bab4] bg-white px-4 py-3 text-sm font-semibold text-[#17181d] transition hover:border-[#246bfd] hover:bg-[#f7f7f4] disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  <span className="text-xs font-semibold tracking-wide text-white/58">GH</span>
+                  <span className="text-xs font-semibold tracking-wide text-[#4f525b]">GH</span>
                   使用 GitHub 繼續
                 </button>
               )}
@@ -4052,13 +4032,13 @@ function LandingPage({
                 type="button"
                 onClick={onContinueAsGuest}
                 disabled={authLoading}
-                className="flex w-full items-center justify-center rounded-2xl border border-white/10 px-4 py-3 text-sm font-semibold text-white/68 transition-all hover:border-white/20 hover:bg-white/[0.04] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex min-h-12 w-full items-center justify-center rounded-full px-4 py-3 text-sm font-semibold text-[#174ea6] transition hover:bg-[#e6eeff] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#246bfd]/20 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 先以訪客模式試用
               </button>
             </div>
 
-            <p className="mt-6 text-xs leading-6 text-white/36">
+            <p className="mt-6 border-t border-[#dcddd8] pt-5 text-xs leading-6 text-[#6d7078]">
               訪客草稿只保存在這台瀏覽器；登入後的文件才會同步到雲端。目前不會自動搬移訪客草稿。
             </p>
           </div>
@@ -6404,12 +6384,35 @@ function WorkspaceApp({
       })
     }
 
+    if (
+      pendingDocumentSaveRef.current &&
+      idsToDelete.has(pendingDocumentSaveRef.current.documentId)
+    ) {
+      pendingDocumentSaveRef.current = null
+      if (documentSaveTimerRef.current !== null) {
+        window.clearTimeout(documentSaveTimerRef.current)
+        documentSaveTimerRef.current = null
+      }
+    }
+
     if (supabase && user) {
       setDatabaseLoading(true)
       try {
-        const { error } = await supabase.from('documents').delete().in('id', [...idsToDelete])
-        if (error) throw error
+        await documentSaveQueueRef.current.catch(() => undefined)
+        const authHeaders = await getAuthHeaders()
+        const response = await fetch(`${API_BASE_URL}/api/reports/permanent-delete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders },
+          body: JSON.stringify({ report_ids: [...idsToDelete] }),
+        })
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null
+          const detail = typeof payload?.detail === 'string' ? payload.detail : `HTTP ${response.status}`
+          throw new Error(detail)
+        }
+        removeDocumentSaves(window.localStorage, user.id, idsToDelete)
       } catch (err) {
+        retryQueuedDocumentSaves()
         setBridgeToast(`永久刪除失敗：${getErrorMessage(err, '未知錯誤')}`)
         return
       } finally {
@@ -6418,6 +6421,18 @@ function WorkspaceApp({
     }
 
     setDocuments((currentDocuments) => currentDocuments.filter((document) => !idsToDelete.has(document.id)))
+    setDocumentVersions((currentVersions) =>
+      currentVersions.filter((version) => !idsToDelete.has(version.documentId)),
+    )
+    idsToDelete.forEach((documentId) => {
+      const ydoc = documentYDocs.get(documentId)
+      if (ydoc) {
+        ydoc.destroy()
+        documentYDocs.delete(documentId)
+        if (sharedYDoc === ydoc) sharedYDoc = null
+      }
+    })
+    setBridgeToast('文件與附加檔案已永久刪除')
   }
 
   async function toggleDocumentFavorite(id: string) {
@@ -7064,7 +7079,7 @@ function WorkspaceApp({
                     setIsTitleEditing(false)
                   }
                 }}
-                className="w-full max-w-md rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-950 outline-none transition focus:border-indigo-200 focus:ring-4 focus:ring-indigo-100"
+                className="w-full max-w-md rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-950 outline-none transition focus:border-blue-200 focus:ring-4 focus:ring-blue-100"
               />
             ) : (
               <button
@@ -7152,7 +7167,7 @@ function WorkspaceApp({
                     aria-pressed={displayedEditorViewMode === mode}
                     aria-label={`${label} 模式`}
                     title={`${label} 模式（${shortcut}）`}
-                    className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-1 ${
+                    className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 ${
                       displayedEditorViewMode === mode
                         ? 'bg-white text-slate-950 shadow-sm ring-1 ring-slate-200'
                         : 'text-slate-500 hover:bg-white/70 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-35'
@@ -7211,7 +7226,7 @@ function WorkspaceApp({
                             setIsUserMenuOpen(false)
                             setBridgeToast('公開頁面功能準備中')
                           }}
-                          className="mt-1 text-xs font-semibold text-indigo-600 transition hover:text-indigo-500"
+                          className="mt-1 text-xs font-semibold text-blue-700 transition hover:text-blue-600"
                         >
                           瀏覽公開頁面
                         </button>
@@ -7274,7 +7289,7 @@ function WorkspaceApp({
               <button
                 type="button"
                 onClick={() => void shareCurrentDocument()}
-                className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                 title="分享文件"
                 aria-label="分享文件"
               >
@@ -7285,7 +7300,7 @@ function WorkspaceApp({
             <button
               type="button"
               onClick={() => setIsAssistDrawerOpen(true)}
-              className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl bg-slate-950 px-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 focus-visible:ring-offset-2"
+              className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl bg-slate-950 px-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
               title="开启 AI Assist"
             >
               <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
@@ -7294,7 +7309,7 @@ function WorkspaceApp({
             <button
               type="button"
               onClick={() => setIsAgentDrawerOpen(true)}
-              className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+              className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
               title="开启 AI Agent"
             >
               <Beaker className="h-4 w-4" strokeWidth={2} />
@@ -7507,7 +7522,7 @@ function WorkspaceApp({
               type="search"
               aria-label="全域搜尋"
               placeholder="搜尋報告、模板或設定..."
-              className="h-11 w-full rounded-2xl border border-slate-200/80 bg-white pl-11 pr-4 text-sm font-medium text-slate-700 shadow-sm shadow-slate-200/60 outline-none transition placeholder:text-slate-400 focus:border-indigo-200 focus:shadow-md focus:shadow-indigo-100/60 focus:ring-4 focus:ring-indigo-100/70"
+              className="h-11 w-full rounded-2xl border border-slate-200/80 bg-white pl-11 pr-4 text-sm font-medium text-slate-700 shadow-sm shadow-slate-200/60 outline-none transition placeholder:text-slate-400 focus:border-blue-200 focus:shadow-md focus:shadow-blue-100/60 focus:ring-4 focus:ring-blue-100/70"
             />
           </div>
           <div className="flex shrink-0 items-center gap-3">
@@ -7543,7 +7558,7 @@ function WorkspaceApp({
             <button
               type="button"
               onClick={createNewDocument}
-              className="inline-flex h-11 items-center gap-2 rounded-2xl bg-gradient-to-r from-indigo-500 to-violet-600 px-4 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 transition hover:brightness-110 active:scale-[0.99]"
+              className="inline-flex h-11 items-center gap-2 rounded-2xl bg-gradient-to-r from-blue-700 to-teal-600 px-4 text-sm font-semibold text-white shadow-lg shadow-blue-700/20 transition hover:brightness-110 active:scale-[0.99]"
             >
               <Plus className="h-4 w-4" strokeWidth={2.2} />
               <span className="hidden sm:inline">建立新報告</span>
@@ -7671,7 +7686,7 @@ function WorkspaceApp({
                     key={item.label}
                     type="button"
                     onClick={item.action}
-                    className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400 disabled:cursor-not-allowed disabled:opacity-35"
+                    className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-35"
                     title={item.label}
                     aria-label={item.label}
                   >
@@ -7683,13 +7698,15 @@ function WorkspaceApp({
           </div>
           {ENABLE_SCREEN_RECORDING && (
             <div className="shrink-0 border-l border-slate-200 pl-3">
-              <ScreenRecorderControls
-                supabase={supabase}
-                userId={user?.id ?? null}
-                documentId={activeDocumentId || null}
-                onUploaded={() => setBridgeToast('錄影已上傳')}
-                onError={setBridgeToast}
-              />
+              <Suspense fallback={<span className="text-xs text-slate-400">載入錄影…</span>}>
+                <LazyScreenRecorderControls
+                  supabase={supabase}
+                  userId={user?.id ?? null}
+                  documentId={activeDocumentId || null}
+                  onUploaded={() => setBridgeToast('錄影已上傳')}
+                  onError={setBridgeToast}
+                />
+              </Suspense>
             </div>
           )}
         </div>
@@ -7714,7 +7731,7 @@ function WorkspaceApp({
                     type="button"
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={() => wrapSelection('**', '**', '粗體文字')}
-                    className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                    className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                     title="粗體"
                     aria-label="将选中文字设为粗体"
                   >
@@ -7724,7 +7741,7 @@ function WorkspaceApp({
                     type="button"
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={headingSelection}
-                    className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                    className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                     title="標題"
                     aria-label="将选中文字设为标题"
                   >
@@ -7734,7 +7751,7 @@ function WorkspaceApp({
                     type="button"
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={() => insertAtCursor('| 欄位 A | 欄位 B |\n|---|---|\n|  |  |')}
-                    className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                    className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                     title="表格"
                     aria-label="插入表格"
                   >
@@ -7745,7 +7762,7 @@ function WorkspaceApp({
                     type="button"
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={() => setIsAssistDrawerOpen(true)}
-                    className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-400"
+                    className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                     title="用 AI 处理选中文字"
                   >
                     <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
@@ -8711,13 +8728,18 @@ function WorkspaceApp({
         </div>
       )}
 
-      <GoogleDrivePicker
-        isOpen={isGoogleDrivePickerOpen}
-        accessToken={googleDriveAccessToken ?? null}
-        onClose={() => setIsGoogleDrivePickerOpen(false)}
-        onImport={importMarkdownFromGoogleDrive}
-        onNotify={setBridgeToast}
-      />
+      {ENABLE_GOOGLE_DRIVE && (
+        <Suspense fallback={null}>
+          <LazyGoogleDrivePicker
+            isOpen={isGoogleDrivePickerOpen}
+            accessToken={googleDriveAccessToken ?? null}
+            getAuthHeaders={getAuthHeaders}
+            onClose={() => setIsGoogleDrivePickerOpen(false)}
+            onImport={importMarkdownFromGoogleDrive}
+            onNotify={setBridgeToast}
+          />
+        </Suspense>
+      )}
 
       {bridgeToast && (
         <div className="fixed bottom-5 right-5 z-[60] rounded-lg bg-zinc-950 px-4 py-3 text-sm font-medium text-white shadow-2xl dark:bg-zinc-100 dark:text-zinc-950">
@@ -8844,7 +8866,17 @@ function App() {
   }, [authLoading, publicReportShareId, user])
 
   if (publicReportShareId) {
-    return <PublicReport shareId={publicReportShareId} />
+    return (
+      <Suspense
+        fallback={(
+          <main className="flex min-h-screen items-center justify-center bg-slate-50 px-6 text-sm font-medium text-slate-500">
+            正在載入公開報告...
+          </main>
+        )}
+      >
+        <LazyPublicReport shareId={publicReportShareId} />
+      </Suspense>
+    )
   }
 
   async function signInWithOAuth(provider: Provider) {

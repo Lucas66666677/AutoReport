@@ -1,11 +1,16 @@
 {
   "scripts": {
-    "check:deploy": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-check.ps1 -RunBuild"
+    "check:local": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-check.ps1 -RunBuild -SkipRuntime",
+    "check:deploy": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/deploy-check.ps1 -RunBuild",
+    "audit:prod": "npm audit --omit=dev --audit-level=moderate && npm --prefix frontend audit --omit=dev --audit-level=moderate && npm --prefix collaboration-server audit --omit=dev --audit-level=moderate"
   },
   "dependencies": {
-    "mermaid": "^11.15.0",
+    "mermaid": "^11.17.0",
     "y-protocols": "^1.0.7",
     "y-webrtc": "^10.3.0",
     "yjs": "^13.6.31"
+  },
+  "overrides": {
+    "dompurify": "^3.4.13"
   }
 }

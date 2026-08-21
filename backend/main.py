@@ -31,6 +31,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+load_dotenv(Path(__file__).with_name(".env"))
+
 app = FastAPI(title="AutoLabReport API", version="0.4.0")
 
 ALLOWED_ORIGINS = [
@@ -49,8 +51,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-load_dotenv(Path(__file__).with_name(".env"))
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -235,6 +235,8 @@ class SaveApiKeyResponse(BaseModel):
 DRIVE_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 DRIVE_PDF_MIME = "application/pdf"
 DRIVE_ALLOWED_MIME_TYPES = {DRIVE_DOCX_MIME, DRIVE_PDF_MIME}
+DRIVE_MAX_IMPORT_BYTES = 25 * 1024 * 1024
+STORAGE_CLEANUP_BUCKETS = ("report_images", "report_recordings")
 
 
 class DriveFileItem(BaseModel):
@@ -262,6 +264,16 @@ class DriveImportResponse(BaseModel):
     markdown: str
     title: str
     mime_type: str
+
+
+class PermanentDeleteRequest(BaseModel):
+    report_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
+class PermanentDeleteResponse(BaseModel):
+    ok: bool
+    deleted_report_ids: list[UUID]
+    deleted_storage_objects: int
 
 
 class GithubOAuthStartRequest(BaseModel):
@@ -408,6 +420,7 @@ def _google_drive_request(
     access_token: str,
     *,
     timeout: int = 45,
+    max_bytes: int = 2 * 1024 * 1024,
 ) -> bytes:
     if not access_token.strip():
         raise HTTPException(status_code=401, detail="缺少 Google Drive access_token")
@@ -419,19 +432,26 @@ def _google_drive_request(
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
-            return response.read()
+            payload = response.read(max_bytes + 1)
+            if len(payload) > max_bytes:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Google Drive 檔案超過允許大小",
+                )
+            return payload
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
         if exc.code in {401, 403}:
             raise HTTPException(
                 status_code=401,
                 detail="Google Drive 授權失效或權限不足，請用 Google 重新登入並授權 Drive readonly。",
-            ) from exc
+            ) from None
         if exc.code == 404:
-            raise HTTPException(status_code=404, detail="找不到指定的 Google Drive 檔案") from exc
-        raise HTTPException(status_code=502, detail=f"Google Drive API 錯誤：{detail}") from exc
-    except urllib.error.URLError as exc:
-        raise HTTPException(status_code=502, detail=f"無法連線 Google Drive：{exc}") from exc
+            raise HTTPException(status_code=404, detail="找不到指定的 Google Drive 檔案") from None
+        logger.warning("Google Drive request failed. status=%s", exc.code)
+        raise HTTPException(status_code=502, detail="Google Drive 暫時無法完成請求") from None
+    except urllib.error.URLError:
+        logger.warning("Google Drive request is unavailable")
+        raise HTTPException(status_code=502, detail="Google Drive 暫時無法連線") from None
 
 
 def _google_drive_json(url: str, access_token: str) -> dict[str, Any]:
@@ -453,13 +473,23 @@ def _get_drive_file_metadata(file_id: str, access_token: str) -> dict[str, Any]:
     mime_type = metadata.get("mimeType")
     if mime_type not in DRIVE_ALLOWED_MIME_TYPES:
         raise HTTPException(status_code=400, detail="目前只支援匯入 Word .docx 或 PDF 檔案")
+    size = metadata.get("size")
+    if isinstance(size, str) and size.isdigit() and int(size) > DRIVE_MAX_IMPORT_BYTES:
+        raise HTTPException(status_code=413, detail="Google Drive 檔案不可超過 25 MB")
     return metadata
 
 
 def _download_drive_file(file_id: str, access_token: str, output_path: Path) -> None:
     safe_file_id = urllib.parse.quote(file_id, safe="")
     url = f"https://www.googleapis.com/drive/v3/files/{safe_file_id}?alt=media"
-    output_path.write_bytes(_google_drive_request(url, access_token, timeout=90))
+    output_path.write_bytes(
+        _google_drive_request(
+            url,
+            access_token,
+            timeout=90,
+            max_bytes=DRIVE_MAX_IMPORT_BYTES,
+        )
+    )
 
 
 def _convert_docx_to_markdown(path: Path) -> str:
@@ -649,10 +679,108 @@ def _supabase_request(
             raw = response.read().decode("utf-8")
             return json.loads(raw) if raw else None
     except urllib.error.HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
-        raise HTTPException(status_code=502, detail=f"Supabase error: {detail}") from exc
-    except urllib.error.URLError as exc:
-        raise HTTPException(status_code=502, detail=f"Supabase unavailable: {exc}") from exc
+        logger.warning(
+            "Supabase request failed. method=%s status=%s",
+            method,
+            exc.code,
+        )
+        raise HTTPException(
+            status_code=502,
+            detail="資料服務暫時無法完成請求，請稍後重試",
+        ) from None
+    except urllib.error.URLError:
+        logger.warning("Supabase request is unavailable. method=%s", method)
+        raise HTTPException(
+            status_code=502,
+            detail="資料服務暫時無法連線，請稍後重試",
+        ) from None
+
+
+def _list_storage_path(bucket: str, prefix: str) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    offset = 0
+    page_size = 1_000
+
+    while True:
+        page = _supabase_request(
+            f"/storage/v1/object/list/{urllib.parse.quote(bucket, safe='')}",
+            method="POST",
+            payload={
+                "prefix": prefix,
+                "limit": page_size,
+                "offset": offset,
+                "sortBy": {"column": "name", "order": "asc"},
+            },
+        )
+        if not isinstance(page, list):
+            raise HTTPException(status_code=502, detail="Storage 回傳格式不正確")
+
+        valid_entries = [entry for entry in page if isinstance(entry, dict)]
+        entries.extend(valid_entries)
+        if len(page) < page_size:
+            return entries
+        offset += page_size
+
+
+def _collect_storage_files(bucket: str, prefix: str) -> list[str]:
+    files: list[str] = []
+    pending_prefixes = [prefix.strip("/")]
+    visited: set[str] = set()
+
+    while pending_prefixes:
+        current_prefix = pending_prefixes.pop()
+        if current_prefix in visited:
+            continue
+        visited.add(current_prefix)
+
+        for entry in _list_storage_path(bucket, current_prefix):
+            name = entry.get("name")
+            if not isinstance(name, str) or not name or "/" in name:
+                continue
+            full_path = f"{current_prefix}/{name}" if current_prefix else name
+            is_file = bool(entry.get("id")) or entry.get("metadata") is not None
+            if is_file:
+                files.append(full_path)
+            else:
+                pending_prefixes.append(full_path)
+
+            if len(files) + len(pending_prefixes) > 20_000:
+                raise HTTPException(
+                    status_code=413,
+                    detail="文件附加檔案過多，請聯絡管理員處理永久刪除",
+                )
+
+    return files
+
+
+def _find_document_storage_files(bucket: str, report_ids: set[str]) -> list[str]:
+    files: list[str] = []
+    root_entries = _list_storage_path(bucket, "")
+    owner_folders = {
+        str(entry["name"])
+        for entry in root_entries
+        if isinstance(entry.get("name"), str)
+        and entry.get("name")
+        and not entry.get("id")
+        and entry.get("metadata") is None
+    }
+    for owner_folder in owner_folders:
+        for report_id in report_ids:
+            files.extend(_collect_storage_files(bucket, f"{owner_folder}/{report_id}"))
+    return sorted(set(files))
+
+
+def _delete_storage_files(bucket: str, paths: list[str]) -> int:
+    deleted = 0
+    for start in range(0, len(paths), 100):
+        batch = paths[start : start + 100]
+        _supabase_request(
+            f"/storage/v1/object/{urllib.parse.quote(bucket, safe='')}",
+            method="DELETE",
+            payload={"prefixes": batch},
+        )
+        deleted += len(batch)
+    return deleted
 
 
 def _get_fernet() -> Fernet:
@@ -819,9 +947,7 @@ def _stripe_configured() -> bool:
 
 
 def _safe_billing_url(value: str | None, fallback_path: str) -> str:
-    if value and value.startswith(("http://", "https://")):
-        return value
-    return f"{FRONTEND_URL}{fallback_path}"
+    return _safe_frontend_redirect(value, fallback_path)
 
 
 def _update_profile(profile_id: str, payload: dict[str, Any]) -> dict[str, Any] | None:
@@ -1959,6 +2085,66 @@ def list_community_templates():
 
 
 @app.post(
+    "/api/reports/permanent-delete",
+    response_model=PermanentDeleteResponse,
+)
+def permanently_delete_reports(
+    body: PermanentDeleteRequest,
+    authorization: str | None = Header(default=None),
+):
+    user = _require_user(authorization)
+    user_id = user.get("id")
+    if not isinstance(user_id, str) or not user_id:
+        raise HTTPException(status_code=401, detail="無效的使用者")
+
+    report_ids = {str(report_id) for report_id in body.report_ids}
+    query = urllib.parse.urlencode(
+        {
+            "id": f"in.({','.join(sorted(report_ids))})",
+            "select": "id,user_id",
+        }
+    )
+    rows = _supabase_request(f"/rest/v1/documents?{query}")
+    if not isinstance(rows, list):
+        raise HTTPException(status_code=502, detail="文件資料回傳格式不正確")
+
+    found = {
+        str(row.get("id")): row
+        for row in rows
+        if isinstance(row, dict) and row.get("id")
+    }
+    if report_ids - set(found):
+        raise HTTPException(status_code=404, detail="部分文件不存在，請重新整理後再試")
+    if any(row.get("user_id") != user_id for row in found.values()):
+        raise HTTPException(status_code=403, detail="只有文件擁有者可以永久刪除")
+
+    deleted_storage_objects = 0
+    for bucket in STORAGE_CLEANUP_BUCKETS:
+        paths = _find_document_storage_files(bucket, report_ids)
+        deleted_storage_objects += _delete_storage_files(bucket, paths)
+
+    delete_query = urllib.parse.urlencode(
+        {"id": f"in.({','.join(sorted(report_ids))})"}
+    )
+    deleted_rows = _supabase_request(
+        f"/rest/v1/documents?{delete_query}",
+        method="DELETE",
+        extra_headers={"Prefer": "return=representation"},
+    )
+    if not isinstance(deleted_rows, list) or len(deleted_rows) != len(report_ids):
+        raise HTTPException(
+            status_code=502,
+            detail="附加檔案已清理，但文件刪除未完整完成；請重新整理後再試",
+        )
+
+    return PermanentDeleteResponse(
+        ok=True,
+        deleted_report_ids=[UUID(report_id) for report_id in sorted(report_ids)],
+        deleted_storage_objects=deleted_storage_objects,
+    )
+
+
+@app.post(
     "/api/reports/{report_id}/transfer/request",
     response_model=OwnershipTransferRequestResponse,
 )
@@ -2350,9 +2536,13 @@ def export_docx(body: RenderRequest):
 
 
 @app.post("/api/drive/files", response_model=DriveFilesResponse)
-def list_drive_files(body: DriveFilesRequest):
+def list_drive_files(
+    body: DriveFilesRequest,
+    authorization: str | None = Header(default=None),
+):
     if not GOOGLE_DRIVE_ENABLED:
         raise HTTPException(status_code=503, detail="Google Drive 不在本次 Closed Beta 範圍內")
+    _require_user(authorization)
     access_token = body.access_token
     query = " or ".join(f"mimeType='{mime_type}'" for mime_type in sorted(DRIVE_ALLOWED_MIME_TYPES))
     params = urllib.parse.urlencode(
@@ -2394,9 +2584,13 @@ def list_drive_files(body: DriveFilesRequest):
 
 
 @app.post("/api/drive/import", response_model=DriveImportResponse)
-def import_drive_file(body: DriveImportRequest):
+def import_drive_file(
+    body: DriveImportRequest,
+    authorization: str | None = Header(default=None),
+):
     if not GOOGLE_DRIVE_ENABLED:
         raise HTTPException(status_code=503, detail="Google Drive 不在本次 Closed Beta 範圍內")
+    _require_user(authorization)
     metadata = _get_drive_file_metadata(body.file_id, body.access_token)
     name = str(metadata.get("name") or "Google Drive 匯入檔案")
     mime_type = str(metadata.get("mimeType") or "")

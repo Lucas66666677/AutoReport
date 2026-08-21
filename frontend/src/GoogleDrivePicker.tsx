@@ -25,12 +25,14 @@ type DriveImportResponse = {
 export default function GoogleDrivePicker({
   isOpen,
   accessToken,
+  getAuthHeaders,
   onClose,
   onImport,
   onNotify,
 }: {
   isOpen: boolean
   accessToken: string | null
+  getAuthHeaders: () => Promise<Record<string, string>>
   onClose: () => void
   onImport: (payload: { title: string; markdown: string }) => void
   onNotify: (message: string) => void
@@ -52,9 +54,10 @@ export default function GoogleDrivePicker({
     setLoading(true)
     setError(null)
     try {
+      const authHeaders = await getAuthHeaders()
       const response = await fetch(`${API_BASE_URL}/api/drive/files`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({ access_token: accessToken }),
       })
       const data = (await response.json().catch(() => null)) as DriveFilesResponse | { detail?: string } | null
@@ -69,7 +72,7 @@ export default function GoogleDrivePicker({
     } finally {
       setLoading(false)
     }
-  }, [accessToken, onNotify])
+  }, [accessToken, getAuthHeaders, onNotify])
 
   async function importFile(file: DriveFile) {
     if (!accessToken?.trim()) {
@@ -80,9 +83,10 @@ export default function GoogleDrivePicker({
     setImportingId(file.id)
     setError(null)
     try {
+      const authHeaders = await getAuthHeaders()
       const response = await fetch(`${API_BASE_URL}/api/drive/import`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({
           access_token: accessToken,
           file_id: file.id,

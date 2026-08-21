@@ -8,7 +8,7 @@ The Closed Beta baseline and current gaps are tracked in docs/product/REQUIREMEN
 2. Add authenticated browser E2E for CRUD, RLS, collaborator roles and private Storage.
 3. Add browser offline／online autosave tests.
 4. Add normal-browser PDF artifact regression and visual diff.
-5. Clean orphaned Storage objects after permanent document deletion.
+5. Run the permanent-delete Storage cleanup against real multi-account staging data.
 6. Add monitoring, release identifiers and incident playbook.
 
 ## Export improvements

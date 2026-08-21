@@ -4,10 +4,10 @@ Deployment is an owner action. This repository task does not deploy or modify pr
 
 ## 1. Supabase staging first
 
-Create an isolated staging project. Apply supabase/schema_and_rls.sql and every file in supabase/migrations in filename order. The final Closed Beta hardening migration is:
+Create an isolated staging project. Apply every file in `supabase/migrations` in filename order. Do not apply `supabase/schema_and_rls.sql` first: it is the canonical schema snapshot and is already mirrored by the initial bootstrap migration. The final Closed Beta hardening migration is:
 
 ~~~text
-supabase/migrations/20260723_closed_beta_security.sql
+supabase/migrations/20260724_staging_bringup_hardening.sql
 ~~~
 
 Do not continue if the migration fails. Run the full permission matrix in docs/OWNER_ACTIONS.md before using a production project.

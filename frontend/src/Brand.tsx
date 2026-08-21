@@ -1,4 +1,5 @@
 import type { HTMLAttributes, ImgHTMLAttributes } from 'react'
+import { LUCIREL_WAVE_GATE_ICON } from './lucirelBrandAsset'
 
 export type BrandSize = 'compact' | 'default' | 'large'
 export type BrandSurface = 'light' | 'dark'
@@ -32,30 +33,23 @@ type BrandMarkProps = {
 export function BrandMark({
   size = 'default',
   decorative = false,
-  alt = 'AutoLabReport',
+  alt = 'Lucirel Wave Gate',
   className = '',
   loading = 'eager',
 }: BrandMarkProps) {
   const config = SIZE_CONFIG[size]
 
   return (
-    <picture className="inline-flex shrink-0">
-      <source
-        type="image/webp"
-        srcSet="/brand/autolabreport-mark-64.webp 64w, /brand/autolabreport-mark-128.webp 128w, /brand/autolabreport-mark-256.webp 256w"
-        sizes={`${config.pixels}px`}
-      />
-      <img
-        src="/brand/autolabreport-mark-256.png"
-        width={config.pixels}
-        height={config.pixels}
-        loading={loading}
-        decoding="async"
-        alt={decorative ? '' : alt}
-        aria-hidden={decorative || undefined}
-        className={`${config.markClassName} block bg-[#05070B] object-cover ${className}`}
-      />
-    </picture>
+    <img
+      src={LUCIREL_WAVE_GATE_ICON}
+      width={config.pixels}
+      height={config.pixels}
+      loading={loading}
+      decoding="async"
+      alt={decorative ? '' : alt}
+      aria-hidden={decorative || undefined}
+      className={`${config.markClassName} block object-cover ${className}`}
+    />
   )
 }
 
@@ -75,8 +69,8 @@ export function BrandLockup({
   ...props
 }: BrandLockupProps) {
   const config = SIZE_CONFIG[size]
-  const autoLabColor = surface === 'dark' ? 'text-white' : 'text-slate-950'
-  const reportColor = surface === 'dark' ? 'text-white/72' : 'text-slate-500'
+  const productColor = surface === 'dark' ? 'text-[#f6f6f2]' : 'text-[#17181d]'
+  const endorsementColor = surface === 'dark' ? 'text-[#c5c8cf]' : 'text-[#4f525b]'
 
   return (
     <div className={`inline-flex min-w-0 items-center gap-3 ${className}`} {...props}>
@@ -86,8 +80,8 @@ export function BrandLockup({
           hideTextOnMobile ? 'max-[520px]:hidden' : ''
         }`}
       >
-        <span className={autoLabColor}>AutoLab</span>
-        <span className={`${reportColor} font-medium`}>Report</span>
+        <span className={productColor}>AutoLabReport</span>
+        <span className={`${endorsementColor} ml-1.5 text-[0.72em] font-medium`}>by Lucirel</span>
       </span>
     </div>
   )

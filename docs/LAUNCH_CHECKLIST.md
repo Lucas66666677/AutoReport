@@ -4,7 +4,7 @@ Use this only after reading docs/product/RELEASE_READINESS.md and docs/OWNER_ACT
 
 ## P0
 
-- [ ] Apply the full schema and every dated Supabase migration in clean staging.
+- [ ] Apply every dated Supabase migration through `20260724_staging_bringup_hardening.sql` in clean staging.
 - [ ] Run owner／viewer／editor／anonymous permission matrix.
 - [ ] Confirm report_images and report_recordings are private.
 - [ ] Configure Email and／or Google Auth on the final domains.
@@ -35,11 +35,15 @@ Use this only after reading docs/product/RELEASE_READINESS.md and docs/OWNER_ACT
 - [ ] Review monitoring, save failures, OAuth failures and exports.
 - [ ] Twenty students invited only after owner sign-off.
 
-## Local command
+## Verification commands
 
 ~~~powershell
 cd D:\AutoLabReport
+npm run check:local
+npm run audit:prod
+
+# Staging／production preflight（需完整環境變數與可連線後端）
 npm run check:deploy
 ~~~
 
-The command is a preflight, not a substitute for Supabase and browser acceptance.
+These commands are not a substitute for Supabase and browser acceptance.

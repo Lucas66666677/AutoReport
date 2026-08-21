@@ -35,7 +35,7 @@ export default function ScreenRecorderControls({
   supabase: SupabaseClient | null
   userId: string | null
   documentId: string | null
-  onUploaded?: (publicUrl: string) => void
+  onUploaded?: (signedUrl: string) => void
   onError?: (message: string) => void
 }) {
   const {
@@ -50,7 +50,7 @@ export default function ScreenRecorderControls({
     clearRecording,
   } = useScreenRecorder()
   const [isUploading, setIsUploading] = useState(false)
-  const [publicUrl, setPublicUrl] = useState<string | null>(null)
+  const [signedUrl, setSignedUrl] = useState<string | null>(null)
   const uploadedBlobRef = useRef<Blob | null>(null)
 
   useEffect(() => {
@@ -70,7 +70,7 @@ export default function ScreenRecorderControls({
     let cancelled = false
     const uploadRecording = async () => {
       setIsUploading(true)
-      setPublicUrl(null)
+      setSignedUrl(null)
 
       try {
         const path = createRecordingPath(userId, documentId)
@@ -83,10 +83,15 @@ export default function ScreenRecorderControls({
           })
         if (uploadError) throw uploadError
 
-        const { data } = supabase.storage.from(RECORDING_BUCKET).getPublicUrl(path)
+        const { data, error: signedUrlError } = await supabase.storage
+          .from(RECORDING_BUCKET)
+          .createSignedUrl(path, 3600)
+        if (signedUrlError || !data.signedUrl) {
+          throw signedUrlError ?? new Error('無法建立錄影安全連結')
+        }
         if (!cancelled) {
-          setPublicUrl(data.publicUrl)
-          onUploaded?.(data.publicUrl)
+          setSignedUrl(data.signedUrl)
+          onUploaded?.(data.signedUrl)
         }
       } catch (caughtError) {
         if (!cancelled) {
@@ -174,9 +179,9 @@ export default function ScreenRecorderControls({
         </span>
       ) : null}
 
-      {publicUrl ? (
+      {signedUrl ? (
         <a
-          href={publicUrl}
+          href={signedUrl}
           target="_blank"
           rel="noreferrer"
           className="grid h-6 w-6 place-items-center rounded-md text-emerald-600 transition hover:bg-emerald-50"
@@ -191,7 +196,7 @@ export default function ScreenRecorderControls({
         <button
           type="button"
           onClick={() => {
-            setPublicUrl(null)
+            setSignedUrl(null)
             uploadedBlobRef.current = null
             clearRecording()
           }}

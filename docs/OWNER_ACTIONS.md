@@ -1,12 +1,12 @@
 # Owner Actions
 
-Updated: 2026-07-23
+Updated: 2026-07-24
 
 不要把真实 Secret 写入本文件、聊天、截图或 Git；请直接填入平台的加密环境变量界面。
 
 | 平台 | 要做什么 | 控制台位置 | 所需值 | 为什么 | 如何验证 | 是否阻塞 Beta |
 |---|---|---|---|---|---|---|
-| Supabase Database | 在干净 staging 依序执行 schema 与全部 migration，最后执行 20260723_closed_beta_security.sql | SQL Editor／Migration 管理 | 无真实 Secret；使用仓库 SQL | 建立 RLS、trigger、quota RPC 与私有 Storage | 完成下方三账号权限矩阵 | 是 |
+| Supabase Database | 在全新 staging 按 migration 顺序执行至 `20260724_staging_bringup_hardening.sql` | Project Settings／CLI Migration 管理 | Project ref 与本机保存的数据库密码；不要贴到聊天 | 建立 RLS、trigger、quota RPC 与私有 Storage | dry-run 清单一致、push 成功并完成下方权限矩阵 | 是 |
 | Supabase Auth URL | 配置正式与 staging URL | Authentication → URL Configuration | Site URL、允许的 redirect URL | OAuth／Magic Link 必须回到正确网站 | 两个域名登录后不循环、不跳错站 | 是 |
 | Supabase Email | 启用 Magic Link 与邮件模板 | Authentication → Providers → Email | 发件设置、模板、redirect | Google 故障时仍能登录 | Beta 邮箱收到链接并完成登录 | 若承诺 Email 则是 |
 | Google OAuth | 发布或配置测试用户；填入 Supabase provider | Google Cloud → OAuth consent screen／Credentials；Supabase → Providers → Google | Client ID、Client Secret、Supabase callback URI、授权域名 | 解决 403 access_denied 并提供主要登录 | 非项目拥有者账号成功登录／登出／重登 | 若承诺 Google 则是 |
@@ -23,6 +23,18 @@ Updated: 2026-07-23
 | Collaboration server | 本轮不部署或保持拒绝连接 | 服务环境变量 | COLLABORATION_ENABLED=false | 避免 Yjs 与 HTTP 双写覆盖 | 前端不开连接；server 拒绝认证 | 否；保持关闭 |
 | Error monitoring | 选择并配置 Sentry 或同类服务 | 监控平台项目设置／Vercel／Render | DSN、release tag、告警收件人；先做 PII 审查 | 20 位学生发生错误时 Owner 能主动发现 | staging 发送测试事件并收到告警 | 是 |
 | Feedback | 指定学生可见的回报渠道与负责人 | Owner 选择的 Email／表单／群组 | 公开联系地址、负责人、响应时间 | 保存／登录／导出受阻时有升级路径 | 从应用入口发送测试消息并收到 | 是 |
+
+## 当前 Supabase staging 动作
+
+本阶段一次只进行一个 Dashboard 动作。当前动作是建立一个全新的
+`AutoLabReport Staging` 项目；在此动作完成前，不取得 key、不 link CLI、
+也不执行 migration。数据库密码只保存在密码管理器，不应贴到聊天。
+
+项目建立后，后续值统一写入被 Git 忽略的
+`D:\AutoLabReport\.env.staging.local`。其中 service-role key 只能使用
+`SUPABASE_STAGING_SERVICE_ROLE_KEY`，不得使用 `VITE_` 前缀，也不得放入
+前端部署环境。完整步骤与安全测试命令见
+`docs/testing/supabase-rls-test.md`。
 
 ## 三账号权限矩阵
 

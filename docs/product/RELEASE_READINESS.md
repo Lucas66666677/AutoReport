@@ -1,6 +1,6 @@
 # Closed Beta Release Readiness
 
-Updated: 2026-07-23
+Updated: 2026-08-06
 
 ## Verdict
 
@@ -12,11 +12,26 @@ The local release candidate has no known open P0 code defect. It is not authoriz
 
 - Frontend TypeScript: pass.
 - Frontend ESLint: pass.
-- Frontend Vitest: 7 files, 29 tests passed.
-- Backend unittest: 13 safety tests passed.
+- Frontend Vitest: 8 files, 31 tests passed.
+- Backend unittest: 27 safety tests passed.
+- Supabase migration chain: nine ordered migrations; the bootstrap migration is
+  regression-checked against the canonical schema.
+- PostgreSQL parse check: canonical schema and all nine migrations passed with
+  `pglast`; this does not replace a clean database initialization.
+- Staging RLS integration runner: target/project-ref/production-denylist guards,
+  in-memory test credentials, exact-prefix cleanup, and non-zero failures added.
 - Backend py_compile: pass.
 - Collaboration server syntax check: pass.
 - Production frontend build: pass.
+- Production initial entry reduced from about 1.24 MB to about 402 kB; Markdown,
+  Monaco and PDF remain isolated lazy feature chunks.
+- Browser guest dashboard and Edit／Split／Preview passed after the lazy-loading
+  changes; KaTeX, tables, private-image fallback and Mermaid rendered.
+- Editor viewport checks at 390／768／1024／1440 reported no page-level horizontal
+  overflow. The 390 px editor was also visually inspected.
+- Invalid public-report route reached the generic, non-crashing error state.
+- A tested application error boundary now replaces render-time white screens with
+  a reload path and an explicit local-draft retention message.
 - Live API health: 200.
 - Local readiness: correctly 503 because Supabase, encryption and AI secrets were intentionally not supplied; Pandoc passed.
 - Evil-origin CORS preflight: no Access-Control-Allow-Origin.
@@ -32,13 +47,21 @@ The local release candidate has no known open P0 code defect. It is not authoriz
 ## Known limitations
 
 - DOCX preserves Mermaid source rather than rendering a diagram.
-- The in-app browser had a fixed 1280 × 720 viewport. Existing brand screenshots cover 390, 1024 and 1440, but the complete current workflow still needs a manual 390／768／1024／1440 pass.
+- The editor passed page-overflow checks at 390／768／1024／1440 and the 390 px
+  preview was visually inspected, but the complete auth／dashboard／export journey
+  still needs a manual pass at every width.
 - Browser PDF export was invoked and returned to a normal saved state without a visible UI error, but the in-app browser did not expose its download artifact.
-- Supabase CLI and an isolated staging database were not available; SQL was reviewed and migration invariants have static tests, not a real database reset.
+- Supabase CLI runtime and an isolated staging database were not available. The
+  previously missing clean-database bootstrap migration is now present and SQL
+  parses, but no real database reset or catalog dependency test has run yet.
 - No real Google／Email login, multi-account RLS or AI-provider request was executed because that would require external configuration and potentially production services.
-- Permanent delete does not yet remove orphaned private Storage objects.
+- Permanent delete now owner-checks and removes private image／recording objects
+  across uploader prefixes before deleting document rows; real staging cleanup
+  remains unverified.
 - No centralized error-monitoring provider is configured.
-- Vite reports large lazy-loaded chunks; this is a performance P1, not a data-integrity blocker for 20 users.
+- Vite still reports large lazy-loaded Monaco／Markdown／PDF chunks; the initial
+  application entry is below 500 kB, so this remains a measured performance P1
+  rather than a data-integrity blocker for 20 users.
 
 ## Invitation decision
 

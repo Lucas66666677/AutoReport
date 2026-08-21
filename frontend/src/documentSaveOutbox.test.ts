@@ -3,6 +3,7 @@ import {
   queueDocumentSave,
   readDocumentSaveOutbox,
   removeDocumentSave,
+  removeDocumentSaves,
   type PendingDocumentSave,
 } from './documentSaveOutbox'
 
@@ -57,5 +58,21 @@ describe('document save outbox', () => {
     queueDocumentSave(storage, 'user-a', firstSave)
 
     expect(readDocumentSaveOutbox(storage, 'user-b')).toEqual([])
+  })
+
+  it('removes queued saves for permanently deleted documents', () => {
+    const storage = createStorage()
+    queueDocumentSave(storage, 'user-a', firstSave)
+    queueDocumentSave(storage, 'user-a', {
+      ...firstSave,
+      documentId: 'doc-2',
+      revision: 2,
+    })
+
+    removeDocumentSaves(storage, 'user-a', new Set(['doc-1']))
+
+    expect(readDocumentSaveOutbox(storage, 'user-a')).toEqual([
+      { ...firstSave, documentId: 'doc-2', revision: 2 },
+    ])
   })
 })

@@ -65,3 +65,15 @@ export function removeDocumentSave(
   )
   storage.setItem(getOutboxKey(ownerKey), JSON.stringify(next))
 }
+
+export function removeDocumentSaves(
+  storage: StorageLike | null,
+  ownerKey: string,
+  documentIds: ReadonlySet<string>,
+): void {
+  if (!storage || documentIds.size === 0) return
+  const next = readDocumentSaveOutbox(storage, ownerKey).filter(
+    (item) => !documentIds.has(item.documentId),
+  )
+  storage.setItem(getOutboxKey(ownerKey), JSON.stringify(next))
+}

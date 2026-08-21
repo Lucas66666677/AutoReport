@@ -1,6 +1,6 @@
 # Closed Beta Backlog
 
-Updated: 2026-07-23
+Updated: 2026-08-06
 
 ## P0 — must complete before invitations
 
@@ -22,13 +22,13 @@ If any P0 exit criterion fails, the release returns to NOT READY.
 
 | Item | Why | Suggested action |
 | --- | --- | --- |
-| Current workflow screenshots at 390／768／1024／1440 | Current in-app browser had a fixed 1280 viewport | Run the listed widths in Chrome DevTools before invitations |
+| Complete workflow screenshots at 390／768／1024／1440 | Editor overflow passed all widths and 390 px was visually checked; the full auth／dashboard／export journey was not captured at every width | Run the entire journey at the listed widths in Chrome DevTools before invitations |
 | Capture and inspect browser PDF artifact | In-app browser invoked export but did not expose the downloaded file | Download in Chrome／Edge and render every page |
 | Mermaid in DOCX | Pandoc output currently preserves Mermaid source | Pre-render Mermaid to an image for DOCX or document the limitation to students |
-| Storage cleanup on permanent document delete | Private image／recording objects may become orphaned | Add a service-role cleanup endpoint or scheduled cleanup |
+| Storage cleanup on permanent document delete | Service-role cleanup endpoint is implemented and owner-checked | Run a real multi-account staging delete and confirm both buckets are empty for every uploader prefix |
 | Clean database reset automation | Local Supabase CLI is unavailable | Add CI with supabase db reset against an ephemeral project |
 | Error monitoring | Runtime errors are not centrally visible | Add Sentry or equivalent with release tags and PII review |
-| Bundle size | Vite reports chunks over 500 kB | Continue lazy loading Mermaid／editor／PDF features |
+| Bundle size | Initial entry fell from 1.24 MB to about 402 kB; Monaco／Markdown／PDF remain large but lazy-loaded | Track real-user loading and continue splitting only where browser validation proves execution order is safe |
 | Public report and collaborator E2E | Code and RLS exist but staging accounts were unavailable | Add browser tests against isolated staging |
 | Autosave network-failure browser E2E | Unit coverage exists but network interception was unavailable | Add a controlled offline／online browser scenario |
 
@@ -57,3 +57,9 @@ If any P0 exit criterion fails, the release returns to NOT READY.
 - Removed Drive tokens from query strings.
 - Added exact-origin redirects, CORS allowlist and generic upstream errors.
 - Added numeric integrity checks and preview-before-apply AI changes.
+- Added owner-verified permanent deletion that clears private image／recording
+  objects, queued saves, local versions and Yjs memory before removing UI state.
+- Added authenticated Drive proxy calls, a 25 MB import cap and generic upstream
+  errors that do not echo provider internals.
+- Added a tested application error boundary so render failures provide a recovery
+  action instead of leaving a blank page.
