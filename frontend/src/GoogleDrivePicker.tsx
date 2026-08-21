@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Cloud, FileText, Loader2, RefreshCcw, X } from 'lucide-react'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
+const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '')
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 
 type DriveFile = {
@@ -25,12 +25,14 @@ type DriveImportResponse = {
 export default function GoogleDrivePicker({
   isOpen,
   accessToken,
+  getAuthHeaders,
   onClose,
   onImport,
   onNotify,
 }: {
   isOpen: boolean
   accessToken: string | null
+  getAuthHeaders: () => Promise<Record<string, string>>
   onClose: () => void
   onImport: (payload: { title: string; markdown: string }) => void
   onNotify: (message: string) => void
@@ -52,8 +54,12 @@ export default function GoogleDrivePicker({
     setLoading(true)
     setError(null)
     try {
-      const params = new URLSearchParams({ access_token: accessToken })
-      const response = await fetch(`${API_BASE_URL}/api/drive/files?${params.toString()}`)
+      const authHeaders = await getAuthHeaders()
+      const response = await fetch(`${API_BASE_URL}/api/drive/files`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
+        body: JSON.stringify({ access_token: accessToken }),
+      })
       const data = (await response.json().catch(() => null)) as DriveFilesResponse | { detail?: string } | null
       if (!response.ok) {
         throw new Error(data && 'detail' in data && data.detail ? data.detail : `HTTP ${response.status}`)
@@ -66,7 +72,7 @@ export default function GoogleDrivePicker({
     } finally {
       setLoading(false)
     }
-  }, [accessToken, onNotify])
+  }, [accessToken, getAuthHeaders, onNotify])
 
   async function importFile(file: DriveFile) {
     if (!accessToken?.trim()) {
@@ -77,9 +83,10 @@ export default function GoogleDrivePicker({
     setImportingId(file.id)
     setError(null)
     try {
+      const authHeaders = await getAuthHeaders()
       const response = await fetch(`${API_BASE_URL}/api/drive/import`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders },
         body: JSON.stringify({
           access_token: accessToken,
           file_id: file.id,

@@ -1,6 +1,7 @@
 param(
   [string]$BackendUrl = $env:VITE_API_URL,
-  [switch]$RunBuild
+  [switch]$RunBuild,
+  [switch]$SkipRuntime
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,16 +46,25 @@ function Test-EnvName {
   }
 
   Write-Check "env $Name" ($foundInProcess -or $foundInFile) "process env or local .env file"
+  if (-not ($foundInProcess -or $foundInFile)) { $script:failed = $true }
 }
 
 function Invoke-CheckedCommand {
-  param([string]$Label, [string]$Command, [string]$WorkingDirectory)
+  param(
+    [string]$Label,
+    [string]$FilePath,
+    [string[]]$Arguments,
+    [string]$WorkingDirectory
+  )
 
   Write-Host ""
   Write-Host "Running: $Label" -ForegroundColor Cyan
   Push-Location $WorkingDirectory
   try {
-    powershell -NoProfile -ExecutionPolicy Bypass -Command $Command
+    & $FilePath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+      throw "Command exited with code $LASTEXITCODE"
+    }
     Write-Check $Label $true
   } catch {
     Write-Check $Label $false $_.Exception.Message
@@ -74,6 +84,8 @@ Test-FileExists (Join-Path $backend "main.py") "FastAPI backend"
 Test-FileExists (Join-Path $backend "requirements.txt") "backend requirements"
 Test-FileExists (Join-Path $root ".env.example") "env example"
 Test-FileExists (Join-Path $root "supabase\schema_and_rls.sql") "Supabase schema and RLS"
+Test-FileExists (Join-Path $root "supabase\migrations\20260626_initial_schema_and_rls.sql") "Supabase bootstrap migration"
+Test-FileExists (Join-Path $root "supabase\migrations\20260724_staging_bringup_hardening.sql") "Supabase final hardening migration"
 Test-FileExists (Join-Path $root "extension\manifest.json") "Chrome extension manifest"
 
 $envFiles = @(
@@ -85,51 +97,54 @@ $envFiles = @(
   (Join-Path $backend ".env.local")
 )
 
-Write-Host ""
-Write-Host "Environment variables" -ForegroundColor Cyan
-foreach ($name in @(
-  "VITE_API_URL",
-  "VITE_SUPABASE_URL",
-  "VITE_SUPABASE_ANON_KEY",
-  "SUPABASE_URL",
-  "SUPABASE_SERVICE_ROLE_KEY",
-  "ENCRYPTION_KEY",
-  "GROQ_API_KEY",
-  "GROQ_MODELS",
-  "GEMINI_API_KEY",
-  "GEMINI_MODELS",
-  "STRIPE_SECRET_KEY",
-  "STRIPE_PRO_PRICE_ID",
-  "STRIPE_WEBHOOK_SECRET",
-  "FRONTEND_URL"
-)) {
-  Test-EnvName $name $envFiles
-}
+if (-not $SkipRuntime) {
+  Write-Host ""
+  Write-Host "Environment variables" -ForegroundColor Cyan
+  foreach ($name in @(
+    "VITE_API_URL",
+    "VITE_SUPABASE_URL",
+    "VITE_SUPABASE_ANON_KEY",
+    "SUPABASE_URL",
+    "SUPABASE_SERVICE_ROLE_KEY",
+    "ENCRYPTION_KEY",
+    "FRONTEND_URL",
+    "CORS_ALLOWED_ORIGINS"
+  )) {
+    Test-EnvName $name $envFiles
+  }
 
-if (-not $BackendUrl) {
-  $BackendUrl = "http://localhost:8000"
-}
+  if (-not $BackendUrl) {
+    $BackendUrl = "http://localhost:8000"
+  }
 
-Write-Host ""
-Write-Host "Backend probes: $BackendUrl" -ForegroundColor Cyan
-foreach ($path in @("/api/health", "/keep-alive", "/api/billing/config")) {
-  try {
-    $response = Invoke-RestMethod -Uri ($BackendUrl.TrimEnd("/") + $path) -Method Get -TimeoutSec 10
-    Write-Check "GET $path" $true ($response | ConvertTo-Json -Compress)
-  } catch {
-    Write-Check "GET $path" $false "backend may not be running or URL/env is not deployed yet"
+  Write-Host ""
+  Write-Host "Backend probes: $BackendUrl" -ForegroundColor Cyan
+  foreach ($path in @("/api/health", "/api/readiness", "/keep-alive")) {
+    try {
+      $response = Invoke-RestMethod -Uri ($BackendUrl.TrimEnd("/") + $path) -Method Get -TimeoutSec 10
+      Write-Check "GET $path" $true ($response | ConvertTo-Json -Compress)
+    } catch {
+      Write-Check "GET $path" $false "backend may not be running or URL/env is not deployed yet"
+      $failed = $true
+    }
   }
 }
 
 if ($RunBuild) {
-  Invoke-CheckedCommand "frontend lint" "npm run lint" $frontend
-  Invoke-CheckedCommand "frontend production build" "npm run build" $frontend
+  Invoke-CheckedCommand "frontend typecheck" "npm" @("run", "typecheck") $frontend
+  Invoke-CheckedCommand "frontend lint" "npm" @("run", "lint") $frontend
+  Invoke-CheckedCommand "frontend tests" "npm" @("test") $frontend
+  Invoke-CheckedCommand "frontend production build" "npm" @("run", "build") $frontend
   $backendPython = Join-Path $backend ".venv\Scripts\python.exe"
   if (-not (Test-Path $backendPython)) {
     $backendPython = "python"
   }
-  Invoke-CheckedCommand "backend python compile" "`"$backendPython`" -m py_compile backend/main.py" $root
-  Invoke-CheckedCommand "extension syntax check" "node --check extension/background.js; node --check extension/content.js; node --check extension/popup.js" $root
+  Invoke-CheckedCommand "backend tests" $backendPython @("-m", "unittest", "discover", "-s", "tests", "-v") $backend
+  Invoke-CheckedCommand "backend python compile" $backendPython @("-m", "py_compile", "main.py") $backend
+  Invoke-CheckedCommand "collaboration server syntax" "npm" @("run", "check") (Join-Path $root "collaboration-server")
+  Invoke-CheckedCommand "extension background syntax" "node" @("--check", "extension/background.js") $root
+  Invoke-CheckedCommand "extension content syntax" "node" @("--check", "extension/content.js") $root
+  Invoke-CheckedCommand "extension popup syntax" "node" @("--check", "extension/popup.js") $root
 }
 
 Write-Host ""

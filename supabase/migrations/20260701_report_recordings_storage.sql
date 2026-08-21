@@ -1,5 +1,5 @@
--- Public recording bucket. Objects may be read through their public URL, while
--- authenticated users can only write inside their own user-id folder.
+-- Private recording bucket. Closed Beta keeps the UI disabled; the later
+-- security migration adds document-aware signed-read access.
 
 insert into storage.buckets (
   id,
@@ -11,7 +11,7 @@ insert into storage.buckets (
 values (
   'report_recordings',
   'report_recordings',
-  true,
+  false,
   524288000,
   array['video/webm']
 )
@@ -21,10 +21,6 @@ set public = excluded.public,
     allowed_mime_types = excluded.allowed_mime_types;
 
 drop policy if exists "report_recordings_public_read" on storage.objects;
-create policy "report_recordings_public_read"
-on storage.objects for select
-to anon, authenticated
-using (bucket_id = 'report_recordings');
 
 drop policy if exists "report_recordings_insert_own_folder" on storage.objects;
 create policy "report_recordings_insert_own_folder"

@@ -1,87 +1,49 @@
-# AutoLabReport Launch Checklist
+# AutoLabReport Closed Beta Launch Checklist
 
-Use this checklist after Supabase SQL has returned `Success. No rows returned`.
+Use this only after reading docs/product/RELEASE_READINESS.md and docs/OWNER_ACTIONS.md.
 
-## 1. Supabase
+## P0
 
-- Confirm these tables exist:
-  - `profiles`
-  - `documents`
-  - `document_collaborators`
-  - `user_ai_settings`
-  - `ai_usage_logs`
-- Confirm RLS is enabled on every table above.
-- Enable Google OAuth and GitHub OAuth in Supabase Auth.
-- Add deployed site URLs to Supabase Auth redirect URLs:
-  - `https://your-vercel-domain.vercel.app`
-  - `https://your-vercel-domain.vercel.app/editor/*`
+- [ ] Apply every dated Supabase migration through `20260724_staging_bringup_hardening.sql` in clean staging.
+- [ ] Run owner／viewer／editor／anonymous permission matrix.
+- [ ] Confirm report_images and report_recordings are private.
+- [ ] Configure Email and／or Google Auth on the final domains.
+- [ ] Configure Vercel and Render without localhost fallbacks.
+- [ ] Confirm backend /api/readiness is 200.
+- [ ] Complete one built-in AI outline and one rewrite.
+- [ ] Verify number-changing AI output is rejected.
+- [ ] Download and inspect standard Word and PDF exports.
+- [ ] Configure monitoring and a student feedback destination.
 
-## 2. Render Backend
+## Closed Beta flags
 
-Set environment variables:
+- [ ] Billing off.
+- [ ] GitHub auth and sync off.
+- [ ] Google Drive off.
+- [ ] Screen recording off.
+- [ ] Realtime collaboration off in frontend and server.
+- [ ] Browser extension off.
+- [ ] Ownership transfer email off.
+- [ ] Python execution absent from render and export.
 
-```txt
-SUPABASE_URL
-SUPABASE_SERVICE_ROLE_KEY
-ENCRYPTION_KEY
-GROQ_API_KEY
-GROQ_MODEL
-GROQ_MODELS
-GEMINI_API_KEY
-GEMINI_MODEL
-GEMINI_MODELS
-FREE_DAILY_AI_QUOTA
-PRO_DAILY_AI_QUOTA
-STRIPE_SECRET_KEY
-STRIPE_PRO_PRICE_ID
-STRIPE_WEBHOOK_SECRET
-FRONTEND_URL
-```
+## Canary
 
-Smoke test:
+- [ ] Owner-only staging acceptance completed.
+- [ ] Two students invited.
+- [ ] One school day with no P0 incident.
+- [ ] Five students invited.
+- [ ] Review monitoring, save failures, OAuth failures and exports.
+- [ ] Twenty students invited only after owner sign-off.
 
-```powershell
-Invoke-RestMethod https://your-render-backend.onrender.com/api/health
-Invoke-RestMethod https://your-render-backend.onrender.com/keep-alive
-Invoke-RestMethod https://your-render-backend.onrender.com/api/billing/config
-```
+## Verification commands
 
-## 3. Vercel Frontend
+~~~powershell
+cd D:\AutoLabReport
+npm run check:local
+npm run audit:prod
 
-Set environment variables:
+# Staging／production preflight（需完整環境變數與可連線後端）
+npm run check:deploy
+~~~
 
-```txt
-VITE_API_URL
-VITE_SUPABASE_URL
-VITE_SUPABASE_ANON_KEY
-```
-
-Confirm `frontend/vercel.json` is included in the deployed frontend project so `/editor/:id` routes resolve to the SPA.
-
-## 4. Product Smoke Test
-
-- Open landing page.
-- Sign in with Google.
-- Create a report.
-- Rename the report.
-- Toggle favorite.
-- Open AI settings.
-- Generate outline with built-in AI.
-- Confirm quota decreases.
-- Share document as view-only.
-- Open shared link in incognito.
-- Confirm private documents are blocked for guests.
-- Confirm view-only documents cannot be edited.
-- Install extension locally and send one AI response back to the editor.
-
-## 5. One-command Local Check
-
-```powershell
-.\scripts\deploy-check.ps1 -RunBuild
-```
-
-For deployed backend probes:
-
-```powershell
-.\scripts\deploy-check.ps1 -BackendUrl https://your-render-backend.onrender.com
-```
+These commands are not a substitute for Supabase and browser acceptance.

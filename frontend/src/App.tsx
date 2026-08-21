@@ -7,12 +7,10 @@ import {
   useRef,
   useState,
   type FormEvent,
-  type HTMLAttributes,
-  type ImgHTMLAttributes,
   type ReactNode,
 } from 'react'
 import 'katex/dist/katex.min.css'
-import { createClient, type Provider, type Session, type User } from '@supabase/supabase-js'
+import { type Provider, type Session, type User } from '@supabase/supabase-js'
 import {
   ArrowRight,
   Archive,
@@ -30,6 +28,7 @@ import {
   CalendarDays,
   Database,
   Download,
+  Eye,
   ExternalLink,
   FileClock,
   FileText,
@@ -85,47 +84,74 @@ import {
 } from 'lucide-react'
 import type { editor } from 'monaco-editor'
 import type { HocuspocusProvider, WebSocketStatus } from '@hocuspocus/provider'
-import ReactMarkdown from 'react-markdown'
-import remarkMath from 'remark-math'
 import type { Text as YText, Doc as YDoc } from 'yjs'
 import {
   createDocumentVersion,
   readDocumentVersions,
   type DocumentVersion,
 } from './documentVersions'
-import GoogleDrivePicker from './GoogleDrivePicker'
-import { REHYPE_PLUGINS, safeMarkdownUrlTransform } from './markdownSafety'
-import PublicReport from './PublicReport'
+import {
+  queueDocumentSave,
+  readDocumentSaveOutbox,
+  removeDocumentSave,
+  removeDocumentSaves,
+  type PendingDocumentSave,
+} from './documentSaveOutbox'
+import { BrandLockup, BrandMark } from './Brand'
+import EditorWorkspaceLayout from './EditorWorkspaceLayout'
+import {
+  EDITOR_SPLIT_RATIO_STORAGE_KEY,
+  EDITOR_VIEW_MODE_STORAGE_KEY,
+  getInitialEditorViewMode,
+  readStoredSplitRatio,
+  type EditorViewMode,
+} from './editorViewMode'
 import { analyzeReportQuality } from './reportQuality'
-import ScreenRecorderControls from './ScreenRecorderControls'
+import { createPrivateReportImageUrl, REPORT_IMAGE_BUCKET } from './reportImageStorage'
+import { supabaseClient as supabase } from './supabaseClient'
 import { useExtensionBridge } from './useExtensionBridge'
 import { useSettings, type NotePreferences } from './useSettings'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
-const COLLABORATION_URL = import.meta.env.VITE_COLLABORATION_URL || 'ws://localhost:1234'
+const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '')
+const COLLABORATION_URL = import.meta.env.VITE_COLLABORATION_URL || (import.meta.env.DEV ? 'ws://localhost:1234' : '')
 const RENDER_DEBOUNCE_MS = 300
+const ENABLE_BILLING = import.meta.env.VITE_ENABLE_BILLING === 'true'
+const ENABLE_GITHUB_AUTH = import.meta.env.VITE_ENABLE_GITHUB_AUTH === 'true'
+const ENABLE_GITHUB_SYNC = import.meta.env.VITE_ENABLE_GITHUB_SYNC === 'true'
+const ENABLE_SCREEN_RECORDING = import.meta.env.VITE_ENABLE_SCREEN_RECORDING === 'true'
+const ENABLE_REALTIME_COLLABORATION = import.meta.env.VITE_ENABLE_REALTIME_COLLABORATION === 'true'
+const ENABLE_GOOGLE_DRIVE = import.meta.env.VITE_ENABLE_GOOGLE_DRIVE === 'true'
+const ENABLE_BROWSER_EXTENSION = import.meta.env.VITE_ENABLE_BROWSER_EXTENSION === 'true'
 const THEME_STORAGE_KEY = 'autolabreport-theme'
-const CONTENT_STORAGE_KEY = 'autoLabReport_content'
-const DOCUMENTS_STORAGE_KEY = 'autoLabReport_documents'
-const ACTIVE_DOCUMENT_ID_STORAGE_KEY = 'autoLabReport_activeDocumentId'
+const CONTENT_STORAGE_KEY = 'autoLabReport_guestContent:v2'
+const DOCUMENTS_STORAGE_KEY = 'autoLabReport_guestDocuments:v2'
+const ACTIVE_DOCUMENT_ID_STORAGE_KEY = 'autoLabReport_guestActiveDocumentId:v2'
+const GUEST_SESSION_STORAGE_KEY = 'autoLabReport_guestSession:v1'
 const ANONYMOUS_IDENTITY_STORAGE_KEY = 'autoLabReport_anonymousIdentity'
 const AI_SETTINGS_STORAGE_KEY = 'autoLabReport_aiSettings'
 const USER_TEMPLATES_STORAGE_KEY = 'autoLabReport_userTemplates'
 const DOCUMENT_VERSIONS_STORAGE_KEY = 'autoLabReport_documentVersions'
-const REPORT_IMAGE_BUCKET = 'report_images'
-const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL as string | undefined
-const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY as string | undefined
-const supabase =
-  SUPABASE_URL && SUPABASE_ANON_KEY ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null
 
-const REMARK_PLUGINS = [remarkMath]
+function getDocumentVersionsStorageKey(userId: string | null): string {
+  return `${DOCUMENT_VERSIONS_STORAGE_KEY}:${userId ?? 'guest-v2'}`
+}
 const MarkdownEditor = lazy(() => import('@monaco-editor/react'))
-const PrismLandingScene = lazy(() => import('./PrismLandingScene'))
+const LazyGoogleDrivePicker = lazy(() => import('./GoogleDrivePicker'))
+const LazyMarkdownRenderer = lazy(() => import('./MarkdownRenderer'))
+const LazyPublicReport = lazy(() => import('./PublicReport'))
+const LazyScreenRecorderControls = lazy(() => import('./ScreenRecorderControls'))
 const documentYDocs = new Map<string, YDoc>()
 let sharedYDoc: YDoc | null = null
-let mermaidInitialized = false
 const YTEXT_NAME = 'monaco-or-textarea'
 const LOCAL_YJS_ORIGIN = 'local-monaco'
+
+function MarkdownRenderer({ markdown }: { markdown: string }) {
+  return (
+    <Suspense fallback={<p className="text-sm text-slate-400">正在準備預覽…</p>}>
+      <LazyMarkdownRenderer markdown={markdown} />
+    </Suspense>
+  )
+}
 
 const DEFAULT_TEMPLATES = [
   {
@@ -312,6 +338,8 @@ type SyncStatus =
   | 'exporting'
   | 'exportingPdf'
 
+type DocumentSaveStatus = 'saved' | 'unsaved' | 'saving' | 'error'
+
 type ShareSetting = 'private' | 'view' | 'edit'
 type CollaboratorRole = 'view' | 'edit'
 type DocumentPermission = 'owner' | 'edit' | 'view' | 'none'
@@ -497,6 +525,14 @@ type PendingAiSelection = {
   text: string
 }
 
+type PendingAiChange = {
+  title: string
+  originalText: string
+  proposedText: string
+  mode: 'replace-selection' | 'append-document'
+  selection: PendingAiSelection | null
+}
+
 type CollaboratorPresence = {
   clientId: number
   name: string
@@ -631,82 +667,6 @@ function normalizePromptLibrary(items: unknown): PromptLibraryItem[] {
           : new Date().toISOString(),
     }
   })
-}
-
-function MermaidBlock({ chart }: { chart: string }) {
-  const [svg, setSvg] = useState('')
-  const [error, setError] = useState<string | null>(null)
-
-  useEffect(() => {
-    let isCancelled = false
-    const renderId = `mermaid-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-
-    async function renderMermaid() {
-      try {
-        const { default: mermaid } = await import('mermaid')
-        if (!mermaidInitialized) {
-          mermaid.initialize({
-            startOnLoad: false,
-            theme: 'default',
-            securityLevel: 'strict',
-          })
-          mermaidInitialized = true
-        }
-        const result = await mermaid.render(renderId, chart)
-        if (!isCancelled) {
-          setSvg(result.svg)
-          setError(null)
-        }
-      } catch (err) {
-        if (!isCancelled) {
-          const message = err instanceof Error ? err.message : 'Mermaid 渲染失敗'
-          setError(message)
-          setSvg('')
-        }
-      }
-    }
-
-    renderMermaid()
-
-    return () => {
-      isCancelled = true
-    }
-  }, [chart])
-
-  if (error) {
-    return <pre className="text-sm text-red-400">{error}</pre>
-  }
-
-  if (!svg) {
-    return <p className="text-sm text-zinc-500">正在渲染 Mermaid 圖表...</p>
-  }
-
-  return (
-    <div
-      className="my-4 overflow-x-auto"
-      dangerouslySetInnerHTML={{ __html: svg }}
-    />
-  )
-}
-
-const MARKDOWN_COMPONENTS = {
-  img: ({ alt, src, ...props }: ImgHTMLAttributes<HTMLImageElement>) => (
-    <img {...props} src={src} alt={alt ?? 'matplotlib plot'} className="pdf-plot-image" />
-  ),
-  code: ({ children, className, ...props }: HTMLAttributes<HTMLElement>) => {
-    const match = /language-(\w+)/.exec(className ?? '')
-    const code = String(children ?? '').replace(/\n$/, '')
-
-    if (match?.[1] === 'mermaid') {
-      return <MermaidBlock chart={code} />
-    }
-
-    return (
-      <code {...props} className={className}>
-        {children}
-      </code>
-    )
-  },
 }
 
 function smartFormat(text: string): string {
@@ -860,6 +820,17 @@ function createReportImagePath(file: File, userId: string, documentId: string | 
       : Math.random().toString(36).slice(2, 12)
 
   return `${userId}/${safeDocumentId}/${Date.now()}-${randomId}.${extension}`
+}
+
+function createSafeExportFilename(title: string | undefined, extension: 'docx' | 'pdf' | 'md'): string {
+  const safeTitle = Array.from(title || 'AutoLabReport')
+    .filter((character) => character.charCodeAt(0) >= 32)
+    .join('')
+    .replace(/[<>:"/\\|?*]/g, '-')
+    .replace(/[.\s]+$/g, '')
+    .trim()
+    .slice(0, 100)
+  return `${safeTitle || 'AutoLabReport'}.${extension}`
 }
 
 function applyAutoNumbering(
@@ -1117,13 +1088,15 @@ function DocumentSidebar({
       isActive: currentView === 'settings',
       onClick: () => onChangeView('settings'),
     },
-    {
-      id: 'extensions',
-      label: '擴充功能',
-      icon: Puzzle,
-      isActive: false,
-      onClick: onOpenExtensionModal,
-    },
+    ...(ENABLE_BROWSER_EXTENSION
+      ? [{
+          id: 'extensions',
+          label: '擴充功能',
+          icon: Puzzle,
+          isActive: false,
+          onClick: onOpenExtensionModal,
+        }]
+      : []),
     {
       id: 'prompts',
       label: '我的提示詞庫',
@@ -1181,6 +1154,7 @@ function DocumentSidebar({
   }
 
   function renderNavItem({
+    key,
     icon: Icon,
     label,
     isActive,
@@ -1188,6 +1162,7 @@ function DocumentSidebar({
     pinState,
     onTogglePin,
   }: {
+    key?: string
     icon: typeof Home
     label: string
     isActive?: boolean
@@ -1197,6 +1172,7 @@ function DocumentSidebar({
   }) {
     return (
       <button
+        key={key}
         type="button"
         onClick={onClick}
         className={`${navButtonBase} ${isActive ? navButtonActive : navButtonIdle}`}
@@ -1218,7 +1194,7 @@ function DocumentSidebar({
               event.stopPropagation()
               onTogglePin()
             }}
-            className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-indigo-600 group-hover:opacity-100"
+            className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-blue-700 group-hover:opacity-100"
           >
             {pinState === 'pinned' ? (
               <PinOff className="h-3.5 w-3.5" strokeWidth={2} />
@@ -1234,11 +1210,12 @@ function DocumentSidebar({
   if (isCollapsed) {
     return (
       <aside className="flex w-16 shrink-0 flex-col items-center border-r border-slate-200/80 bg-slate-50 py-4 text-slate-500">
+        <BrandMark size="compact" className="h-9 w-9" />
         <button
           type="button"
           title="展開工作區"
           onClick={onToggleCollapsed}
-          className="grid h-10 w-10 place-items-center rounded-xl bg-white text-slate-700 shadow-sm ring-1 ring-slate-200 transition hover:text-slate-950"
+          className="mt-3 grid h-10 w-10 place-items-center rounded-xl bg-white text-slate-700 shadow-sm ring-1 ring-slate-200 transition hover:text-slate-950"
         >
           <PanelLeftOpen className="h-[18px] w-[18px]" strokeWidth={2} />
         </button>
@@ -1276,13 +1253,13 @@ function DocumentSidebar({
           type="button"
           title="新增報告"
           onClick={onCreateDocument}
-          className="mt-auto grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-lg shadow-indigo-500/20 transition hover:brightness-110"
+          className="mt-auto grid h-10 w-10 place-items-center rounded-xl bg-gradient-to-br from-blue-700 to-teal-600 text-white shadow-lg shadow-blue-700/20 transition hover:brightness-110"
         >
           <Plus className="h-[18px] w-[18px]" strokeWidth={2} />
         </button>
         <button
           type="button"
-          title="登出"
+          title={user ? '登出' : '返回登入'}
           onClick={onSignOut}
           className="mt-2 grid h-10 w-10 place-items-center rounded-xl transition hover:bg-white hover:text-slate-950 hover:shadow-sm"
         >
@@ -1332,7 +1309,7 @@ function DocumentSidebar({
                 setExpandedFolderIds((current) => new Set(current).add(document.id))
                 onCreateDocumentInFolder(document.id)
               }}
-              className="rounded-lg p-1 text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-indigo-600 group-hover:opacity-100"
+              className="rounded-lg p-1 text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-blue-700 group-hover:opacity-100"
             >
               <Plus className="h-4 w-4" strokeWidth={2} />
             </button>
@@ -1376,15 +1353,7 @@ function DocumentSidebar({
   return (
     <aside className="flex w-72 shrink-0 flex-col border-r border-slate-200/80 bg-slate-50 text-slate-700">
       <div className="flex items-center justify-between px-5 py-5">
-        <div className="flex min-w-0 items-center gap-3">
-          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl bg-gradient-to-br from-indigo-500 via-violet-500 to-fuchsia-500 text-white shadow-lg shadow-indigo-500/20">
-            <FileText className="h-5 w-5" strokeWidth={2.2} />
-          </div>
-          <div className="min-w-0">
-            <h2 className="truncate text-sm font-semibold tracking-tight text-slate-950">AutoLabReport</h2>
-            <p className="text-xs text-slate-400">Lab workspace</p>
-          </div>
-        </div>
+        <BrandLockup size="compact" surface="light" />
         <div className="flex items-center gap-1">
           <button
             type="button"
@@ -1401,7 +1370,7 @@ function DocumentSidebar({
         <button
           type="button"
           onClick={onCreateDocument}
-          className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-500 to-violet-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 transition-all hover:brightness-110 active:scale-[0.99]"
+          className="flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-blue-700 to-teal-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-700/20 transition-all hover:brightness-110 active:scale-[0.99]"
         >
           <Plus className="h-4 w-4" strokeWidth={2.2} />
           建立新報告
@@ -1432,6 +1401,7 @@ function DocumentSidebar({
           <div className="space-y-1">
             {pinnedItems.map((item) =>
               renderNavItem({
+                key: item.id,
                 icon: item.icon,
                 label: item.label,
                 isActive: item.isActive,
@@ -1459,6 +1429,7 @@ function DocumentSidebar({
             <div className="space-y-1">
               {moreItems.map((item) =>
                 renderNavItem({
+                  key: item.id,
                   icon: item.icon,
                   label: item.label,
                   isActive: item.isActive,
@@ -1552,16 +1523,16 @@ function DocumentSidebar({
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-semibold text-slate-950">{userName}</p>
             <p className="truncate text-xs text-slate-400">
-              {user?.email ?? '已登入'}
+              {user?.email ?? '本機訪客模式'}
             </p>
           </div>
           <button
             type="button"
             onClick={onSignOut}
-            title="登出"
+            title={user ? '登出' : '返回登入'}
             className="rounded-lg px-2 py-1.5 text-xs font-medium text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-950"
           >
-            登出
+            {user ? '登出' : '登入'}
           </button>
         </div>
       </div>
@@ -1608,7 +1579,7 @@ function getUserDisplayName(user: User | null): string {
   const name = user?.user_metadata?.name
   if (typeof name === 'string' && name.trim()) return name.trim()
 
-  return user?.email ?? 'AutoLabReport 使用者'
+  return user?.email ?? '訪客使用者'
 }
 
 function getUserAvatarUrl(user: User | null): string {
@@ -1763,8 +1734,8 @@ function getDocumentPermission(
 ): DocumentPermission {
   if (!document || document.type !== 'file' || document.isTrashed) return 'none'
   if (!user) {
-    if (document.shareSetting === 'edit') return 'edit'
-    if (document.shareSetting === 'view') return 'view'
+    if (!document.userId) return 'owner'
+    if (document.shareSetting === 'edit' || document.shareSetting === 'view') return 'view'
     return 'none'
   }
 
@@ -1779,8 +1750,7 @@ function getDocumentPermission(
     : undefined
 
   if (invitedCollaborator) return invitedCollaborator.role
-  if (document.shareSetting === 'edit') return 'edit'
-  if (document.shareSetting === 'view') return 'view'
+  if (document.shareSetting === 'edit' || document.shareSetting === 'view') return 'view'
   return 'none'
 }
 
@@ -1915,13 +1885,15 @@ function AiSettingsView({
       description: isPro ? '付費版直接使用 AutoLabReport 的高級 AI。' : '免費版先提供 3 次測試額度，適合確認流程。',
       icon: Gauge,
     },
-    {
-      id: 'extension' as AiProvider,
-      title: '瀏覽器插件',
-      status: '待測試連接',
-      description: '用你自己的 ChatGPT、Gemini 或其他網頁 AI，不消耗內建額度。',
-      icon: Puzzle,
-    },
+    ...(ENABLE_BROWSER_EXTENSION
+      ? [{
+          id: 'extension' as AiProvider,
+          title: '瀏覽器插件',
+          status: '實驗功能',
+          description: '用你自己的 ChatGPT、Gemini 或其他網頁 AI，不消耗內建額度。',
+          icon: Puzzle,
+        }]
+      : []),
     {
       id: 'user_api_key' as AiProvider,
       title: '自備 API Key',
@@ -1931,8 +1903,18 @@ function AiSettingsView({
     },
   ]
   const toolCards = [
-    { title: 'Google Drive', description: '匯出、同步與備份文件。', status: '待連接', icon: Cloud },
-    { title: 'GitHub 同步', description: '將 Markdown 報告推送到自己的 Repo。', status: '可綁定', icon: FileCode2 },
+    {
+      title: 'Google Drive',
+      description: '從雲端硬碟匯入 Word 或 PDF。',
+      status: ENABLE_GOOGLE_DRIVE ? '待連接' : 'Closed Beta 後',
+      icon: Cloud,
+    },
+    {
+      title: 'GitHub 同步',
+      description: '將 Markdown 報告推送到自己的 Repo。',
+      status: ENABLE_GITHUB_SYNC ? '可綁定' : 'Closed Beta 後',
+      icon: FileCode2,
+    },
     { title: 'Markdown 匯入', description: '上傳 .md 後直接進入編輯器。', status: '已可用', icon: FileUp },
     { title: 'Word / PDF 匯出', description: '把報告交付成常用格式。', status: '已可用', icon: Download },
     { title: '新增工具', description: '之後可讓使用者添加自己的工具列。', status: '預留', icon: Plus },
@@ -2211,7 +2193,7 @@ function AiSettingsView({
                   <button
                     key={tool.title}
                     type="button"
-                    onClick={tool.title === 'GitHub 同步' ? onConnectGithub : undefined}
+                    onClick={tool.title === 'GitHub 同步' && ENABLE_GITHUB_SYNC ? onConnectGithub : undefined}
                     className="rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:-translate-y-0.5 hover:shadow-md"
                   >
                     <div className="flex items-start justify-between gap-3">
@@ -2637,8 +2619,8 @@ function DashboardView({
       title: '貼上 AI 生成內容',
       description: '整理亂格式',
       icon: PenLine,
-      tint: 'from-violet-50 to-indigo-100/70',
-      iconTone: 'text-indigo-700',
+      tint: 'from-teal-50 to-blue-100/70',
+      iconTone: 'text-blue-700',
       action: 'create',
     },
     {
@@ -2886,7 +2868,7 @@ function ProjectsView({
   function getStatusStyle(status: string) {
     if (status === '已匯出' || status === '已轉換') return 'bg-emerald-50 text-emerald-700 ring-emerald-100'
     if (status === '需檢查') return 'bg-amber-50 text-amber-700 ring-amber-100'
-    if (status === '已共用') return 'bg-indigo-50 text-indigo-700 ring-indigo-100'
+    if (status === '已共用') return 'bg-blue-50 text-blue-700 ring-blue-100'
     return 'bg-slate-100 text-slate-600 ring-slate-200'
   }
 
@@ -3801,6 +3783,7 @@ function ReportQualityView({
                 <div>
                   <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-50">{item.label}</h2>
                   <p className="mt-1 text-sm leading-6 text-zinc-500 dark:text-zinc-400">{item.description}</p>
+                  <p className="mt-1 text-xs font-medium text-zinc-400">位置：{item.location}</p>
                   {!item.passed && (
                     <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800 dark:bg-amber-500/10 dark:text-amber-200">
                       {item.suggestion}
@@ -3896,49 +3879,30 @@ function VersionHistoryView({
 function LandingPage({
   onOAuthLogin,
   onSendMagicLink,
+  onContinueAsGuest,
   authLoading,
   authMessage,
 }: {
   onOAuthLogin: (provider: Provider) => void
   onSendMagicLink: (email: string) => Promise<boolean>
+  onContinueAsGuest: () => void
   authLoading: boolean
   authMessage: string | null
 }) {
   const [email, setEmail] = useState('')
   const [magicLinkSent, setMagicLinkSent] = useState(false)
   const [magicLinkLoading, setMagicLinkLoading] = useState(false)
-  const [prismActivationKey, setPrismActivationKey] = useState(0)
-  const oauthTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null)
-
-  useEffect(() => {
-    return () => {
-      if (oauthTimerRef.current) {
-        window.clearTimeout(oauthTimerRef.current)
-      }
-    }
-  }, [])
-
-  function ignitePrism() {
-    setPrismActivationKey((current) => current + 1)
-  }
 
   function handleOAuthLogin(provider: Provider) {
     if (authLoading) return
-
-    ignitePrism()
-    if (oauthTimerRef.current) {
-      window.clearTimeout(oauthTimerRef.current)
-    }
-    oauthTimerRef.current = window.setTimeout(() => onOAuthLogin(provider), 620)
+    onOAuthLogin(provider)
   }
 
   async function handleMagicLinkSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!email.trim() || magicLinkSent) return
 
-    ignitePrism()
     setMagicLinkLoading(true)
-    await new Promise((resolve) => window.setTimeout(resolve, 520))
     const didSend = await onSendMagicLink(email.trim())
     setMagicLinkLoading(false)
     if (didSend) {
@@ -3947,75 +3911,63 @@ function LandingPage({
   }
 
   return (
-    <div className={`relative isolate min-h-screen overflow-x-hidden bg-[#050507] text-white ${SCROLLBAR_HIDE}`}>
-      <Suspense
-        fallback={
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_44%,rgba(255,255,255,0.12),transparent_34%),#050507]" />
-        }
-      >
-        <PrismLandingScene activationKey={prismActivationKey} />
-      </Suspense>
-
-      <nav className="pointer-events-none relative z-10 mx-auto flex max-w-7xl items-center justify-between px-6 py-6 sm:px-8">
-        <div className="flex items-center gap-3">
-          <span className="h-2 w-2 rounded-full bg-white shadow-[0_0_22px_rgba(255,255,255,0.9)]" />
-          <div>
-            <div className="text-sm font-semibold tracking-tight text-white">AutoLabReport</div>
-            <div className="text-[11px] uppercase text-white/40">Prism workspace</div>
-          </div>
-        </div>
+    <div className={`min-h-screen overflow-x-hidden bg-[#f7f7f4] text-[#17181d] ${SCROLLBAR_HIDE}`}>
+      <nav className="mx-auto flex max-w-7xl items-center justify-between border-b border-[#dcddd8] px-6 py-5 sm:px-8">
+        <BrandLockup size="compact" hideTextOnMobile />
         <button
           type="button"
           onClick={() => handleOAuthLogin('google')}
           disabled={authLoading}
-          className="pointer-events-auto rounded-full border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-medium text-white/70 backdrop-blur-md transition-all hover:border-white/20 hover:bg-white/[0.08] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-full border border-[#b8bab4] bg-white px-4 py-2 text-sm font-semibold text-[#4f525b] transition hover:border-[#246bfd] hover:text-[#174ea6] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#246bfd]/25 disabled:cursor-not-allowed disabled:opacity-50"
         >
           登入
         </button>
       </nav>
 
-      <main className="pointer-events-none relative z-10 flex min-h-[calc(100vh-88px)] items-center px-6 pb-12 pt-8 sm:px-8">
+      <main className="flex min-h-[calc(100vh-81px)] items-center px-6 py-12 sm:px-8">
         <section className="mx-auto grid w-full max-w-7xl grid-cols-1 items-center gap-12 lg:grid-cols-[minmax(0,1fr)_420px]">
-          <div className="max-w-3xl py-12">
-            <p className="mb-5 text-xs font-semibold uppercase text-white/45">
-              Laboratory writing, clarified.
+          <div className="max-w-3xl py-8">
+            <BrandMark size="large" decorative className="mb-8 shadow-sm" />
+            <p className="mb-5 text-xs font-bold uppercase tracking-[0.12em] text-[#174ea6]">
+              Laboratory writing, made clear.
             </p>
-            <h1 className="max-w-3xl text-4xl font-semibold leading-tight text-white sm:text-7xl lg:text-8xl">
-              AutoLabReport
+            <h1 className="max-w-3xl text-4xl font-semibold leading-[1.05] tracking-[-0.045em] text-[#17181d] sm:text-6xl lg:text-7xl">
+              從實驗紀錄到可提交報告，一處完成。
             </h1>
-            <p className="mt-6 max-w-xl text-base leading-8 text-white/58 sm:text-lg">
-              把原始筆記、表格與草稿整理成可提交的實驗報告。登入後進入極簡寫作空間，專注編輯、預覽與匯出。
+            <p className="mt-6 max-w-xl text-base leading-8 text-[#4f525b] sm:text-lg">
+              整理原始筆記、表格、公式與草稿，在同一個安靜的寫作空間完成編輯、預覽與 Word 匯出。
             </p>
-            <div className="mt-10 flex flex-wrap gap-3 text-xs text-white/48">
-              <span className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-2 backdrop-blur">
+            <div className="mt-10 flex flex-wrap gap-3 text-xs font-medium text-[#4f525b]">
+              <span className="rounded-full border border-[#dcddd8] bg-white px-3 py-2">
                 Markdown 編輯
               </span>
-              <span className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-2 backdrop-blur">
+              <span className="rounded-full border border-[#dcddd8] bg-white px-3 py-2">
                 即時預覽
               </span>
-              <span className="rounded-full border border-white/10 bg-white/[0.035] px-3 py-2 backdrop-blur">
+              <span className="rounded-full border border-[#dcddd8] bg-white px-3 py-2">
                 Word 匯出
               </span>
             </div>
           </div>
 
-          <div className="pointer-events-auto border-white/10 bg-white/[0.045] p-6 shadow-2xl shadow-black/35 backdrop-blur-2xl sm:rounded-[2rem] sm:border sm:p-7">
+          <div className="border border-[#dcddd8] bg-white p-6 shadow-[0_10px_30px_rgba(18,20,26,0.10)] sm:rounded-3xl sm:p-7">
             <div className="mb-7">
-              <p className="text-sm font-medium text-white/45">進入工作區</p>
-              <h2 className="mt-2 text-2xl font-semibold text-white">登入你的報告空間</h2>
+              <p className="text-xs font-bold uppercase tracking-[0.1em] text-[#087d78]">進入工作區</p>
+              <h2 className="mt-2 text-2xl font-semibold tracking-tight text-[#17181d]">登入你的報告空間</h2>
+              <p className="mt-2 text-sm leading-6 text-[#6d7078]">登入後同步雲端文件；也可以先用訪客模式在本機試寫。</p>
             </div>
 
             <form onSubmit={handleMagicLinkSubmit} className="space-y-4">
               {authMessage && (
-                <div className="rounded-2xl border border-amber-300/25 bg-amber-300/10 px-4 py-3 text-sm leading-6 text-amber-100">
+                <div className="rounded-xl border border-[#dcd7c5] border-l-4 border-l-[#9a6700] bg-[#fff8df] px-4 py-3 text-sm leading-6 text-[#684700]" role="status">
                   {authMessage}
                 </div>
               )}
-              <label className="block text-sm font-medium text-white/72" htmlFor="magic-link-email">
+              <label className="block text-sm font-medium text-[#17181d]" htmlFor="magic-link-email">
                 Email
               </label>
-              <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 transition-all focus-within:border-white/25 focus-within:bg-black/28">
-                <Mail className="h-4 w-4 shrink-0 text-white/38" aria-hidden="true" />
+              <div className="flex items-center gap-3 rounded-xl border border-[#b8bab4] bg-white px-4 py-3 transition focus-within:border-[#246bfd] focus-within:ring-4 focus-within:ring-[#246bfd]/20">
+                <Mail className="h-4 w-4 shrink-0 text-[#6d7078]" aria-hidden="true" />
                 <input
                   id="magic-link-email"
                   type="email"
@@ -4025,7 +3977,7 @@ function LandingPage({
                     setMagicLinkSent(false)
                   }}
                   placeholder="you@example.com"
-                  className="w-full bg-transparent text-sm text-white outline-none placeholder:text-white/28"
+                  className="w-full bg-transparent text-sm text-[#17181d] outline-none placeholder:text-[#969ba6]"
                   disabled={magicLinkLoading || magicLinkSent}
                   autoComplete="email"
                   required
@@ -4034,7 +3986,7 @@ function LandingPage({
               <button
                 type="submit"
                 disabled={!email.trim() || magicLinkLoading || magicLinkSent}
-                className="group flex w-full items-center justify-center gap-2 rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-black transition-all hover:bg-white/90 disabled:cursor-not-allowed disabled:opacity-50"
+                className="group flex min-h-12 w-full items-center justify-center gap-2 rounded-full bg-[#246bfd] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#174ea6] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#246bfd]/25 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {magicLinkSent
                   ? '連結已發送，請檢查信箱'
@@ -4047,10 +3999,10 @@ function LandingPage({
               </button>
             </form>
 
-            <div className="my-6 flex items-center gap-4 text-white/30">
-              <div className="h-px flex-1 bg-white/10" />
+            <div className="my-6 flex items-center gap-4 text-[#6d7078]">
+              <div className="h-px flex-1 bg-[#dcddd8]" />
               <span className="text-xs font-medium uppercase tracking-wider">或</span>
-              <div className="h-px flex-1 bg-white/10" />
+              <div className="h-px flex-1 bg-[#dcddd8]" />
             </div>
 
             <div className="space-y-3">
@@ -4058,26 +4010,36 @@ function LandingPage({
                 type="button"
                 onClick={() => handleOAuthLogin('google')}
                 disabled={authLoading}
-                className="flex w-full items-center justify-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-white/82 transition-all hover:border-white/20 hover:bg-white/[0.08] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex min-h-12 w-full items-center justify-center gap-3 rounded-full border border-[#b8bab4] bg-white px-4 py-3 text-sm font-semibold text-[#17181d] transition hover:border-[#246bfd] hover:bg-[#f7f7f4] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#246bfd]/20 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-white text-xs font-semibold text-black">
+                <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#e6eeff] text-xs font-semibold text-[#174ea6]">
                   G
                 </span>
                 使用 Google 繼續
               </button>
+              {ENABLE_GITHUB_AUTH && (
+                <button
+                  type="button"
+                  onClick={() => handleOAuthLogin('github')}
+                  disabled={authLoading}
+                  className="flex min-h-12 w-full items-center justify-center gap-3 rounded-full border border-[#b8bab4] bg-white px-4 py-3 text-sm font-semibold text-[#17181d] transition hover:border-[#246bfd] hover:bg-[#f7f7f4] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <span className="text-xs font-semibold tracking-wide text-[#4f525b]">GH</span>
+                  使用 GitHub 繼續
+                </button>
+              )}
               <button
                 type="button"
-                onClick={() => handleOAuthLogin('github')}
+                onClick={onContinueAsGuest}
                 disabled={authLoading}
-                className="flex w-full items-center justify-center gap-3 rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm font-semibold text-white/82 transition-all hover:border-white/20 hover:bg-black/35 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+                className="flex min-h-12 w-full items-center justify-center rounded-full px-4 py-3 text-sm font-semibold text-[#174ea6] transition hover:bg-[#e6eeff] focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-[#246bfd]/20 disabled:cursor-not-allowed disabled:opacity-50"
               >
-                <span className="text-xs font-semibold tracking-wide text-white/58">GH</span>
-                使用 GitHub 繼續
+                先以訪客模式試用
               </button>
             </div>
 
-            <p className="mt-6 text-xs leading-6 text-white/36">
-              登入只負責同步你的工作區；報告內容、預覽與匯出設定會在工作區內管理。
+            <p className="mt-6 border-t border-[#dcddd8] pt-5 text-xs leading-6 text-[#6d7078]">
+              訪客草稿只保存在這台瀏覽器；登入後的文件才會同步到雲端。目前不會自動搬移訪客草稿。
             </p>
           </div>
         </section>
@@ -4104,15 +4066,19 @@ function WorkspaceApp({
         activeDocumentId: initialSharedDocument.id,
       }
     }
+    if (user) return { documents: [], activeDocumentId: '' }
     return getInitialWorkspace()
   })
   const [documents, setDocuments] = useState<Document[]>(initialWorkspace.documents)
   const [documentVersions, setDocumentVersions] = useState<DocumentVersion[]>(() =>
-    readDocumentVersions(DOCUMENT_VERSIONS_STORAGE_KEY),
+    readDocumentVersions(getDocumentVersionsStorageKey(user?.id ?? null)),
   )
   const [activeDocumentId, setActiveDocumentId] = useState(initialWorkspace.activeDocumentId)
   const [currentView, setCurrentView] = useState<AppView>(() => getInitialAppView(initialSharedDocument))
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(Boolean(initialSharedDocument))
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(
+    Boolean(initialSharedDocument) ||
+      (typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches),
+  )
   const activeDocument =
     documents.find((document) => document.id === activeDocumentId && document.type === 'file' && !document.isTrashed) ??
     documents.find((document) => document.type === 'file' && !document.isTrashed)
@@ -4120,6 +4086,7 @@ function WorkspaceApp({
   const [preview, setPreview] = useState('')
   const [theme] = useState<'light' | 'dark'>(getInitialTheme)
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('synced')
+  const [documentSaveStatus, setDocumentSaveStatus] = useState<DocumentSaveStatus>('saved')
   const [collaborationStatus, setCollaborationStatus] =
     useState<WebSocketStatus | 'idle'>('idle')
   const [renderError, setRenderError] = useState<string | null>(null)
@@ -4139,7 +4106,16 @@ function WorkspaceApp({
   const [agentResult, setAgentResult] = useState<AgentResult | null>(null)
   const [agentLoading, setAgentLoading] = useState(false)
   const [isCreateModalOpen, setIsCreateModalOpen] = useState(false)
-  const [mobileEditorPane, setMobileEditorPane] = useState<'edit' | 'preview'>('edit')
+  const [editorViewMode, setEditorViewMode] = useState<EditorViewMode>(() =>
+    getInitialEditorViewMode(
+      typeof window === 'undefined' ? null : window.localStorage,
+      typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches,
+    ),
+  )
+  const [editorSplitRatio, setEditorSplitRatio] = useState(() =>
+    readStoredSplitRatio(typeof window === 'undefined' ? null : window.localStorage),
+  )
+  const [isEditorWorkspaceCompact, setIsEditorWorkspaceCompact] = useState(false)
   const [collaboratorEmail, setCollaboratorEmail] = useState('')
   const [documentCollaborators, setDocumentCollaborators] = useState<DocumentCollaborator[]>([])
   const [documentCollaboratorsLoading, setDocumentCollaboratorsLoading] = useState(false)
@@ -4147,9 +4123,17 @@ function WorkspaceApp({
   const [isTitleEditing, setIsTitleEditing] = useState(false)
   const [titleDraft, setTitleDraft] = useState(activeDocument?.title ?? '')
   const [outlineExampleText, setOutlineExampleText] = useState('')
+  const [outlineBrief, setOutlineBrief] = useState({
+    experimentName: '',
+    purpose: '',
+    requirements: '',
+    rawData: '',
+    formatRequirements: '',
+  })
   const [outlineLoading, setOutlineLoading] = useState(false)
   const [aiSettings, setAiSettings] = useState<AiSettings>(getInitialAiSettings)
   const [aiTaskLoading, setAiTaskLoading] = useState<AiAction | null>(null)
+  const [pendingAiChange, setPendingAiChange] = useState<PendingAiChange | null>(null)
   const [userApiKeySaving, setUserApiKeySaving] = useState(false)
   const [aiQuota, setAiQuota] = useState<AiQuota | null>(null)
   const [aiQuotaLoading, setAiQuotaLoading] = useState(false)
@@ -4198,6 +4182,12 @@ function WorkspaceApp({
   const pendingAiSelectionRef = useRef<PendingAiSelection | null>(null)
   const shareResetTimerRef = useRef<number | null>(null)
   const hasOpenedSharedDocRef = useRef(false)
+  const scrollSyncSourceRef = useRef<'editor' | 'preview' | null>(null)
+  const pendingDocumentSaveRef = useRef<PendingDocumentSave | null>(null)
+  const documentSaveTimerRef = useRef<number | null>(null)
+  const documentSaveRevisionRef = useRef(0)
+  const documentSaveQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const isWorkspaceMountedRef = useRef(true)
 
   const isEditorEmpty = !markdown.trim()
   const isDarkMode = theme === 'dark'
@@ -4211,14 +4201,47 @@ function WorkspaceApp({
   const canEditActiveDocument =
     activeDocumentPermission === 'owner' || activeDocumentPermission === 'edit'
   const isReadOnlyMode = activeDocumentPermission === 'view'
-  const activeDocumentVersions = useMemo(
-    () =>
-      activeDocument
-        ? documentVersions
-            .filter((version) => version.documentId === activeDocument.id)
-            .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
-        : [],
-    [activeDocument, documentVersions],
+  const activeDocumentVersions = activeDocument
+    ? documentVersions
+        .filter((version) => version.documentId === activeDocument.id)
+        .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
+    : []
+
+  const changeEditorViewMode = useCallback((nextMode: EditorViewMode) => {
+    if (!canEditActiveDocument && nextMode !== 'preview') return
+    if (isEditorWorkspaceCompact && nextMode === 'split') return
+    setEditorViewMode(nextMode)
+    window.localStorage.setItem(EDITOR_VIEW_MODE_STORAGE_KEY, nextMode)
+  }, [canEditActiveDocument, isEditorWorkspaceCompact])
+
+  const commitEditorSplitRatio = useCallback((ratio: number) => {
+    setEditorSplitRatio(ratio)
+    window.localStorage.setItem(EDITOR_SPLIT_RATIO_STORAGE_KEY, String(ratio))
+  }, [])
+
+  const visibleEditorViewMode: EditorViewMode = canEditActiveDocument
+    ? editorViewMode
+    : 'preview'
+  const displayedEditorViewMode: EditorViewMode =
+    visibleEditorViewMode === 'split' && isEditorWorkspaceCompact
+      ? 'edit'
+      : visibleEditorViewMode
+
+  const updateMarkdownValue = useCallback(
+    (value: string) => {
+      setMarkdown(value)
+      if (!isApplyingRemoteRef.current && shouldUseSupabaseDocuments && canEditActiveDocumentRef.current) {
+        setDocumentSaveStatus('unsaved')
+      }
+      if (!value.trim()) {
+        setPreview('')
+        setRenderError(null)
+        setSyncStatus('synced')
+      } else {
+        setSyncStatus('pending')
+      }
+    },
+    [shouldUseSupabaseDocuments],
   )
 
   useEffect(() => {
@@ -4266,7 +4289,7 @@ function WorkspaceApp({
     updateMarkdownValue(document.content)
     editorRef.current?.setValue(document.content)
     isApplyingRemoteRef.current = false
-  }, [])
+  }, [updateMarkdownValue])
 
   const getAuthHeaders = useCallback(async (): Promise<Record<string, string>> => {
     if (!supabase || !user) return {}
@@ -4332,7 +4355,7 @@ function WorkspaceApp({
         setDocumentCollaboratorsLoading(false)
       }
     },
-    [readDocumentCollaborators, shouldUseSupabaseDocuments],
+    [readDocumentCollaborators, setBridgeToast, shouldUseSupabaseDocuments],
   )
 
   const refreshSupabaseDocuments = useCallback(
@@ -4344,14 +4367,16 @@ function WorkspaceApp({
         const { data, error } = await supabase
           .from('documents')
           .select('*')
-          .eq('is_trashed', false)
           .order('updated_at', { ascending: false })
 
         if (error) throw error
 
         const nextDocuments = ((data ?? []) as SupabaseDocumentRow[])
           .map(mapSupabaseDocument)
-          .filter((document) => getDocumentPermission(document, user) !== 'none')
+          .filter(
+            (document) =>
+              document.userId === user?.id || getDocumentPermission(document, user) !== 'none',
+          )
         setDocuments(nextDocuments)
 
         const documentToOpen = openDocumentId
@@ -4372,7 +4397,7 @@ function WorkspaceApp({
         setDatabaseLoading(false)
       }
     },
-    [applyLoadedDocument, shouldUseSupabaseDocuments, user],
+    [applyLoadedDocument, setBridgeToast, shouldUseSupabaseDocuments, user],
   )
 
   useEffect(() => {
@@ -4381,16 +4406,21 @@ function WorkspaceApp({
   }, [theme, isDarkMode])
 
   useEffect(() => {
+    if (user) return
     window.localStorage.setItem(DOCUMENTS_STORAGE_KEY, JSON.stringify(documents))
-  }, [documents])
+  }, [documents, user])
 
   useEffect(() => {
-    window.localStorage.setItem(DOCUMENT_VERSIONS_STORAGE_KEY, JSON.stringify(documentVersions.slice(0, 120)))
-  }, [documentVersions])
+    window.localStorage.setItem(
+      getDocumentVersionsStorageKey(user?.id ?? null),
+      JSON.stringify(documentVersions.slice(0, 120)),
+    )
+  }, [documentVersions, user?.id])
 
   useEffect(() => {
+    if (user) return
     window.localStorage.setItem(ACTIVE_DOCUMENT_ID_STORAGE_KEY, activeDocumentId)
-  }, [activeDocumentId])
+  }, [activeDocumentId, user])
 
   useEffect(() => {
     window.localStorage.setItem(AI_SETTINGS_STORAGE_KEY, JSON.stringify(getPersistableAiSettings(aiSettings)))
@@ -4447,6 +4477,7 @@ function WorkspaceApp({
   }
 
   useEffect(() => {
+    if (!ENABLE_BILLING) return
     let isCancelled = false
 
     async function fetchBillingConfig() {
@@ -4472,7 +4503,7 @@ function WorkspaceApp({
     return () => {
       isCancelled = true
     }
-  }, [])
+  }, [updateMarkdownValue])
 
   async function openStripeSession(endpoint: string, loadingState: 'checkout' | 'portal') {
     if (!user) {
@@ -4525,6 +4556,10 @@ function WorkspaceApp({
   }
 
   async function connectGithub() {
+    if (!ENABLE_GITHUB_SYNC) {
+      setBridgeToast('GitHub 同步不在本次 Closed Beta 範圍內')
+      return
+    }
     if (!user) {
       setBridgeToast('請先登入後再綁定 GitHub')
       return
@@ -4552,11 +4587,12 @@ function WorkspaceApp({
       aiSettingsHydratedRef.current = false
       return
     }
+    const settingsSupabase = supabase
 
     let isCancelled = false
     const fetchTimer = window.setTimeout(async () => {
       try {
-        const { data, error } = await supabase
+        const { data, error } = await settingsSupabase
           .from('user_ai_settings')
           .select('*')
           .eq('user_id', user.id)
@@ -4587,9 +4623,10 @@ function WorkspaceApp({
 
   useEffect(() => {
     if (!supabase || !user || !aiSettingsHydratedRef.current) return
+    const settingsSupabase = supabase
 
     const saveTimer = window.setTimeout(async () => {
-      const { error } = await supabase
+      const { error } = await settingsSupabase
         .from('user_ai_settings')
         .upsert(toSupabaseAiSettingsPayload(user.id, aiSettings), { onConflict: 'user_id' })
 
@@ -4635,30 +4672,150 @@ function WorkspaceApp({
     }
   }, [])
 
-  useEffect(() => {
-    if (!canEditActiveDocument) return
-
-    const timer = window.setTimeout(() => {
-      window.localStorage.setItem(CONTENT_STORAGE_KEY, markdown)
-      setDocuments((currentDocuments) =>
-        currentDocuments.map((document) =>
-          document.id === activeDocumentId && document.content !== markdown
-            ? { ...document, content: markdown, updatedAt: new Date().toISOString() }
-            : document,
-        ),
-      )
-      if (supabase && activeDocumentId) {
-        void supabase
-          .from('documents')
-          .update({ content: markdown })
-          .eq('id', activeDocumentId)
+  const enqueueRemoteDocumentSave = useCallback(
+    (pendingSave: PendingDocumentSave) => {
+      if (!supabase || !user) {
+        return Promise.resolve()
       }
-    }, 300)
+      const documentClient = supabase
+      const saveOwnerKey = user.id
 
-    return () => {
-      clearTimeout(timer)
+      if (pendingSave.documentId === activeDocumentId && isWorkspaceMountedRef.current) {
+        setDocumentSaveStatus('saving')
+      }
+
+      const request = documentSaveQueueRef.current
+        .catch(() => undefined)
+        .then(async () => {
+          const { data, error } = await documentClient
+            .from('documents')
+            .update({ content: pendingSave.content, updated_at: pendingSave.queuedAt })
+            .eq('id', pendingSave.documentId)
+            .select('id')
+            .maybeSingle()
+
+          if (error) throw error
+          if (!data) throw new Error('文件不存在或目前帳號沒有編輯權限')
+
+          removeDocumentSave(window.localStorage, saveOwnerKey, pendingSave.documentId, pendingSave.revision)
+          if (
+            isWorkspaceMountedRef.current &&
+            pendingSave.documentId === activeDocumentId &&
+            pendingSave.revision === documentSaveRevisionRef.current &&
+            pendingDocumentSaveRef.current === null
+          ) {
+            setDocumentSaveStatus('saved')
+          }
+        })
+        .catch((err: unknown) => {
+          if (
+            isWorkspaceMountedRef.current &&
+            pendingSave.documentId === activeDocumentId &&
+            pendingSave.revision === documentSaveRevisionRef.current
+          ) {
+            setDocumentSaveStatus('error')
+            setBridgeToast(`雲端儲存失敗，草稿已保留在本機：${getErrorMessage(err, '未知錯誤')}`)
+          }
+        })
+
+      documentSaveQueueRef.current = request
+      return request
+    },
+    [activeDocumentId, setBridgeToast, user],
+  )
+
+  const flushPendingDocumentSave = useCallback(() => {
+    if (documentSaveTimerRef.current !== null) {
+      window.clearTimeout(documentSaveTimerRef.current)
+      documentSaveTimerRef.current = null
     }
-  }, [activeDocumentId, canEditActiveDocument, markdown])
+    const pendingSave = pendingDocumentSaveRef.current
+    if (!pendingSave) return Promise.resolve()
+    pendingDocumentSaveRef.current = null
+    return enqueueRemoteDocumentSave(pendingSave)
+  }, [enqueueRemoteDocumentSave])
+
+  const retryQueuedDocumentSaves = useCallback(() => {
+    if (!user) return
+    const queuedSaves = readDocumentSaveOutbox(window.localStorage, user.id)
+    if (!queuedSaves.length) return
+    documentSaveRevisionRef.current = Math.max(
+      documentSaveRevisionRef.current,
+      ...queuedSaves.map((item) => item.revision),
+    )
+    for (const queuedSave of queuedSaves) {
+      void enqueueRemoteDocumentSave(queuedSave)
+    }
+  }, [enqueueRemoteDocumentSave, user])
+
+  useEffect(() => {
+    if (!canEditActiveDocument || !activeDocumentId) return
+
+    const existingDocument = documentsRef.current.find(
+      (document) => document.id === activeDocumentId,
+    )
+    if (existingDocument?.content === markdown) return
+
+    const queuedAt = new Date().toISOString()
+    if (!user) window.localStorage.setItem(CONTENT_STORAGE_KEY, markdown)
+    setDocuments((currentDocuments) =>
+      currentDocuments.map((document) =>
+        document.id === activeDocumentId && document.content !== markdown
+          ? { ...document, content: markdown, updatedAt: queuedAt }
+          : document,
+      ),
+    )
+
+    if (!shouldUseSupabaseDocuments) {
+      return
+    }
+
+    const previousPendingSave = pendingDocumentSaveRef.current
+    if (previousPendingSave && previousPendingSave.documentId !== activeDocumentId) {
+      void enqueueRemoteDocumentSave(previousPendingSave)
+    }
+
+    const pendingSave: PendingDocumentSave = {
+      documentId: activeDocumentId,
+      content: markdown,
+      revision: documentSaveRevisionRef.current + 1,
+      queuedAt,
+    }
+    documentSaveRevisionRef.current = pendingSave.revision
+    pendingDocumentSaveRef.current = pendingSave
+    if (user) queueDocumentSave(window.localStorage, user.id, pendingSave)
+
+    if (documentSaveTimerRef.current !== null) {
+      window.clearTimeout(documentSaveTimerRef.current)
+    }
+    documentSaveTimerRef.current = window.setTimeout(() => {
+      void flushPendingDocumentSave()
+    }, 500)
+  }, [
+    activeDocumentId,
+    canEditActiveDocument,
+    enqueueRemoteDocumentSave,
+    flushPendingDocumentSave,
+    markdown,
+    shouldUseSupabaseDocuments,
+    user,
+  ])
+
+  useEffect(() => {
+    if (!shouldUseSupabaseDocuments) return
+
+    retryQueuedDocumentSaves()
+    window.addEventListener('online', retryQueuedDocumentSaves)
+    return () => window.removeEventListener('online', retryQueuedDocumentSaves)
+  }, [retryQueuedDocumentSaves, shouldUseSupabaseDocuments])
+
+  useEffect(() => {
+    isWorkspaceMountedRef.current = true
+    return () => {
+      isWorkspaceMountedRef.current = false
+      void flushPendingDocumentSave()
+    }
+  }, [flushPendingDocumentSave])
 
   useEffect(() => {
     return () => {
@@ -4694,6 +4851,34 @@ function WorkspaceApp({
   useEffect(() => {
     canEditActiveDocumentRef.current = canEditActiveDocument
   }, [canEditActiveDocument])
+
+  useEffect(() => {
+    if (currentView !== 'editor') return
+
+    function handleViewModeShortcut(event: KeyboardEvent) {
+      if (!event.ctrlKey || !event.altKey || event.metaKey || event.shiftKey) return
+
+      const modeByKey: Partial<Record<string, EditorViewMode>> = {
+        e: 'edit',
+        b: 'split',
+        v: 'preview',
+      }
+      const nextMode = modeByKey[event.key.toLowerCase()]
+      if (!nextMode || (!canEditActiveDocument && nextMode !== 'preview')) return
+
+      event.preventDefault()
+      changeEditorViewMode(nextMode)
+    }
+
+    window.addEventListener('keydown', handleViewModeShortcut)
+    return () => window.removeEventListener('keydown', handleViewModeShortcut)
+  }, [canEditActiveDocument, changeEditorViewMode, currentView])
+
+  useEffect(() => {
+    if (currentView !== 'editor') return
+    const frame = window.requestAnimationFrame(() => editorRef.current?.layout())
+    return () => window.cancelAnimationFrame(frame)
+  }, [currentView, editorSplitRatio, editorViewMode])
 
   useEffect(() => {
     if (!activeDocument || documentCollaboratorsLoading || activeDocumentPermission !== 'none') return
@@ -4797,49 +4982,30 @@ function WorkspaceApp({
         return
       }
 
-      const ytext = ytextRef.current
       const ed = editorRef.current
       const model = ed?.getModel()
-      const position = ed?.getPosition()
-      const cursorOffset = model && position ? model.getOffsetAt(position) : ytext?.length ?? 0
       const pendingReplacement = pendingAiSelectionRef.current
+      const currentSelection = ed?.getSelection()
+      const capturedSelection =
+        pendingReplacement ??
+        (model && currentSelection
+          ? {
+              range: currentSelection,
+              startOffset: model.getOffsetAt(currentSelection.getStartPosition()),
+              endOffset: model.getOffsetAt(currentSelection.getEndPosition()),
+              text: model.getValueInRange(currentSelection),
+            }
+          : null)
 
-      if (ytext && pendingReplacement) {
-        ytext.doc?.transact(() => {
-          ytext.delete(
-            pendingReplacement.startOffset,
-            pendingReplacement.endOffset - pendingReplacement.startOffset,
-          )
-          ytext.insert(pendingReplacement.startOffset, incomingText)
-        }, LOCAL_YJS_ORIGIN)
-        pendingAiSelectionRef.current = null
-        setAiSelectionMenu((current) => ({ ...current, visible: false }))
-      } else if (ytext) {
-        ytext.doc?.transact(() => {
-          ytext.insert(cursorOffset, incomingText)
-        }, LOCAL_YJS_ORIGIN)
-      } else if (ed && pendingReplacement) {
-        ed.executeEdits('extension-bridge', [
-          {
-            range: pendingReplacement.range,
-            text: incomingText,
-            forceMoveMarkers: true,
-          },
-        ])
-        ed.focus()
-        pendingAiSelectionRef.current = null
-        setAiSelectionMenu((current) => ({ ...current, visible: false }))
-      } else if (ed) {
-        const selection = ed.getSelection()
-        if (selection) {
-          ed.executeEdits('extension-bridge', [
-            { range: selection, text: incomingText, forceMoveMarkers: true },
-          ])
-          ed.focus()
-        }
-      }
-
-      setBridgeToast('成功接收 AI 內容並同步至協作房間')
+      setPendingAiChange({
+        title: '確認瀏覽器插件回傳內容',
+        originalText: capturedSelection?.text || markdown,
+        proposedText: incomingText,
+        mode: capturedSelection ? 'replace-selection' : 'append-document',
+        selection: capturedSelection,
+      })
+      setAiSelectionMenu((current) => ({ ...current, visible: false }))
+      setBridgeToast('已收到 AI 內容，請預覽後確認是否套用')
   })
 
   useEffect(() => {
@@ -4855,8 +5021,10 @@ function WorkspaceApp({
   }, [bridgeToast])
 
   useEffect(() => {
+    if (!ENABLE_REALTIME_COLLABORATION) return
     if (!activeDocumentId || !user || !supabase) return
     const collaborationSupabase = supabase
+    const collaborationUser = user
 
     let isCancelled = false
     let cleanupCollaboration: (() => void) | null = null
@@ -4877,7 +5045,7 @@ function WorkspaceApp({
       if (isCancelled) return
 
       const localPersistence = new IndexeddbPersistence(
-        `autolabreport-yjs-${activeDocumentId}`,
+        `autolabreport-yjs-${collaborationUser.id}-${activeDocumentId}`,
         roomDoc,
       )
       await localPersistence.whenSynced
@@ -5003,7 +5171,7 @@ function WorkspaceApp({
       providerRef.current = null
       ytextRef.current = null
     }
-  }, [activeDocumentId, awarenessUser, user])
+  }, [activeDocumentId, awarenessUser, updateMarkdownValue, user])
 
   useEffect(() => {
     if (isEditorEmpty) {
@@ -5051,17 +5219,6 @@ function WorkspaceApp({
       controller.abort()
     }
   }, [markdown, isEditorEmpty, notePreferences.autoNumberFigures, notePreferences.autoNumberTables])
-
-  function updateMarkdownValue(value: string) {
-    setMarkdown(value)
-    if (!value.trim()) {
-      setPreview('')
-      setRenderError(null)
-      setSyncStatus('synced')
-    } else {
-      setSyncStatus('pending')
-    }
-  }
 
   function syncEditorValue(value: string) {
     if (!canEditActiveDocumentRef.current) {
@@ -5120,13 +5277,33 @@ function WorkspaceApp({
   function syncPreviewScroll() {
     const ed = editorRef.current
     const preview = previewRef.current
-    if (!ed || !preview) return
+    if (!ed || !preview || editorViewMode !== 'split' || scrollSyncSourceRef.current === 'preview') return
 
     const editorMaxScroll = ed.getScrollHeight() - ed.getLayoutInfo().height
     const scrollRatio = editorMaxScroll > 0 ? ed.getScrollTop() / editorMaxScroll : 0
     const previewMaxScroll = preview.scrollHeight - preview.clientHeight
 
+    scrollSyncSourceRef.current = 'editor'
     preview.scrollTop = scrollRatio * Math.max(previewMaxScroll, 0)
+    window.requestAnimationFrame(() => {
+      if (scrollSyncSourceRef.current === 'editor') scrollSyncSourceRef.current = null
+    })
+  }
+
+  function syncEditorScroll() {
+    const ed = editorRef.current
+    const preview = previewRef.current
+    if (!ed || !preview || editorViewMode !== 'split' || scrollSyncSourceRef.current === 'editor') return
+
+    const previewMaxScroll = preview.scrollHeight - preview.clientHeight
+    const scrollRatio = previewMaxScroll > 0 ? preview.scrollTop / previewMaxScroll : 0
+    const editorMaxScroll = ed.getScrollHeight() - ed.getLayoutInfo().height
+
+    scrollSyncSourceRef.current = 'preview'
+    ed.setScrollTop(scrollRatio * Math.max(editorMaxScroll, 0))
+    window.requestAnimationFrame(() => {
+      if (scrollSyncSourceRef.current === 'preview') scrollSyncSourceRef.current = null
+    })
   }
 
   function updateLocalCursorAwareness(ed: editor.IStandaloneCodeEditor) {
@@ -5221,6 +5398,10 @@ function WorkspaceApp({
 
   async function runAiTask(request: AiTaskRequest): Promise<string | null> {
     const provider = request.provider ?? aiSettings.preferredProvider
+    if (provider === 'extension' && !ENABLE_BROWSER_EXTENSION) {
+      setBridgeToast('瀏覽器插件不在本次 Closed Beta 範圍內，請改用內建 AI 或自備 API Key')
+      return null
+    }
     const cleanText = request.text.trim()
     if (!cleanText) {
       setBridgeToast('請先提供要處理的文字')
@@ -5373,6 +5554,43 @@ function WorkspaceApp({
     setBridgeToast('已套用 Agent 修改，原版本已備份')
   }
 
+  function applyPendingAiChange() {
+    if (!pendingAiChange || !canEditActiveDocumentRef.current) return
+
+    saveActiveDocumentVersion('AI 修改前自動備份')
+    if (pendingAiChange.mode === 'append-document') {
+      const nextMarkdown = markdown.trim()
+        ? `${markdown}\n\n${pendingAiChange.proposedText}\n`
+        : `${pendingAiChange.proposedText}\n`
+      syncEditorValue(nextMarkdown)
+    } else if (pendingAiChange.selection) {
+      const selection = pendingAiChange.selection
+      const ytext = ytextRef.current
+      const ed = editorRef.current
+      if (ytext) {
+        ytext.doc?.transact(() => {
+          ytext.delete(selection.startOffset, selection.endOffset - selection.startOffset)
+          ytext.insert(selection.startOffset, pendingAiChange.proposedText)
+        }, LOCAL_YJS_ORIGIN)
+      } else if (ed) {
+        ed.executeEdits('ai-confirmed-edit', [
+          {
+            range: selection.range,
+            text: pendingAiChange.proposedText,
+            forceMoveMarkers: true,
+          },
+        ])
+        updateMarkdownValue(ed.getValue())
+        ed.focus()
+      }
+    }
+
+    pendingAiSelectionRef.current = null
+    setPendingAiChange(null)
+    setAiSelectionMenu((current) => ({ ...current, visible: false }))
+    setBridgeToast('已套用 AI 修改，原版本已備份')
+  }
+
   async function requestAiEdit(action: 'rewrite' | 'expand') {
     if (!canEditActiveDocumentRef.current) {
       setBridgeToast('此文件目前為唯讀模式，無法發送重寫請求')
@@ -5390,8 +5608,13 @@ function WorkspaceApp({
       insertMode: 'replace-selection',
     })
     if (result) {
-      insertAtCursor(result)
-      pendingAiSelectionRef.current = null
+      setPendingAiChange({
+        title: action === 'rewrite' ? '確認 AI 重寫' : '確認 AI 擴寫',
+        originalText: activeSelection.text,
+        proposedText: result,
+        mode: 'replace-selection',
+        selection: activeSelection,
+      })
     }
     setAiSelectionMenu((current) => ({ ...current, visible: false }))
   }
@@ -5509,11 +5732,7 @@ function WorkspaceApp({
       })
 
     if (error) throw error
-
-    const { data } = supabase.storage.from(REPORT_IMAGE_BUCKET).getPublicUrl(path)
-    if (!data.publicUrl) throw new Error('Supabase 未回傳圖片公開網址')
-
-    return data.publicUrl
+    return createPrivateReportImageUrl(path)
   }
 
   function handleEditorPaste(event: ClipboardEvent) {
@@ -5590,24 +5809,39 @@ function WorkspaceApp({
 
     setOutlineLoading(true)
     try {
+      const structuredBrief = [
+        outlineBrief.experimentName && `實驗名稱：${outlineBrief.experimentName}`,
+        outlineBrief.purpose && `實驗目的：${outlineBrief.purpose}`,
+        outlineBrief.requirements && `老師要求：${outlineBrief.requirements}`,
+        outlineBrief.rawData && `原始資料（只能原樣保留數字與單位）：\n${outlineBrief.rawData}`,
+        outlineBrief.formatRequirements && `格式要求：${outlineBrief.formatRequirements}`,
+        outlineExampleText && `參考章節結構：\n${outlineExampleText}`,
+      ].filter(Boolean).join('\n\n')
       const outlineMarkdown = await runAiTask({
         action: 'outline',
-        text: outlineExampleText || markdown || '# 實驗報告\n## 實驗目的\n## 實驗原理\n## 實驗步驟\n## 結果與討論',
+        text: structuredBrief || markdown || '# 實驗報告\n## 實驗目的\n## 實驗原理\n## 實驗步驟\n## 結果與討論',
         documentId: activeDocumentId,
         insertMode: 'insert-at-cursor',
       })
       if (!outlineMarkdown) {
         return
       }
-
-      if (editorRef.current) {
-        insertAtCursor(`${markdown.trim() ? '\n\n' : ''}${outlineMarkdown}\n`)
-      } else {
-        syncEditorValue(markdown.trim() ? `${markdown}\n\n${outlineMarkdown}\n` : `${outlineMarkdown}\n`)
-      }
-
+      setPendingAiChange({
+        title: '確認 AI 報告大綱',
+        originalText: markdown,
+        proposedText: outlineMarkdown,
+        mode: 'append-document',
+        selection: null,
+      })
       setIsOutlineModalOpen(false)
       setOutlineExampleText('')
+      setOutlineBrief({
+        experimentName: '',
+        purpose: '',
+        requirements: '',
+        rawData: '',
+        formatRequirements: '',
+      })
     } catch (err) {
       const message = err instanceof Error ? err.message : '產生大綱失敗'
       setBridgeToast(`產生大綱失敗：${message}`)
@@ -5637,7 +5871,13 @@ function WorkspaceApp({
       try {
         const { data, error } = await supabase
           .from('documents')
-          .insert([{ title: '未命名報告', content: '', share_setting: 'private' }])
+          .insert([{
+            title: '未命名報告',
+            content: '',
+            share_setting: 'private',
+            user_id: user?.id,
+            parent_id: parentId,
+          }])
           .select('*')
           .single()
 
@@ -5688,6 +5928,10 @@ function WorkspaceApp({
   }
 
   function openGoogleDrivePicker() {
+    if (!ENABLE_GOOGLE_DRIVE) {
+      setBridgeToast('Google Drive 匯入不在本次 Closed Beta 範圍內')
+      return
+    }
     if (!googleDriveAccessToken) {
       setBridgeToast('請使用 Google 重新登入並授權 Google Drive readonly')
       return
@@ -5703,7 +5947,7 @@ function WorkspaceApp({
       try {
         const { data, error } = await supabase
           .from('documents')
-          .insert([{ title: safeTitle, content: importedMarkdown, share_setting: 'private' }])
+          .insert([{ title: safeTitle, content: importedMarkdown, share_setting: 'private', user_id: user?.id }])
           .select('*')
           .single()
         if (error) throw error
@@ -5736,7 +5980,7 @@ function WorkspaceApp({
       try {
         const { data, error } = await supabase
           .from('documents')
-          .insert([{ title: template.title, content: template.content, share_setting: 'private' }])
+          .insert([{ title: template.title, content: template.content, share_setting: 'private', user_id: user?.id }])
           .select('*')
           .single()
 
@@ -5768,9 +6012,30 @@ function WorkspaceApp({
     }, 0)
   }
 
-  function createNewFolder(parentId: string | null = null) {
+  async function createNewFolder(parentId: string | null = null) {
     const title = window.prompt('資料夾名稱', '新資料夾')?.trim()
     if (!title) return
+
+    if (supabase && user) {
+      setDatabaseLoading(true)
+      try {
+        const { error } = await supabase.from('documents').insert([{
+          title,
+          content: '',
+          type: 'folder',
+          parent_id: parentId,
+          share_setting: 'private',
+          user_id: user.id,
+        }])
+        if (error) throw error
+        await refreshSupabaseDocuments()
+      } catch (err) {
+        setBridgeToast(`建立資料夾失敗：${getErrorMessage(err, '未知錯誤')}`)
+      } finally {
+        setDatabaseLoading(false)
+      }
+      return
+    }
 
     const nextFolder = createFolder(title, parentId)
     setDocuments((currentDocuments) => [...currentDocuments, nextFolder])
@@ -5780,18 +6045,41 @@ function WorkspaceApp({
     void createDocumentForParent(parentId)
   }
 
-  function createDocumentFromPreset(title: string, content: string) {
-    const nextDocument = createDocument(title, content, null)
-    setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
-    loadDocument(nextDocument)
-    setIsSidebarCollapsed(true)
-    setCurrentView('editor')
+  async function createDocumentFromPreset(title: string, content: string) {
+    await createDocumentFromTemplate({
+      id: 'closed-beta-preset',
+      title,
+      description: '',
+      category: 'preset',
+      content,
+    })
     setIsCreateModalOpen(false)
   }
 
-  function duplicateDocument(id: string) {
+  async function duplicateDocument(id: string) {
     const sourceDocument = documents.find((document) => document.id === id && document.type === 'file' && !document.isTrashed)
     if (!sourceDocument) return
+
+    if (supabase && user) {
+      setDatabaseLoading(true)
+      try {
+        const { error } = await supabase.from('documents').insert([{
+          title: `${sourceDocument.title} Copy`,
+          content: sourceDocument.content,
+          parent_id: sourceDocument.parentId,
+          share_setting: 'private',
+          user_id: user.id,
+        }])
+        if (error) throw error
+        await refreshSupabaseDocuments()
+        setBridgeToast('已建立副本')
+      } catch (err) {
+        setBridgeToast(`建立副本失敗：${getErrorMessage(err, '未知錯誤')}`)
+      } finally {
+        setDatabaseLoading(false)
+      }
+      return
+    }
 
     const nextDocument = createDocument(`${sourceDocument.title} Copy`, sourceDocument.content, sourceDocument.parentId)
     setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
@@ -5965,20 +6253,34 @@ function WorkspaceApp({
     const deleteLabel = targetDocument.type === 'folder' ? '資料夾與其中所有項目' : '檔案'
     if (!window.confirm(`將${deleteLabel}「${targetDocument.title}」移至垃圾桶？`)) return
 
-    if (supabase && shouldUseSupabaseDocuments && targetDocument.type === 'file') {
+    const idsToDelete = new Set<string>([id])
+    let previousSize = 0
+    while (idsToDelete.size !== previousSize) {
+      previousSize = idsToDelete.size
+      documents.forEach((document) => {
+        if (document.parentId && idsToDelete.has(document.parentId)) {
+          idsToDelete.add(document.id)
+        }
+      })
+    }
+
+    if (supabase && shouldUseSupabaseDocuments) {
       setDatabaseLoading(true)
       try {
-        const { error } = await supabase.from('documents').update({ is_trashed: true }).eq('id', id)
+        const { error } = await supabase
+          .from('documents')
+          .update({ is_trashed: true })
+          .in('id', [...idsToDelete])
         if (error) throw error
 
         const now = new Date().toISOString()
         const nextDocuments = documents.map((document) =>
-          document.id === id ? { ...document, isTrashed: true, updatedAt: now } : document,
+          idsToDelete.has(document.id) ? { ...document, isTrashed: true, updatedAt: now } : document,
         )
         const remainingFiles = nextDocuments.filter((document) => document.type === 'file' && !document.isTrashed)
         setDocuments(nextDocuments)
 
-        if (id === activeDocumentId) {
+        if (idsToDelete.has(activeDocumentId)) {
           const nextDocument = remainingFiles[0]
           if (nextDocument) {
             loadDocument(nextDocument)
@@ -5998,17 +6300,6 @@ function WorkspaceApp({
         setDatabaseLoading(false)
       }
       return
-    }
-
-    const idsToDelete = new Set<string>([id])
-    let previousSize = 0
-    while (idsToDelete.size !== previousSize) {
-      previousSize = idsToDelete.size
-      documents.forEach((document) => {
-        if (document.parentId && idsToDelete.has(document.parentId)) {
-          idsToDelete.add(document.id)
-        }
-      })
     }
 
     const now = new Date().toISOString()
@@ -6033,9 +6324,13 @@ function WorkspaceApp({
     }
   }
 
-  function restoreDocument(id: string) {
+  async function restoreDocument(id: string) {
     const targetDocument = documents.find((document) => document.id === id)
     if (!targetDocument) return
+    if (getDocumentPermission({ ...targetDocument, isTrashed: false }, user) !== 'owner') {
+      setBridgeToast('只有文件擁有者可以恢復文件')
+      return
+    }
 
     const idsToRestore = new Set<string>([id])
     let parentId = targetDocument.parentId
@@ -6047,6 +6342,21 @@ function WorkspaceApp({
     }
 
     const now = new Date().toISOString()
+    if (supabase && user) {
+      setDatabaseLoading(true)
+      try {
+        const { error } = await supabase
+          .from('documents')
+          .update({ is_trashed: false, updated_at: now })
+          .in('id', [...idsToRestore])
+        if (error) throw error
+      } catch (err) {
+        setBridgeToast(`恢復文件失敗：${getErrorMessage(err, '未知錯誤')}`)
+        return
+      } finally {
+        setDatabaseLoading(false)
+      }
+    }
     setDocuments((currentDocuments) =>
       currentDocuments.map((document) =>
         idsToRestore.has(document.id) ? { ...document, isTrashed: false, updatedAt: now } : document,
@@ -6054,9 +6364,13 @@ function WorkspaceApp({
     )
   }
 
-  function hardDeleteDocument(id: string) {
+  async function hardDeleteDocument(id: string) {
     const targetDocument = documents.find((document) => document.id === id)
     if (!targetDocument) return
+    if (getDocumentPermission({ ...targetDocument, isTrashed: false }, user) !== 'owner') {
+      setBridgeToast('只有文件擁有者可以永久刪除文件')
+      return
+    }
     if (!window.confirm(`永久刪除「${targetDocument.title}」？此操作無法復原。`)) return
 
     const idsToDelete = new Set<string>([id])
@@ -6070,7 +6384,55 @@ function WorkspaceApp({
       })
     }
 
+    if (
+      pendingDocumentSaveRef.current &&
+      idsToDelete.has(pendingDocumentSaveRef.current.documentId)
+    ) {
+      pendingDocumentSaveRef.current = null
+      if (documentSaveTimerRef.current !== null) {
+        window.clearTimeout(documentSaveTimerRef.current)
+        documentSaveTimerRef.current = null
+      }
+    }
+
+    if (supabase && user) {
+      setDatabaseLoading(true)
+      try {
+        await documentSaveQueueRef.current.catch(() => undefined)
+        const authHeaders = await getAuthHeaders()
+        const response = await fetch(`${API_BASE_URL}/api/reports/permanent-delete`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders },
+          body: JSON.stringify({ report_ids: [...idsToDelete] }),
+        })
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null
+          const detail = typeof payload?.detail === 'string' ? payload.detail : `HTTP ${response.status}`
+          throw new Error(detail)
+        }
+        removeDocumentSaves(window.localStorage, user.id, idsToDelete)
+      } catch (err) {
+        retryQueuedDocumentSaves()
+        setBridgeToast(`永久刪除失敗：${getErrorMessage(err, '未知錯誤')}`)
+        return
+      } finally {
+        setDatabaseLoading(false)
+      }
+    }
+
     setDocuments((currentDocuments) => currentDocuments.filter((document) => !idsToDelete.has(document.id)))
+    setDocumentVersions((currentVersions) =>
+      currentVersions.filter((version) => !idsToDelete.has(version.documentId)),
+    )
+    idsToDelete.forEach((documentId) => {
+      const ydoc = documentYDocs.get(documentId)
+      if (ydoc) {
+        ydoc.destroy()
+        documentYDocs.delete(documentId)
+        if (sharedYDoc === ydoc) sharedYDoc = null
+      }
+    })
+    setBridgeToast('文件與附加檔案已永久刪除')
   }
 
   async function toggleDocumentFavorite(id: string) {
@@ -6159,7 +6521,11 @@ function WorkspaceApp({
       setRenderError('請先貼上或撰寫報告內容再匯出')
       return
     }
-    return downloadExportFile('/api/export', 'AutoLabReport.docx', 'exporting')
+    return downloadExportFile(
+      '/api/export',
+      createSafeExportFilename(activeDocument?.title, 'docx'),
+      'exporting',
+    )
   }
 
   async function exportPdfReport() {
@@ -6168,8 +6534,17 @@ function WorkspaceApp({
       return
     }
 
+    const previousViewMode = editorViewMode
+    if (displayedEditorViewMode === 'edit') {
+      changeEditorViewMode('preview')
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()))
+      })
+    }
+
     const element = document.getElementById('pdf-preview-content')
     if (!element) {
+      if (displayedEditorViewMode === 'edit') changeEditorViewMode(previousViewMode)
       setRenderError('找不到預覽內容，請稍後再試')
       return
     }
@@ -6184,7 +6559,7 @@ function WorkspaceApp({
 
       const pdfOptions = {
         margin: [12, 12, 12, 12] as [number, number, number, number],
-        filename: 'AutoLabReport.pdf',
+        filename: createSafeExportFilename(activeDocument?.title, 'pdf'),
         image: { type: 'jpeg' as const, quality: 0.98 },
         html2canvas: {
           scale: 2,
@@ -6211,6 +6586,7 @@ function WorkspaceApp({
       setSyncStatus('error')
     } finally {
       element.classList.remove('pdf-print-mode')
+      if (displayedEditorViewMode === 'edit') changeEditorViewMode(previousViewMode)
       setExporting(false)
     }
   }
@@ -6221,7 +6597,7 @@ function WorkspaceApp({
       return
     }
 
-    const filename = `${activeDocument?.title ?? 'AutoLabReport'}.md`
+    const filename = createSafeExportFilename(activeDocument?.title, 'md')
     const exportMarkdown = applyAutoNumbering(markdown, {
       figures: notePreferences.autoNumberFigures,
       tables: notePreferences.autoNumberTables,
@@ -6291,6 +6667,10 @@ function WorkspaceApp({
   }
 
   async function syncWithGithub() {
+    if (!ENABLE_GITHUB_SYNC) {
+      setBridgeToast('GitHub 同步不在本次 Closed Beta 範圍內')
+      return
+    }
     if (!activeDocument) {
       setBridgeToast('請先開啟一份報告')
       return
@@ -6392,10 +6772,10 @@ function WorkspaceApp({
   }
 
   async function updateShareSetting(nextShareSetting: ShareSetting) {
-    if (!activeDocument) return
+    if (!activeDocument) return false
     if (!isActiveDocumentOwner) {
       setBridgeToast('只有文件擁有者可以修改分享權限')
-      return
+      return false
     }
 
     setShareSettingLoading(true)
@@ -6417,12 +6797,23 @@ function WorkspaceApp({
         ),
       )
       setBridgeToast('分享權限已更新')
+      return true
     } catch (err) {
       const message = err instanceof Error ? err.message : '分享權限更新失敗'
       setBridgeToast(`分享權限更新失敗：${message}`)
+      return false
     } finally {
       setShareSettingLoading(false)
     }
+  }
+
+  async function publishAndCopyShareLink() {
+    if (!activeDocument) return
+    if (activeDocument.shareSetting === 'private') {
+      const published = await updateShareSetting('view')
+      if (!published) return
+    }
+    await shareDocument(activeDocument.id, true)
   }
 
   async function inviteDocumentCollaborator() {
@@ -6540,7 +6931,7 @@ function WorkspaceApp({
   }
 
   const isGenerating = syncStatus === 'pending' || syncStatus === 'rendering'
-  const shouldShowSidebar = Boolean(user && currentView !== 'editor')
+  const shouldShowSidebar = Boolean(!initialSharedDocument && currentView !== 'editor')
   const topbarAvatarUrl = getUserAvatarUrl(user)
   const topbarUserName = getUserDisplayName(user)
   const topbarUserInitial = getUserInitial(user)
@@ -6577,6 +6968,8 @@ function WorkspaceApp({
       onClick: handleSmartFormat,
     },
   ]
+  // The callbacks in this render-time configuration only access refs after a user event.
+  // eslint-disable-next-line react-hooks/refs
   const activeAssistTaskConfig = assistTasks.find((task) => task.title === activeAssistTask) ?? null
   const activeAgentModeConfig = AGENT_MODE_CONFIG.find((config) => config.mode === agentMode) ?? AGENT_MODE_CONFIG[0]
   const agentCanApply = Boolean(agentResult?.proposed_markdown?.trim()) && canEditActiveDocument
@@ -6645,9 +7038,21 @@ function WorkspaceApp({
       )}
 
       <div className="flex min-w-0 flex-1 flex-col">
+      {!user && !initialSharedDocument && (
+        <div className="flex min-h-10 items-center justify-center gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2 text-center text-xs font-medium text-amber-900">
+          <span>訪客模式：草稿只保存在這台瀏覽器，清除網站資料可能會遺失。</span>
+          <button
+            type="button"
+            onClick={onSignOut}
+            className="shrink-0 underline decoration-amber-400 underline-offset-2 hover:text-amber-700"
+          >
+            登入以啟用雲端同步
+          </button>
+        </div>
+      )}
       {currentView === 'editor' ? (
-        <header className="sticky top-0 z-40 flex h-16 shrink-0 items-center justify-between gap-4 border-b border-slate-200 bg-white px-5 text-slate-700 shadow-sm">
-          <div className="flex min-w-0 flex-1 items-center gap-3">
+        <header className="sticky top-0 z-40 flex min-h-16 shrink-0 flex-col items-stretch justify-between gap-2 border-b border-slate-200 bg-white px-3 py-2 text-slate-700 shadow-sm sm:flex-row sm:items-center sm:gap-3 sm:px-5">
+          <div className="flex min-w-0 w-full flex-1 items-center gap-2 sm:w-auto sm:gap-3">
             <button
               type="button"
               onClick={() => setCurrentView('projects')}
@@ -6657,7 +7062,8 @@ function WorkspaceApp({
             >
               <ArrowRight className="h-4 w-4 rotate-180" strokeWidth={2} />
             </button>
-            <span className="hidden text-sm font-medium text-slate-400 sm:inline">Projects /</span>
+            <BrandMark size="compact" className="h-8 w-8 rounded-lg" />
+            <span className="hidden text-sm font-medium text-slate-400 lg:inline">Projects /</span>
             {isTitleEditing ? (
               <input
                 value={titleDraft}
@@ -6673,7 +7079,7 @@ function WorkspaceApp({
                     setIsTitleEditing(false)
                   }
                 }}
-                className="w-full max-w-md rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-950 outline-none transition focus:border-indigo-200 focus:ring-4 focus:ring-indigo-100"
+                className="w-full max-w-md rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-950 outline-none transition focus:border-blue-200 focus:ring-4 focus:ring-blue-100"
               />
             ) : (
               <button
@@ -6683,7 +7089,7 @@ function WorkspaceApp({
                   setTitleDraft(activeDocument?.title ?? '')
                   setIsTitleEditing(true)
                 }}
-                className={`max-w-md truncate rounded-xl px-2 py-1.5 text-left text-sm font-semibold text-slate-950 transition-colors ${
+                className={`max-w-32 truncate rounded-xl px-2 py-1.5 text-left text-sm font-semibold text-slate-950 transition-colors sm:max-w-56 lg:max-w-md ${
                   isActiveDocumentOwner
                     ? 'hover:bg-slate-100'
                     : 'cursor-default'
@@ -6694,7 +7100,7 @@ function WorkspaceApp({
               </button>
             )}
             {isReadOnlyMode ? (
-              <span className="text-sm font-medium text-amber-600">唯讀模式</span>
+              <span className="hidden text-sm font-medium text-amber-600 md:inline">唯讀模式</span>
             ) : null}
             {syncStatus === 'exporting' && (
               <span className="text-sm font-medium text-amber-600">正在打包 Word</span>
@@ -6702,12 +7108,29 @@ function WorkspaceApp({
             {syncStatus === 'exportingPdf' && (
               <span className="text-sm font-medium text-amber-600">正在編譯 PDF</span>
             )}
-            {isGenerating && <span className="text-sm font-medium text-amber-600">同步中</span>}
-            {syncStatus === 'synced' && !isGenerating && !isEditorEmpty && (
-              <span className="text-sm font-medium text-slate-400">已儲存</span>
+            {isGenerating && <span className="text-sm font-medium text-amber-600">預覽更新中</span>}
+            {documentSaveStatus === 'saving' && (
+              <span className="text-sm font-medium text-amber-600">正在儲存</span>
+            )}
+            {documentSaveStatus === 'unsaved' && (
+              <span className="text-sm font-medium text-slate-500">尚未同步</span>
+            )}
+            {documentSaveStatus === 'saved' && !isEditorEmpty && (
+              <span className="text-sm font-medium text-slate-400">
+                {user ? '已儲存' : '已儲存在本機'}
+              </span>
+            )}
+            {documentSaveStatus === 'error' && (
+              <button
+                type="button"
+                onClick={retryQueuedDocumentSaves}
+                className="text-sm font-medium text-red-500 hover:text-red-600"
+              >
+                雲端儲存失敗・重試
+              </button>
             )}
             {syncStatus === 'error' && (
-              <span className="text-sm font-medium text-red-500">同步失敗</span>
+              <span className="text-sm font-medium text-red-500">預覽或匯出失敗</span>
             )}
             {collaborationStatus === 'connecting' && (
               <span className="hidden text-xs font-medium text-amber-600 sm:inline">
@@ -6721,14 +7144,49 @@ function WorkspaceApp({
             )}
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className={`flex min-w-0 w-full items-center gap-1.5 overflow-x-auto sm:w-auto sm:overflow-visible ${SCROLLBAR_HIDE}`}>
+            <div
+              className="editor-view-switch flex shrink-0 items-center rounded-xl border border-slate-200 bg-slate-50 p-1"
+              role="group"
+              aria-label="編輯器檢視模式"
+            >
+              {([
+                ['edit', 'Edit', Pencil, 'Ctrl + Alt + E'],
+                ['split', 'Split', PanelLeftOpen, 'Ctrl + Alt + B'],
+                ['preview', 'Preview', Eye, 'Ctrl + Alt + V'],
+              ] as const).map(([mode, label, Icon, shortcut]) => {
+                const isUnavailable =
+                  (!canEditActiveDocument && mode !== 'preview') ||
+                  (isEditorWorkspaceCompact && mode === 'split')
+                return (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => changeEditorViewMode(mode)}
+                    disabled={isUnavailable}
+                    aria-pressed={displayedEditorViewMode === mode}
+                    aria-label={`${label} 模式`}
+                    title={`${label} 模式（${shortcut}）`}
+                    className={`inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg px-2.5 text-xs font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-1 ${
+                      displayedEditorViewMode === mode
+                        ? 'bg-white text-slate-950 shadow-sm ring-1 ring-slate-200'
+                        : 'text-slate-500 hover:bg-white/70 hover:text-slate-900 disabled:cursor-not-allowed disabled:opacity-35'
+                    }`}
+                  >
+                    <Icon className="h-3.5 w-3.5" strokeWidth={2} />
+                    {label}
+                  </button>
+                )
+              })}
+            </div>
             {user && (
-              <div ref={userMenuRef} className="relative">
+              <div ref={userMenuRef} className="relative hidden sm:block">
                 <button
                   type="button"
                   onClick={() => setIsUserMenuOpen((current) => !current)}
                   className="inline-flex h-10 items-center gap-2 rounded-2xl border border-slate-200 bg-white px-2 pr-3 text-slate-600 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
                   title="帳號選單"
+                  aria-label="帳號選單"
                 >
                   {topbarAvatarUrl ? (
                     <img
@@ -6768,7 +7226,7 @@ function WorkspaceApp({
                             setIsUserMenuOpen(false)
                             setBridgeToast('公開頁面功能準備中')
                           }}
-                          className="mt-1 text-xs font-semibold text-indigo-600 transition hover:text-indigo-500"
+                          className="mt-1 text-xs font-semibold text-blue-700 transition hover:text-blue-600"
                         >
                           瀏覽公開頁面
                         </button>
@@ -6790,11 +7248,13 @@ function WorkspaceApp({
                         icon: Users,
                         action: () => setBridgeToast('團隊功能準備中'),
                       },
-                      {
-                        label: '付費',
-                        icon: CreditCard,
-                        action: () => setCurrentView('billing'),
-                      },
+                      ...(ENABLE_BILLING
+                        ? [{
+                            label: '付費',
+                            icon: CreditCard,
+                            action: () => setCurrentView('billing'),
+                          }]
+                        : []),
                     ].map((item) => (
                       <button
                         key={item.label}
@@ -6829,24 +7289,31 @@ function WorkspaceApp({
               <button
                 type="button"
                 onClick={() => void shareCurrentDocument()}
-                className="hidden rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-950 sm:inline-flex"
+                className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                title="分享文件"
+                aria-label="分享文件"
               >
-                Share
+                <Share2 className="h-4 w-4" strokeWidth={2} />
+                <span className="hidden xl:inline">Share</span>
               </button>
             )}
             <button
               type="button"
               onClick={() => setIsAssistDrawerOpen(true)}
-              className="inline-flex h-10 items-center gap-2 rounded-xl bg-slate-950 px-4 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+              className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl bg-slate-950 px-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
+              title="开启 AI Assist"
             >
-              AI Assist
+              <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
+              <span className="hidden lg:inline">AI Assist</span>
             </button>
             <button
               type="button"
               onClick={() => setIsAgentDrawerOpen(true)}
-              className="inline-flex h-10 items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
+              className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+              title="开启 AI Agent"
             >
-              AI Agent
+              <Beaker className="h-4 w-4" strokeWidth={2} />
+              <span className="hidden lg:inline">AI Agent</span>
             </button>
 
             <div ref={advancedMenuRef} className="relative">
@@ -6855,23 +7322,26 @@ function WorkspaceApp({
                 onClick={() => setIsAdvancedMenuOpen((current) => !current)}
                 className="grid h-10 w-10 place-items-center rounded-xl text-slate-400 transition hover:bg-slate-100 hover:text-slate-950"
                 title="進階操作"
+                aria-label="更多操作"
               >
                 <MoreHorizontal className="h-5 w-5" strokeWidth={2} />
               </button>
               {isAdvancedMenuOpen && (
                 <div className={`absolute right-0 top-full z-50 mt-2 max-h-[calc(100vh-6rem)] w-80 overflow-auto rounded-2xl border border-slate-200 bg-white py-2 text-sm text-slate-600 shadow-2xl shadow-slate-200/80 ${SCROLLBAR_HIDE}`}>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsAdvancedMenuOpen(false)
-                      saveActiveDocumentVersion()
-                      void syncWithGithub()
-                    }}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
-                  >
-                    <History className="h-4 w-4" strokeWidth={2} />
-                    同步到 GitHub
-                  </button>
+                  {ENABLE_GITHUB_SYNC && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAdvancedMenuOpen(false)
+                        saveActiveDocumentVersion()
+                        void syncWithGithub()
+                      }}
+                      className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
+                    >
+                      <History className="h-4 w-4" strokeWidth={2} />
+                      同步到 GitHub
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -6904,17 +7374,6 @@ function WorkspaceApp({
                   >
                     <CheckSquare className="h-4 w-4" strokeWidth={2} />
                     報告完整度檢查
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsAdvancedMenuOpen(false)
-                      setIsAgentDrawerOpen(true)
-                    }}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
-                  >
-                    <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
-                    AI Agent
                   </button>
                   <button
                     type="button"
@@ -6996,17 +7455,19 @@ function WorkspaceApp({
                     <FileUp className="h-4 w-4" strokeWidth={2} />
                     匯入 Markdown
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setIsAdvancedMenuOpen(false)
-                      openGoogleDrivePicker()
-                    }}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
-                  >
-                    <Cloud className="h-4 w-4" strokeWidth={2} />
-                    從 Google Drive 匯入
-                  </button>
+                  {ENABLE_GOOGLE_DRIVE && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAdvancedMenuOpen(false)
+                        openGoogleDrivePicker()
+                      }}
+                      className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
+                    >
+                      <Cloud className="h-4 w-4" strokeWidth={2} />
+                      從 Google Drive 匯入
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -7061,7 +7522,7 @@ function WorkspaceApp({
               type="search"
               aria-label="全域搜尋"
               placeholder="搜尋報告、模板或設定..."
-              className="h-11 w-full rounded-2xl border border-slate-200/80 bg-white pl-11 pr-4 text-sm font-medium text-slate-700 shadow-sm shadow-slate-200/60 outline-none transition placeholder:text-slate-400 focus:border-indigo-200 focus:shadow-md focus:shadow-indigo-100/60 focus:ring-4 focus:ring-indigo-100/70"
+              className="h-11 w-full rounded-2xl border border-slate-200/80 bg-white pl-11 pr-4 text-sm font-medium text-slate-700 shadow-sm shadow-slate-200/60 outline-none transition placeholder:text-slate-400 focus:border-blue-200 focus:shadow-md focus:shadow-blue-100/60 focus:ring-4 focus:ring-blue-100/70"
             />
           </div>
           <div className="flex shrink-0 items-center gap-3">
@@ -7071,19 +7532,33 @@ function WorkspaceApp({
             {syncStatus === 'exportingPdf' && (
               <span className="hidden text-sm font-medium text-amber-500 lg:inline">正在編譯 PDF</span>
             )}
-            {isGenerating && (
-              <span className="hidden text-sm font-medium text-amber-500 lg:inline">報告同步中</span>
+            {documentSaveStatus === 'saving' && (
+              <span className="hidden text-sm font-medium text-amber-500 lg:inline">正在儲存</span>
             )}
-            {syncStatus === 'synced' && !isGenerating && !isEditorEmpty && (
-              <span className="hidden text-sm font-medium text-emerald-600 lg:inline">已同步</span>
+            {documentSaveStatus === 'unsaved' && (
+              <span className="hidden text-sm font-medium text-slate-500 lg:inline">尚未同步</span>
+            )}
+            {documentSaveStatus === 'saved' && !isEditorEmpty && (
+              <span className="hidden text-sm font-medium text-emerald-600 lg:inline">
+                {user ? '已同步' : '已儲存在本機'}
+              </span>
+            )}
+            {documentSaveStatus === 'error' && (
+              <button
+                type="button"
+                onClick={retryQueuedDocumentSaves}
+                className="hidden text-sm font-medium text-red-500 hover:text-red-600 lg:inline"
+              >
+                雲端儲存失敗・重試
+              </button>
             )}
             {syncStatus === 'error' && (
-              <span className="hidden text-sm font-medium text-red-500 lg:inline">同步失敗</span>
+              <span className="hidden text-sm font-medium text-red-500 lg:inline">預覽或匯出失敗</span>
             )}
             <button
               type="button"
               onClick={createNewDocument}
-              className="inline-flex h-11 items-center gap-2 rounded-2xl bg-gradient-to-r from-indigo-500 to-violet-600 px-4 text-sm font-semibold text-white shadow-lg shadow-indigo-500/20 transition hover:brightness-110 active:scale-[0.99]"
+              className="inline-flex h-11 items-center gap-2 rounded-2xl bg-gradient-to-r from-blue-700 to-teal-600 px-4 text-sm font-semibold text-white shadow-lg shadow-blue-700/20 transition hover:brightness-110 active:scale-[0.99]"
             >
               <Plus className="h-4 w-4" strokeWidth={2.2} />
               <span className="hidden sm:inline">建立新報告</span>
@@ -7200,249 +7675,213 @@ function WorkspaceApp({
         />
       ) : (
       <>
-      <div className="flex border-b border-slate-200 bg-white p-2 lg:hidden">
-        {([
-          ['edit', '編輯'],
-          ['preview', '預覽'],
-        ] as const).map(([pane, label]) => (
-          <button
-            key={pane}
-            type="button"
-            onClick={() => setMobileEditorPane(pane)}
-            className={`flex-1 rounded-lg px-3 py-2 text-sm font-semibold transition ${
-              mobileEditorPane === pane
-                ? 'bg-slate-950 text-white'
-                : 'text-slate-500 hover:bg-slate-100'
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-      <main className="relative grid min-h-0 flex-1 grid-cols-1 bg-slate-50 lg:grid-cols-2">
-        <section
-          className={`min-h-0 flex-grow flex-col border-b border-slate-200 bg-slate-50 transition-colors duration-300 lg:flex lg:border-b-0 lg:border-r ${
-            mobileEditorPane === 'edit' ? 'flex' : 'hidden'
-          }`}
-        >
-          <div className="flex min-h-12 shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-3 py-2">
-            <div className={`flex min-w-0 flex-1 items-center gap-1 overflow-x-auto ${SCROLLBAR_HIDE}`}>
-              {editorToolbarGroups.map((group, groupIndex) => (
-                <div key={groupIndex} className="flex items-center gap-1 border-r border-slate-200 pr-2 last:border-r-0 last:pr-0">
-                  {group.map((item) => (
-                    <button
-                      key={item.label}
-                      type="button"
-                      onClick={item.action}
-                      disabled={!canEditActiveDocument}
-                      className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-35"
-                      title={item.label}
-                      aria-label={item.label}
-                    >
-                      <item.icon className="h-4 w-4" strokeWidth={2} />
-                    </button>
-                  ))}
-                </div>
-              ))}
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <ScreenRecorderControls
-                supabase={supabase}
-                userId={user?.id ?? null}
-                documentId={activeDocumentId || null}
-                onUploaded={() => setBridgeToast('錄影已上傳')}
-                onError={setBridgeToast}
-              />
-              <button
-                type="button"
-                onClick={() => setIsAssistDrawerOpen(true)}
-                className="inline-flex h-8 shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950"
-              >
-                <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
-                AI Assist
-              </button>
-            </div>
-          </div>
-          <div className="relative min-h-[280px] flex-1 flex-grow bg-slate-50 font-mono leading-relaxed lg:min-h-0">
-            {aiSelectionMenu.visible && (
-              <div
-                className="absolute z-50 flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-1.5 py-1.5 text-sm shadow-xl shadow-slate-200/80 transition-colors duration-200"
-                style={{
-                  top: aiSelectionMenu.top,
-                  left: aiSelectionMenu.left,
-                }}
-              >
-                <button
-                  type="button"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => wrapSelection('**', '**', '粗體文字')}
-                  className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
-                  title="粗體"
-                >
-                  <Bold className="h-4 w-4" strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={headingSelection}
-                  className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
-                  title="標題"
-                >
-                  <Heading2 className="h-4 w-4" strokeWidth={2} />
-                </button>
-                <button
-                  type="button"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => insertAtCursor('| 欄位 A | 欄位 B |\n|---|---|\n|  |  |')}
-                  className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950"
-                  title="表格"
-                >
-                  <Table2 className="h-4 w-4" strokeWidth={2} />
-                </button>
-                <span className="mx-1 h-5 w-px bg-slate-200" />
-                <button
-                  type="button"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => setIsAssistDrawerOpen(true)}
-                  className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 hover:text-slate-950"
-                  title="AI Assist"
-                >
-                  <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
-                  AI Assist
-                </button>
+      {visibleEditorViewMode !== 'preview' && canEditActiveDocument && (
+        <div className="editor-format-toolbar flex min-h-12 shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-3 py-2">
+          <div className={`flex min-w-0 flex-1 items-center gap-1 overflow-x-auto ${SCROLLBAR_HIDE}`}>
+            {/* eslint-disable-next-line react-hooks/refs */}
+            {editorToolbarGroups.map((group, groupIndex) => (
+              <div key={groupIndex} className="flex shrink-0 items-center gap-1 border-r border-slate-200 pr-2 last:border-r-0 last:pr-0">
+                {group.map((item) => (
+                  <button
+                    key={item.label}
+                    type="button"
+                    onClick={item.action}
+                    className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-500 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:cursor-not-allowed disabled:opacity-35"
+                    title={item.label}
+                    aria-label={item.label}
+                  >
+                    <item.icon className="h-4 w-4" strokeWidth={2} />
+                  </button>
+                ))}
               </div>
-            )}
-            <Suspense
-              fallback={
-                <div className="flex h-full items-center justify-center text-sm font-medium text-zinc-500">
-                  正在載入編輯器...
+            ))}
+          </div>
+          {ENABLE_SCREEN_RECORDING && (
+            <div className="shrink-0 border-l border-slate-200 pl-3">
+              <Suspense fallback={<span className="text-xs text-slate-400">載入錄影…</span>}>
+                <LazyScreenRecorderControls
+                  supabase={supabase}
+                  userId={user?.id ?? null}
+                  documentId={activeDocumentId || null}
+                  onUploaded={() => setBridgeToast('錄影已上傳')}
+                  onError={setBridgeToast}
+                />
+              </Suspense>
+            </div>
+          )}
+        </div>
+      )}
+
+      <EditorWorkspaceLayout
+        mode={visibleEditorViewMode}
+        canEdit={canEditActiveDocument}
+        splitRatio={editorSplitRatio}
+        onSplitRatioChange={setEditorSplitRatio}
+        onSplitRatioCommit={commitEditorSplitRatio}
+        onCompactChange={setIsEditorWorkspaceCompact}
+        editor={
+          <>
+            <div className="relative min-h-[280px] flex-1 bg-slate-50 font-mono leading-relaxed">
+              {aiSelectionMenu.visible && (
+                <div
+                  className="absolute z-50 flex items-center gap-1 rounded-xl border border-slate-200 bg-white px-1.5 py-1.5 text-sm shadow-xl shadow-slate-200/80"
+                  style={{ top: aiSelectionMenu.top, left: aiSelectionMenu.left }}
+                >
+                  <button
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => wrapSelection('**', '**', '粗體文字')}
+                    className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                    title="粗體"
+                    aria-label="将选中文字设为粗体"
+                  >
+                    <Bold className="h-4 w-4" strokeWidth={2} />
+                  </button>
+                  <button
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={headingSelection}
+                    className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                    title="標題"
+                    aria-label="将选中文字设为标题"
+                  >
+                    <Heading2 className="h-4 w-4" strokeWidth={2} />
+                  </button>
+                  <button
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => insertAtCursor('| 欄位 A | 欄位 B |\n|---|---|\n|  |  |')}
+                    className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                    title="表格"
+                    aria-label="插入表格"
+                  >
+                    <Table2 className="h-4 w-4" strokeWidth={2} />
+                  </button>
+                  <span className="mx-1 h-5 w-px bg-slate-200" />
+                  <button
+                    type="button"
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => setIsAssistDrawerOpen(true)}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                    title="用 AI 处理选中文字"
+                  >
+                    <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
+                    AI 改写所选
+                  </button>
                 </div>
-              }
-            >
-              <MarkdownEditor
-                height="100%"
-                defaultLanguage="markdown"
-                theme="vs"
-                value={markdown}
-                onMount={(ed) => {
-                  editorRef.current = ed
-                  editorScrollDisposableRef.current?.dispose()
-                  editorScrollDisposableRef.current = ed.onDidScrollChange((event) => {
-                    if (event.scrollTopChanged) {
-                      syncPreviewScroll()
-                      updateAiSelectionMenu(ed)
-                    }
-                  })
-                  editorContentDisposableRef.current?.dispose()
-                  editorContentDisposableRef.current = ed.onDidChangeModelContent(
-                    (event) => {
+              )}
+              <Suspense
+                fallback={
+                  <div className="flex h-full items-center justify-center text-sm font-medium text-zinc-500">
+                    正在載入編輯器...
+                  </div>
+                }
+              >
+                <MarkdownEditor
+                  height="100%"
+                  defaultLanguage="markdown"
+                  theme="vs"
+                  value={markdown}
+                  onMount={(ed) => {
+                    editorRef.current = ed
+                    editorScrollDisposableRef.current?.dispose()
+                    editorScrollDisposableRef.current = ed.onDidScrollChange((event) => {
+                      if (event.scrollTopChanged) {
+                        syncPreviewScroll()
+                        updateAiSelectionMenu(ed)
+                      }
+                    })
+                    editorContentDisposableRef.current?.dispose()
+                    editorContentDisposableRef.current = ed.onDidChangeModelContent((event) => {
                       applyMonacoChangesToYText(event)
                       updateEditorStats(ed)
-                    },
-                  )
-                  editorSelectionDisposableRef.current?.dispose()
-                  editorSelectionDisposableRef.current = ed.onDidChangeCursorSelection(() => {
+                    })
+                    editorSelectionDisposableRef.current?.dispose()
+                    editorSelectionDisposableRef.current = ed.onDidChangeCursorSelection(() => {
+                      updateLocalCursorAwareness(ed)
+                      updateAiSelectionMenu(ed)
+                      updateEditorStats(ed)
+                    })
+
+                    editorPasteCleanupRef.current?.()
+                    const editorDomNode = ed.getDomNode()
+                    editorDomNode?.addEventListener('paste', handleEditorPaste)
+                    editorPasteCleanupRef.current = () => editorDomNode?.removeEventListener('paste', handleEditorPaste)
                     updateLocalCursorAwareness(ed)
-                    updateAiSelectionMenu(ed)
                     updateEditorStats(ed)
-                  })
-
-                  editorPasteCleanupRef.current?.()
-                  const editorDomNode = ed.getDomNode()
-                  editorDomNode?.addEventListener('paste', handleEditorPaste)
-                  editorPasteCleanupRef.current = () => {
-                    editorDomNode?.removeEventListener('paste', handleEditorPaste)
-                  }
-                  updateLocalCursorAwareness(ed)
-                  updateEditorStats(ed)
-                }}
-                options={{
-                  readOnly: !canEditActiveDocument,
-                  domReadOnly: !canEditActiveDocument,
-                  readOnlyMessage: { value: '此文件目前為唯讀模式' },
-                  lineNumbers: 'on',
-                  minimap: { enabled: false },
-                  wordWrap: 'on',
-                  fontSize: notePreferences.editorFontSize,
-                  lineHeight: notePreferences.editorLineHeight,
-                  fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-                  scrollBeyondLastLine: false,
-                  overviewRulerBorder: false,
-                  overviewRulerLanes: 0,
-                  hideCursorInOverviewRuler: true,
-                  glyphMargin: false,
-                  folding: false,
-                  lineDecorationsWidth: 8,
-                  lineNumbersMinChars: 3,
-                  renderLineHighlight: 'none',
-                  scrollbar: {
-                    verticalScrollbarSize: 8,
-                    horizontalScrollbarSize: 8,
-                  },
-                  padding: { top: 48, bottom: 48 },
-                  placeholder: '在此貼上 ChatGPT / Gemini 產生的實驗報告...',
-                }}
-              />
-            </Suspense>
-          </div>
-          <div className="flex h-9 shrink-0 items-center justify-between border-t border-slate-200 bg-white px-3 text-xs font-medium text-slate-500">
-            <div className="flex min-w-0 items-center gap-3">
-              <span>第 {editorStats.lineNumber} 行，第 {editorStats.column} 欄</span>
-              <span className="hidden sm:inline">共 {editorStats.lineCount} 行</span>
-              {editorStats.selectedLength > 0 && (
-                <span className="hidden sm:inline">已選 {editorStats.selectedLength} 字</span>
-              )}
+                  }}
+                  options={{
+                    readOnly: !canEditActiveDocument,
+                    domReadOnly: !canEditActiveDocument,
+                    readOnlyMessage: { value: '此文件目前為唯讀模式' },
+                    lineNumbers: 'on',
+                    minimap: { enabled: false },
+                    wordWrap: 'on',
+                    fontSize: notePreferences.editorFontSize,
+                    lineHeight: notePreferences.editorLineHeight,
+                    fontFamily: 'ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+                    scrollBeyondLastLine: false,
+                    overviewRulerBorder: false,
+                    overviewRulerLanes: 0,
+                    hideCursorInOverviewRuler: true,
+                    glyphMargin: false,
+                    folding: false,
+                    lineDecorationsWidth: 8,
+                    lineNumbersMinChars: 3,
+                    renderLineHighlight: 'none',
+                    scrollbar: { verticalScrollbarSize: 8, horizontalScrollbarSize: 8 },
+                    padding: { top: 48, bottom: 48 },
+                    placeholder: '在此貼上 ChatGPT / Gemini 產生的實驗報告...',
+                  }}
+                />
+              </Suspense>
             </div>
-            <div className="flex items-center gap-3">
-              <span className="hidden sm:inline">空白寬度：4</span>
-              <span>換行</span>
-              <span>Markdown</span>
-              <span>長度：{editorStats.length}</span>
+            <div className="flex h-9 shrink-0 items-center justify-between gap-3 overflow-hidden border-t border-slate-200 bg-white px-3 text-xs font-medium text-slate-500">
+              <div className="flex min-w-0 items-center gap-3 whitespace-nowrap">
+                <span>第 {editorStats.lineNumber} 行，第 {editorStats.column} 欄</span>
+                <span className="hidden sm:inline">共 {editorStats.lineCount} 行</span>
+                {editorStats.selectedLength > 0 && <span className="hidden sm:inline">已選 {editorStats.selectedLength} 字</span>}
+              </div>
+              <div className="flex shrink-0 items-center gap-3 whitespace-nowrap">
+                <span className="hidden md:inline">空白寬度：4</span>
+                <span className="hidden sm:inline">換行</span>
+                <span>Markdown</span>
+                <span>長度：{editorStats.length}</span>
+              </div>
             </div>
-          </div>
-        </section>
-
-        <section
-          className={`min-h-0 flex-grow flex-col bg-white transition-colors duration-300 lg:flex ${
-            mobileEditorPane === 'preview' ? 'flex' : 'hidden'
-          }`}
-        >
+          </>
+        }
+        preview={
           <div
             ref={previewRef}
-            className={`preview-pane flex-1 overflow-auto bg-white px-8 py-10 transition-colors duration-300 lg:px-14 ${SCROLLBAR_HIDE}`}
+            onScroll={syncEditorScroll}
+            className={`preview-pane h-full overflow-auto bg-slate-100/70 px-3 py-6 transition-colors sm:px-6 sm:py-8 lg:px-10 ${SCROLLBAR_HIDE}`}
           >
             {renderError ? (
               <p className="text-sm text-red-500">預覽錯誤：{renderError}</p>
             ) : isEditorEmpty ? (
-              <div className="mx-auto flex h-full min-h-[420px] max-w-4xl flex-col items-center justify-center rounded-2xl border border-dashed border-slate-200 bg-white px-12 py-16 text-center">
+              <div className="mx-auto flex h-full min-h-[360px] max-w-4xl flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center">
                 <p className="max-w-md text-base leading-relaxed text-slate-500">
-                  開始在左側撰寫或貼上內容，右側會即時形成乾淨的報告預覽。
+                  开始撰写或贴上内容，这里会即时显示报告预览。
                 </p>
               </div>
             ) : preview ? (
               <div
                 id="pdf-preview-content"
-                className={`pdf-export-surface markdown-preview prose prose-slate mx-auto min-h-[calc(100vh-9rem)] max-w-4xl bg-white text-slate-900 transition-colors duration-300 prose-headings:font-semibold prose-p:leading-loose ${
+                className={`pdf-export-surface markdown-preview prose prose-slate mx-auto min-h-full max-w-4xl rounded-sm bg-white text-slate-900 shadow-sm ring-1 ring-slate-200/80 transition-colors prose-headings:font-semibold prose-p:leading-loose ${
                   notePreferences.compactPreview
-                    ? 'px-3 py-5 prose-p:my-2 lg:px-6 lg:py-8'
-                    : 'px-4 py-8 lg:px-10 lg:py-12'
+                    ? 'px-4 py-6 prose-p:my-2 sm:px-6 sm:py-8'
+                    : 'px-5 py-8 sm:px-8 sm:py-10 lg:px-12 lg:py-12'
                 }`}
               >
-                <ReactMarkdown
-                  remarkPlugins={REMARK_PLUGINS}
-                  rehypePlugins={REHYPE_PLUGINS}
-                  urlTransform={safeMarkdownUrlTransform}
-                  components={MARKDOWN_COMPONENTS}
-                >
-                  {preview}
-                </ReactMarkdown>
+                <MarkdownRenderer markdown={preview} />
               </div>
             ) : (
               <p className="text-sm text-zinc-500">正在準備預覽…</p>
             )}
           </div>
-        </section>
-      </main>
+        }
+      />
 
       {currentView === 'editor' && (
         <div className={`pointer-events-none fixed inset-0 z-50 ${isAssistDrawerOpen ? '' : 'hidden'}`}>
@@ -7540,6 +7979,7 @@ function WorkspaceApp({
                   </div>
                 ) : (
                   <div className="space-y-3">
+                    {/* eslint-disable-next-line react-hooks/refs */}
                     {assistTasks.map((task) => (
                       <button
                         key={task.title}
@@ -7742,9 +8182,9 @@ function WorkspaceApp({
                           {agentResult.proposed_markdown.length} 字
                         </span>
                       </div>
-                      <pre className={`max-h-52 overflow-auto rounded-2xl bg-slate-950 p-4 text-xs leading-5 text-slate-100 ${SCROLLBAR_HIDE}`}>
-                        {agentResult.proposed_markdown}
-                      </pre>
+                      <div className={`markdown-preview max-h-64 overflow-auto rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-800 ${SCROLLBAR_HIDE}`}>
+                        <MarkdownRenderer markdown={agentResult.proposed_markdown} />
+                      </div>
                       <button
                         type="button"
                         onClick={applyAgentResult}
@@ -7804,6 +8244,8 @@ function WorkspaceApp({
                   </div>
                 </div>
                 <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {/* These actions access editor refs only after the user clicks a card. */}
+                  {/* eslint-disable-next-line react-hooks/refs */}
                   {[
                     {
                       title: '空白 Markdown',
@@ -7890,23 +8332,71 @@ function WorkspaceApp({
 
       {isOutlineModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-zinc-900/30 px-4 backdrop-blur-sm">
-          <div className="w-full max-w-lg rounded-2xl border border-zinc-100 bg-white p-8 shadow-2xl transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950">
+          <div className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-2xl border border-zinc-100 bg-white p-8 shadow-2xl transition-colors duration-300 dark:border-zinc-800 dark:bg-zinc-950">
             <div>
               <h2 className="text-base font-semibold text-zinc-900 dark:text-zinc-100">
                 生成報告大綱
               </h2>
               <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-                貼上範例結構，系統會生成對應的 Markdown 實驗報告大綱。
+                分欄提供已知資料；資料不足可以留白，AI 會標記待補，不應虛構實驗結果。
               </p>
             </div>
 
-            <div className="py-6">
+            <div className="grid gap-4 py-6 sm:grid-cols-2">
+              <label className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                實驗名稱
+                <input
+                  value={outlineBrief.experimentName}
+                  onChange={(event) => setOutlineBrief((current) => ({ ...current, experimentName: event.target.value }))}
+                  placeholder="例如：RC 電路暫態響應"
+                  className="mt-2 h-11 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 font-normal outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-900"
+                />
+              </label>
+              <label className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                實驗目的
+                <input
+                  value={outlineBrief.purpose}
+                  onChange={(event) => setOutlineBrief((current) => ({ ...current, purpose: event.target.value }))}
+                  placeholder="要量測或驗證什麼？"
+                  className="mt-2 h-11 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 font-normal outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-900"
+                />
+              </label>
+              <label className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                老師要求
+                <textarea
+                  value={outlineBrief.requirements}
+                  onChange={(event) => setOutlineBrief((current) => ({ ...current, requirements: event.target.value }))}
+                  placeholder="必备章节、字数、问题或评分标准"
+                  className="mt-2 h-28 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-3 font-normal leading-6 outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-900"
+                />
+              </label>
+              <label className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
+                原始数据
+                <textarea
+                  value={outlineBrief.rawData}
+                  onChange={(event) => setOutlineBrief((current) => ({ ...current, rawData: event.target.value }))}
+                  placeholder="可貼上 Excel/CSV 数据；数字和单位会被标记为不可擅改"
+                  className="mt-2 h-28 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-3 font-mono text-xs font-normal leading-6 outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-900"
+                />
+              </label>
+              <label className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 sm:col-span-2">
+                格式要求
+                <input
+                  value={outlineBrief.formatRequirements}
+                  onChange={(event) => setOutlineBrief((current) => ({ ...current, formatRequirements: event.target.value }))}
+                  placeholder="例如：中英双语摘要、图表编号、IEEE 引用"
+                  className="mt-2 h-11 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 font-normal outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-900"
+                />
+              </label>
+              <label className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 sm:col-span-2">
+                参考章节结构（可选）
               <textarea
                 value={outlineExampleText}
                 onChange={(event) => setOutlineExampleText(event.target.value)}
                 placeholder={'# 實驗報告\n## 實驗目的\n## 實驗原理\n## 實驗步驟\n## 結果與討論'}
-                className={`h-64 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-sm leading-6 text-zinc-900 outline-none transition-all focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:bg-zinc-950 ${SCROLLBAR_HIDE}`}
+                className={`mt-2 h-32 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-4 text-sm font-normal leading-6 text-zinc-900 outline-none transition-all focus:border-zinc-400 focus:bg-white focus:ring-2 focus:ring-zinc-900/10 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-100 dark:focus:bg-zinc-950 ${SCROLLBAR_HIDE}`}
               />
+              </label>
             </div>
 
             <div className="flex items-center justify-end gap-2">
@@ -8042,11 +8532,16 @@ function WorkspaceApp({
                 >
                   <option value="private">只有你可以訪問</option>
                   <option value="view">知道連結的人可以檢視</option>
-                  <option value="edit">知道連結的人可以編輯</option>
+                  {activeDocument.shareSetting === 'edit' && (
+                    <option value="edit" disabled>舊版公開編輯連結（目前只讀）</option>
+                  )}
                 </select>
+                <p className="mt-2 text-xs leading-5 text-slate-500">
+                  Closed Beta 的公開連結一律只讀；需要共同編輯時，請以 Email 加入明確協作者。
+                </p>
                 <button
                   type="button"
-                  onClick={() => void shareDocument(activeDocument.id, true)}
+                  onClick={() => void publishAndCopyShareLink()}
                   className="mt-4 flex h-12 w-full items-center justify-center gap-2 rounded-2xl bg-slate-950 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
                 >
                   <Link className="h-4 w-4" strokeWidth={2} />
@@ -8060,8 +8555,12 @@ function WorkspaceApp({
                   {[
                     { label: '下載', icon: Download, action: () => void exportWordReport() },
                     { label: '公開查看', icon: ExternalLink, action: () => void updateShareSetting('view') },
-                    { label: '錄製', icon: Video, action: () => setBridgeToast('錄製功能準備中') },
-                    { label: 'Google Drive', icon: Cloud, action: openGoogleDrivePicker },
+                    ...(ENABLE_SCREEN_RECORDING
+                      ? [{ label: '錄製', icon: Video, action: () => setBridgeToast('錄製功能準備中') }]
+                      : []),
+                    ...(ENABLE_GOOGLE_DRIVE
+                      ? [{ label: 'Google Drive', icon: Cloud, action: openGoogleDrivePicker }]
+                      : []),
                   ].map((item) => (
                     <button
                       key={item.label}
@@ -8163,13 +8662,84 @@ function WorkspaceApp({
         </div>
       )}
 
-      <GoogleDrivePicker
-        isOpen={isGoogleDrivePickerOpen}
-        accessToken={googleDriveAccessToken ?? null}
-        onClose={() => setIsGoogleDrivePickerOpen(false)}
-        onImport={importMarkdownFromGoogleDrive}
-        onNotify={setBridgeToast}
-      />
+      {pendingAiChange && (
+        <div
+          className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-950/45 px-4 py-8 backdrop-blur-sm"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="ai-change-title"
+        >
+          <div className="flex max-h-[88vh] w-full max-w-5xl flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-6 py-5">
+              <div>
+                <h2 id="ai-change-title" className="text-lg font-semibold text-slate-950">
+                  {pendingAiChange.title}
+                </h2>
+                <p className="mt-1 text-sm text-slate-500">
+                  請先核對數字、單位與語意。只有按下「套用修改」才會更動文件，並會先建立版本備份。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  pendingAiSelectionRef.current = null
+                  setPendingAiChange(null)
+                }}
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-slate-400 hover:bg-slate-100 hover:text-slate-900"
+                aria-label="取消 AI 修改"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="grid min-h-0 flex-1 overflow-auto md:grid-cols-2">
+              <section className="border-b border-slate-200 p-5 md:border-b-0 md:border-r">
+                <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">原始內容</h3>
+                <pre className="max-h-[52vh] overflow-auto whitespace-pre-wrap rounded-2xl bg-slate-50 p-4 text-sm leading-6 text-slate-700">
+                  {pendingAiChange.originalText || '（空白文件）'}
+                </pre>
+              </section>
+              <section className="p-5">
+                <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">AI 建議</h3>
+                <div className="prose prose-slate max-h-[52vh] max-w-none overflow-auto rounded-2xl border border-slate-200 bg-white p-4 text-sm">
+                  <MarkdownRenderer markdown={pendingAiChange.proposedText} />
+                </div>
+              </section>
+            </div>
+            <div className="flex justify-end gap-3 border-t border-slate-200 px-6 py-4">
+              <button
+                type="button"
+                onClick={() => {
+                  pendingAiSelectionRef.current = null
+                  setPendingAiChange(null)
+                }}
+                className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                保留原文
+              </button>
+              <button
+                type="button"
+                onClick={applyPendingAiChange}
+                className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800"
+              >
+                套用修改
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {ENABLE_GOOGLE_DRIVE && (
+        <Suspense fallback={null}>
+          <LazyGoogleDrivePicker
+            isOpen={isGoogleDrivePickerOpen}
+            accessToken={googleDriveAccessToken ?? null}
+            getAuthHeaders={getAuthHeaders}
+            onClose={() => setIsGoogleDrivePickerOpen(false)}
+            onImport={importMarkdownFromGoogleDrive}
+            onNotify={setBridgeToast}
+          />
+        </Suspense>
+      )}
 
       {bridgeToast && (
         <div className="fixed bottom-5 right-5 z-[60] rounded-lg bg-zinc-950 px-4 py-3 text-sm font-medium text-white shadow-2xl dark:bg-zinc-100 dark:text-zinc-950">
@@ -8185,6 +8755,9 @@ function App() {
     typeof window !== 'undefined' ? window.location.pathname.match(/^\/p\/([^/]+)/) : null
   const publicReportShareId = publicReportId?.[1] ? decodeURIComponent(publicReportId[1]) : null
   const [user, setUser] = useState<User | null>(null)
+  const [isGuestMode, setIsGuestMode] = useState(
+    () => window.localStorage.getItem(GUEST_SESSION_STORAGE_KEY) === 'true',
+  )
   const [googleDriveAccessToken, setGoogleDriveAccessToken] = useState<string | null>(null)
   const [authLoading, setAuthLoading] = useState(Boolean(supabase))
   const [authMessage, setAuthMessage] = useState<string | null>(null)
@@ -8199,6 +8772,10 @@ function App() {
     function syncSession(session: Session | null | undefined) {
       setUser(session?.user ?? null)
       setGoogleDriveAccessToken(session?.provider_token ?? null)
+      if (session?.user) {
+        setIsGuestMode(false)
+        window.localStorage.removeItem(GUEST_SESSION_STORAGE_KEY)
+      }
     }
 
     supabase.auth.getSession().then(({ data }) => {
@@ -8244,12 +8821,13 @@ function App() {
       window.history.replaceState(null, '', '/')
       return
     }
+    const sharingSupabase = supabase
 
     let isCancelled = false
     const loadTimer = window.setTimeout(async () => {
       setPublicRouteLoading(true)
       try {
-        const { data, error } = await supabase
+        const { data, error } = await sharingSupabase
           .from('documents')
           .select('*')
           .eq('id', sharedDocId)
@@ -8288,7 +8866,17 @@ function App() {
   }, [authLoading, publicReportShareId, user])
 
   if (publicReportShareId) {
-    return <PublicReport shareId={publicReportShareId} />
+    return (
+      <Suspense
+        fallback={(
+          <main className="flex min-h-screen items-center justify-center bg-slate-50 px-6 text-sm font-medium text-slate-500">
+            正在載入公開報告...
+          </main>
+        )}
+      >
+        <LazyPublicReport shareId={publicReportShareId} />
+      </Suspense>
+    )
   }
 
   async function signInWithOAuth(provider: Provider) {
@@ -8299,19 +8887,7 @@ function App() {
     }
 
     setAuthLoading(true)
-    const oauthOptions =
-      provider === 'google'
-        ? {
-            redirectTo: window.location.origin,
-            scopes: 'https://www.googleapis.com/auth/drive.readonly',
-            queryParams: {
-              access_type: 'offline',
-              prompt: 'consent',
-            },
-          }
-        : {
-            redirectTo: window.location.origin,
-          }
+    const oauthOptions = { redirectTo: window.location.origin }
 
     const { error } = await supabase.auth.signInWithOAuth({
       provider,
@@ -8356,8 +8932,9 @@ function App() {
 
   if (authLoading || publicRouteLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center bg-[#FAFAFC] text-sm font-medium text-zinc-500">
-        {authLoading ? '正在確認登入狀態...' : '正在開啟共享文件...'}
+      <div className="flex min-h-screen flex-col items-center justify-center gap-4 bg-[#FAFAFC] text-sm font-medium text-zinc-500">
+        <BrandMark size="default" />
+        <span>{authLoading ? '正在確認登入狀態...' : '正在開啟共享文件...'}</span>
       </div>
     )
   }
@@ -8375,11 +8952,30 @@ function App() {
     )
   }
 
+  if (!user && isGuestMode) {
+    return (
+      <WorkspaceApp
+        user={null}
+        googleDriveAccessToken={null}
+        onSignOut={() => {
+          setIsGuestMode(false)
+          window.localStorage.removeItem(GUEST_SESSION_STORAGE_KEY)
+          window.history.replaceState(null, '', '/')
+        }}
+      />
+    )
+  }
+
   if (!user) {
     return (
       <LandingPage
         onOAuthLogin={signInWithOAuth}
         onSendMagicLink={sendMagicLink}
+        onContinueAsGuest={() => {
+          setIsGuestMode(true)
+          window.localStorage.setItem(GUEST_SESSION_STORAGE_KEY, 'true')
+          window.history.replaceState(null, '', '/dashboard/home')
+        }}
         authLoading={authLoading}
         authMessage={authMessage}
       />
@@ -8388,6 +8984,7 @@ function App() {
 
   return (
     <WorkspaceApp
+      key={user.id}
       user={user}
       googleDriveAccessToken={googleDriveAccessToken}
       onSignOut={signOut}

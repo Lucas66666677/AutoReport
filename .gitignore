@@ -6,9 +6,11 @@ backend/__pycache__/
 .eggs/
 
 # Node
+node_modules/
 frontend/node_modules/
 frontend/dist/
 collaboration-server/node_modules/
+artifacts/
 
 # OS / IDE
 .DS_Store
@@ -17,3 +19,8 @@ Thumbs.db
 .vscode/
 *.log
 .env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
