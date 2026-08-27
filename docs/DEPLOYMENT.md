@@ -92,7 +92,51 @@ GET https://backend.example/api/health      -> 200
 GET https://backend.example/api/readiness   -> 200
 ~~~
 
-Readiness requires Supabase, ENCRYPTION_KEY and Pandoc. It reports whether built-in AI is configured but does not make AI a hard infrastructure check.
+### Machine-checked release contract
+
+`backend/tests/test_release_preflight.py` runs in CI without any secret and
+fails the build when the lines below stop matching the code, `.env.example`
+and `scripts/deploy-check.ps1`. Edit these lists and the code together.
+
+~~~text
+readiness required: supabase, encryption, pandoc
+readiness optional: built_in_ai
+required backend env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ENCRYPTION_KEY, FRONTEND_URL, BACKEND_URL, CORS_ALLOWED_ORIGINS
+required frontend env: VITE_API_URL, VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
+~~~
+
+Readiness reports whether built-in AI is configured but does not make AI a
+hard infrastructure check, so a Groq or Gemini outage cannot take the writer
+offline.
+
+### Readiness fails closed
+
+A missing required check returns 503 with `status: not_ready` and a `missing`
+list of check names. The response carries booleans and names only; it never
+echoes a URL, key or any other configured value.
+
+`encryption` requires a Fernet key that actually loads, not merely a non-empty
+variable. A truncated or re-wrapped `ENCRYPTION_KEY` is reported as not ready
+instead of failing later, at the first student who saves an API key.
+
+`pandoc` is a probe: any probe failure counts as not ready rather than
+propagating, so the endpoint answers 503 instead of 500.
+
+### Reading a 503
+
+A 503 naming `supabase` or `encryption` is a host configuration gap, not a code
+defect. Fix it in the Render service environment:
+
+| missing | what to set | where |
+|---|---|---|
+| `supabase` | `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` | Render → Service → Environment |
+| `encryption` | `ENCRYPTION_KEY`, a stable `Fernet.generate_key()` value | Render → Service → Environment |
+| `pandoc` | Pandoc in the image or build step | Render build configuration |
+
+Never resolve a readiness 503 by committing a value to this repository, by
+pasting one into chat or a screenshot, or by relaxing the required list. The
+required list shrinks only when the product stops depending on that
+capability.
 
 ## 6. Canary
 

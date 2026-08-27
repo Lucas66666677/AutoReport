@@ -108,6 +108,7 @@ if (-not $SkipRuntime) {
     "SUPABASE_SERVICE_ROLE_KEY",
     "ENCRYPTION_KEY",
     "FRONTEND_URL",
+    "BACKEND_URL",
     "CORS_ALLOWED_ORIGINS"
   )) {
     Test-EnvName $name $envFiles

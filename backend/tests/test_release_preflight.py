@@ -1,0 +1,334 @@
+"""Secret-free release preflight.
+
+Runs in CI with no credentials, no Supabase project and no deployment. It
+answers three questions before a release is allowed to proceed:
+
+1. Does `/api/readiness` fail closed when required production configuration
+   is absent, malformed or unprobeable?
+2. Is that required configuration documented where an owner will actually
+   look, and does the documentation still match the code?
+3. Is the repository free of anything that looks like a real credential?
+
+Every value used here is a placeholder or generated for the duration of the
+test run. Nothing in this module reads ambient environment variables.
+"""
+
+import contextlib
+import re
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from cryptography.fernet import Fernet
+
+import main
+
+REPOSITORY_ROOT = Path(main.__file__).resolve().parents[1]
+ENV_EXAMPLE = REPOSITORY_ROOT / ".env.example"
+DEPLOYMENT_DOC = REPOSITORY_ROOT / "docs" / "DEPLOYMENT.md"
+OWNER_ACTIONS_DOC = REPOSITORY_ROOT / "docs" / "OWNER_ACTIONS.md"
+DEPLOY_CHECK_SCRIPT = REPOSITORY_ROOT / "scripts" / "deploy-check.ps1"
+
+# Disposable stand-ins. The Fernet key is generated per run and never leaves
+# this process; the others are unroutable placeholders.
+DISPOSABLE_FERNET_KEY = Fernet.generate_key().decode("utf-8")
+DISPOSABLE_SUPABASE_URL = "https://preflight.invalid"
+DISPOSABLE_SERVICE_ROLE = "preflight-placeholder-not-a-service-role"
+
+
+@contextlib.contextmanager
+def readiness_environment(supabase=True, encryption=True, pandoc=True, built_in_ai=False):
+    """Pin every readiness input so the result never depends on the host."""
+    with (
+        patch.object(
+            main,
+            "SUPABASE_URL",
+            DISPOSABLE_SUPABASE_URL if supabase else None,
+        ),
+        patch.object(
+            main,
+            "SUPABASE_SERVICE_ROLE_KEY",
+            DISPOSABLE_SERVICE_ROLE if supabase else None,
+        ),
+        patch.object(
+            main,
+            "ENCRYPTION_KEY",
+            DISPOSABLE_FERNET_KEY if encryption else None,
+        ),
+        patch.object(
+            main.pypandoc,
+            "get_pandoc_path",
+            return_value="/usr/bin/pandoc" if pandoc else "",
+        ),
+        patch.object(main, "groq_client", object() if built_in_ai else None),
+        patch.object(main, "gemini_client", None),
+    ):
+        yield
+
+
+class ReadinessFailsClosedTests(unittest.TestCase):
+    def test_reports_ready_only_when_every_required_check_passes(self):
+        with readiness_environment():
+            payload = main.readiness()
+
+        self.assertEqual(payload["status"], "ready")
+        for name in main.READINESS_REQUIRED_CHECKS:
+            self.assertTrue(payload["checks"][name], name)
+
+    def test_each_required_check_alone_blocks_readiness(self):
+        for name in main.READINESS_REQUIRED_CHECKS:
+            with self.subTest(check=name):
+                with readiness_environment(**{name: False}):
+                    with self.assertRaises(main.HTTPException) as raised:
+                        main.readiness()
+
+                self.assertEqual(raised.exception.status_code, 503)
+                detail = raised.exception.detail
+                self.assertEqual(detail["status"], "not_ready")
+                self.assertFalse(detail["checks"][name])
+                self.assertEqual(detail["missing"], [name])
+
+    def test_every_missing_required_check_is_named(self):
+        with readiness_environment(supabase=False, encryption=False, pandoc=False):
+            with self.assertRaises(main.HTTPException) as raised:
+                main.readiness()
+
+        self.assertEqual(
+            raised.exception.detail["missing"],
+            list(main.READINESS_REQUIRED_CHECKS),
+        )
+
+    def test_present_but_unusable_encryption_key_is_not_ready(self):
+        # A non-empty ENCRYPTION_KEY is not evidence that encryption works.
+        # Truncated, quoted and re-wrapped keys all reach production this way.
+        for broken in ("not-a-fernet-key", DISPOSABLE_FERNET_KEY[:-4], " "):
+            with self.subTest(key=broken[:12]):
+                with readiness_environment():
+                    with patch.object(main, "ENCRYPTION_KEY", broken):
+                        with self.assertRaises(main.HTTPException) as raised:
+                            main.readiness()
+
+                self.assertEqual(raised.exception.status_code, 503)
+                self.assertIn("encryption", raised.exception.detail["missing"])
+
+    def test_pandoc_probe_failure_is_not_ready_rather_than_a_crash(self):
+        for error in (OSError("pandoc missing"), RuntimeError("probe exploded")):
+            with self.subTest(error=type(error).__name__):
+                with readiness_environment():
+                    with patch.object(
+                        main.pypandoc, "get_pandoc_path", side_effect=error
+                    ):
+                        with self.assertRaises(main.HTTPException) as raised:
+                            main.readiness()
+
+                self.assertEqual(raised.exception.status_code, 503)
+                self.assertIn("pandoc", raised.exception.detail["missing"])
+
+    def test_optional_checks_never_block_readiness(self):
+        with readiness_environment(built_in_ai=False):
+            payload = main.readiness()
+
+        self.assertEqual(payload["status"], "ready")
+        for name in main.READINESS_OPTIONAL_CHECKS:
+            self.assertIn(name, payload["checks"])
+        self.assertFalse(payload["checks"]["built_in_ai"])
+
+    def test_optional_and_required_checks_do_not_overlap(self):
+        self.assertEqual(
+            set(main.READINESS_REQUIRED_CHECKS) & set(main.READINESS_OPTIONAL_CHECKS),
+            set(),
+        )
+
+    def test_supabase_needs_both_url_and_service_role_key(self):
+        partial_configurations = (
+            (DISPOSABLE_SUPABASE_URL, None),
+            (DISPOSABLE_SUPABASE_URL, ""),
+            (None, DISPOSABLE_SERVICE_ROLE),
+            ("", DISPOSABLE_SERVICE_ROLE),
+        )
+        for url, key in partial_configurations:
+            with self.subTest(has_url=bool(url), has_key=bool(key)):
+                with (
+                    patch.object(main, "SUPABASE_URL", url),
+                    patch.object(main, "SUPABASE_SERVICE_ROLE_KEY", key),
+                ):
+                    self.assertFalse(main._supabase_configured())
+
+    def test_not_ready_response_never_echoes_a_configured_value(self):
+        with readiness_environment(supabase=False):
+            with self.assertRaises(main.HTTPException) as raised:
+                main.readiness()
+
+        detail = raised.exception.detail
+        rendered = repr(detail)
+        for value in (
+            DISPOSABLE_FERNET_KEY,
+            DISPOSABLE_SERVICE_ROLE,
+            DISPOSABLE_SUPABASE_URL,
+        ):
+            self.assertNotIn(value, rendered)
+        for name, value in detail["checks"].items():
+            self.assertIsInstance(value, bool, name)
+
+
+class RequiredProductionConfigurationIsDocumentedTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.deployment = DEPLOYMENT_DOC.read_text(encoding="utf-8")
+        cls.env_example = ENV_EXAMPLE.read_text(encoding="utf-8")
+        cls.owner_actions = OWNER_ACTIONS_DOC.read_text(encoding="utf-8")
+        cls.deploy_check = DEPLOY_CHECK_SCRIPT.read_text(encoding="utf-8")
+        cls.backend_source = Path(main.__file__).read_text(encoding="utf-8")
+
+    def documented_list(self, label):
+        match = re.search(rf"^{re.escape(label)}:(.+)$", self.deployment, re.MULTILINE)
+        self.assertIsNotNone(match, f"docs/DEPLOYMENT.md must declare a '{label}:' line")
+        return [item.strip() for item in match.group(1).split(",") if item.strip()]
+
+    def test_documented_readiness_contract_matches_the_code(self):
+        # Adding a required check without documenting it fails the release.
+        self.assertEqual(
+            self.documented_list("readiness required"),
+            list(main.READINESS_REQUIRED_CHECKS),
+        )
+        self.assertEqual(
+            self.documented_list("readiness optional"),
+            list(main.READINESS_OPTIONAL_CHECKS),
+        )
+
+    def test_readiness_required_checks_are_the_ones_the_endpoint_enforces(self):
+        enforced = []
+        for name in ("supabase", "encryption", "pandoc"):
+            with readiness_environment(**{name: False}):
+                try:
+                    main.readiness()
+                except main.HTTPException:
+                    enforced.append(name)
+        self.assertEqual(enforced, list(main.READINESS_REQUIRED_CHECKS))
+
+    def test_required_backend_configuration_is_documented_end_to_end(self):
+        required = self.documented_list("required backend env")
+        self.assertLessEqual(
+            {"SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "ENCRYPTION_KEY"},
+            set(required),
+            "the readiness gate depends on these, so they are required",
+        )
+        for name in required:
+            with self.subTest(variable=name):
+                self.assertRegex(self.env_example, rf"(?m)^{re.escape(name)}=")
+                self.assertIn(name, self.deploy_check)
+                self.assertIn(name, self.backend_source)
+
+    def test_required_frontend_configuration_is_documented_end_to_end(self):
+        for name in self.documented_list("required frontend env"):
+            with self.subTest(variable=name):
+                self.assertRegex(self.env_example, rf"(?m)^{re.escape(name)}=")
+                self.assertIn(name, self.deploy_check)
+
+    def test_deployment_guidance_forbids_committing_configuration_values(self):
+        self.assertIn(
+            "Never resolve a readiness 503 by committing a value",
+            self.deployment,
+        )
+        self.assertIn("不要把真实 Secret 写入本文件", self.owner_actions)
+
+    def test_closed_beta_flag_block_matches_the_env_example(self):
+        block = re.search(
+            r"## Closed Beta flags\s*\n+~~~text\n(.*?)\n~~~",
+            self.owner_actions,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(
+            block, "docs/OWNER_ACTIONS.md must list the Closed Beta flags"
+        )
+
+        flags = [line.strip() for line in block.group(1).splitlines() if "=" in line]
+        self.assertGreater(len(flags), 0)
+        for flag in flags:
+            with self.subTest(flag=flag):
+                self.assertTrue(flag.endswith("=false"), "unverified features ship off")
+                self.assertRegex(self.env_example, rf"(?m)^{re.escape(flag)}$")
+
+    def test_server_feature_flags_require_an_exact_true_opt_in(self):
+        # A truthy-but-not-"true" value must leave an unaccepted feature off.
+        for flag in (
+            "STRIPE_BILLING_ENABLED",
+            "GITHUB_SYNC_ENABLED",
+            "GOOGLE_DRIVE_ENABLED",
+            "OWNERSHIP_TRANSFER_EMAIL_CONFIGURED",
+        ):
+            with self.subTest(flag=flag):
+                self.assertIn(
+                    f'{flag} = os.getenv("{flag}") == "true"',
+                    self.backend_source,
+                )
+
+
+class NoCredentialLooksCommittedTests(unittest.TestCase):
+    SECRET_PATTERNS = (
+        (
+            "JSON Web Token",
+            re.compile(r"eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),
+        ),
+        ("Stripe API key", re.compile(r"\bsk_(?:live|test)_[A-Za-z0-9]{16,}")),
+        ("Stripe webhook secret", re.compile(r"\bwhsec_[A-Za-z0-9]{16,}")),
+        ("Groq API key", re.compile(r"\bgsk_[A-Za-z0-9]{20,}")),
+        ("Google API key", re.compile(r"\bAIza[A-Za-z0-9_-]{30,}")),
+        (
+            "Supabase API key",
+            re.compile(r"\bsb_(?:secret|publishable)_[A-Za-z0-9_-]{16,}"),
+        ),
+        (
+            "Fernet key",
+            re.compile(r"(?<![A-Za-z0-9_/+-])[A-Za-z0-9_-]{43}=(?![A-Za-z0-9=])"),
+        ),
+    )
+
+    def reviewed_files(self):
+        yield ENV_EXAMPLE
+        yield from sorted(REPOSITORY_ROOT.glob("*.md"))
+        yield from sorted(REPOSITORY_ROOT.glob("docs/**/*.md"))
+        yield from sorted(REPOSITORY_ROOT.glob("scripts/*.ps1"))
+
+    def test_documentation_and_env_example_contain_only_placeholders(self):
+        reviewed = 0
+        for path in self.reviewed_files():
+            reviewed += 1
+            content = path.read_text(encoding="utf-8")
+            relative = path.relative_to(REPOSITORY_ROOT).as_posix()
+            for label, pattern in self.SECRET_PATTERNS:
+                with self.subTest(path=relative, secret=label):
+                    self.assertIsNone(
+                        pattern.search(content),
+                        f"{relative} looks like it contains a real {label}",
+                    )
+        self.assertGreater(reviewed, 1)
+
+    def test_env_example_secret_slots_hold_placeholders_only(self):
+        for line in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines():
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            name, _, value = line.partition("=")
+            if not name.endswith(("_KEY", "_SECRET")):
+                continue
+            with self.subTest(variable=name):
+                self.assertRegex(
+                    value,
+                    r"your-|generate-",
+                    "secret slots must read as placeholders",
+                )
+
+    def test_gitignore_keeps_environment_files_out_of_the_repository(self):
+        rules = [
+            rule.strip()
+            for rule in (REPOSITORY_ROOT / ".gitignore")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        for rule in (".env", ".env.*", "**/.env", "**/.env.*"):
+            self.assertIn(rule, rules)
+        self.assertIn("!.env.example", rules)
+
+
+if __name__ == "__main__":
+    unittest.main()
