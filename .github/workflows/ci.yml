@@ -46,6 +46,23 @@ jobs:
       - run: python -m py_compile main.py
         working-directory: backend
 
+  release-preflight:
+    # Secret-free by construction: this job declares no `secrets` and no
+    # environment, so it cannot read a credential, reach Supabase or deploy.
+    # Pandoc is deliberately absent -- the readiness probe is stubbed, so a
+    # missing binary must not change the result.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: python -m pip install -r backend/requirements.txt
+      - run: python -m unittest tests.test_release_preflight -v
+        working-directory: backend
+
   supporting-services:
     runs-on: ubuntu-latest
     steps:

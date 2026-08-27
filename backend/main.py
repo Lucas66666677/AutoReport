@@ -1842,24 +1842,52 @@ def health():
     return {"status": "ok", "service": "AutoLabReport API"}
 
 
+# Readiness contract. Keep this in sync with the "readiness required" and
+# "readiness optional" lines in docs/DEPLOYMENT.md; the release preflight in
+# backend/tests/test_release_preflight.py fails closed when code and
+# deployment guidance drift apart.
+READINESS_REQUIRED_CHECKS = ("supabase", "encryption", "pandoc")
+READINESS_OPTIONAL_CHECKS = ("built_in_ai",)
+
+
+def _encryption_ready() -> bool:
+    """A present but unusable ENCRYPTION_KEY must never read as ready.
+
+    Reporting a malformed key as ready moves the failure to the first user
+    who saves an API key; readiness is the cheaper place to fail.
+    """
+    if not ENCRYPTION_KEY:
+        return False
+    try:
+        Fernet(ENCRYPTION_KEY.encode("utf-8"))
+    except Exception:
+        return False
+    return True
+
+
+def _pandoc_ready() -> bool:
+    try:
+        return bool(pypandoc.get_pandoc_path())
+    except Exception:
+        return False
+
+
 @app.get("/api/readiness")
 def readiness():
     checks = {
         "supabase": _supabase_configured(),
-        "encryption": bool(ENCRYPTION_KEY),
-        "pandoc": False,
+        "encryption": _encryption_ready(),
+        "pandoc": _pandoc_ready(),
         "built_in_ai": groq_client is not None or gemini_client is not None,
     }
-    try:
-        checks["pandoc"] = bool(pypandoc.get_pandoc_path())
-    except OSError:
-        checks["pandoc"] = False
 
-    required_ready = checks["supabase"] and checks["encryption"] and checks["pandoc"]
-    if not required_ready:
+    # Names only: the response says which required configuration is absent and
+    # never echoes a configured value.
+    missing = [name for name in READINESS_REQUIRED_CHECKS if not checks[name]]
+    if missing:
         raise HTTPException(
             status_code=503,
-            detail={"status": "not_ready", "checks": checks},
+            detail={"status": "not_ready", "checks": checks, "missing": missing},
         )
     return {"status": "ready", "checks": checks}
 
