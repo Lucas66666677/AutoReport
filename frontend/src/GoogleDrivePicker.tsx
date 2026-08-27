@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Cloud, FileText, Loader2, RefreshCcw, X } from 'lucide-react'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '')
+import { resolveApiBaseUrl } from './apiConfig'
+
+const API_BASE_URL = resolveApiBaseUrl(import.meta.env)
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 
 type DriveFile = {
