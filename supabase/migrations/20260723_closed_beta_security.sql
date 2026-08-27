@@ -73,6 +73,10 @@ drop policy if exists "documents_select_workspace_or_public" on public.documents
 drop policy if exists "documents_insert_workspace_editor" on public.documents;
 drop policy if exists "documents_update_workspace_editor" on public.documents;
 drop policy if exists "documents_delete_workspace_editor" on public.documents;
+drop policy if exists "documents_select_closed_beta" on public.documents;
+drop policy if exists "documents_insert_closed_beta_owner" on public.documents;
+drop policy if exists "documents_update_closed_beta_editor" on public.documents;
+drop policy if exists "documents_delete_closed_beta_owner" on public.documents;
 
 create policy "documents_select_closed_beta"
 on public.documents for select
@@ -134,6 +138,8 @@ for each row execute function public.protect_document_security_fields();
 
 drop policy if exists "collaborators_select_related" on public.document_collaborators;
 drop policy if exists "collaborators_owner_manage" on public.document_collaborators;
+drop policy if exists "collaborators_select_closed_beta" on public.document_collaborators;
+drop policy if exists "collaborators_owner_manage_closed_beta" on public.document_collaborators;
 
 create policy "collaborators_select_closed_beta"
 on public.document_collaborators for select
