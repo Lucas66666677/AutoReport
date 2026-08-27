@@ -106,13 +106,14 @@ import {
   readStoredSplitRatio,
   type EditorViewMode,
 } from './editorViewMode'
+import { resolveApiBaseUrl } from './apiConfig'
 import { analyzeReportQuality } from './reportQuality'
 import { createPrivateReportImageUrl, REPORT_IMAGE_BUCKET } from './reportImageStorage'
 import { supabaseClient as supabase } from './supabaseClient'
 import { useExtensionBridge } from './useExtensionBridge'
 import { useSettings, type NotePreferences } from './useSettings'
 
-const API_BASE_URL = import.meta.env.VITE_API_URL || (import.meta.env.DEV ? 'http://localhost:8000' : '')
+const API_BASE_URL = resolveApiBaseUrl(import.meta.env)
 const COLLABORATION_URL = import.meta.env.VITE_COLLABORATION_URL || (import.meta.env.DEV ? 'ws://localhost:1234' : '')
 const RENDER_DEBOUNCE_MS = 300
 const ENABLE_BILLING = import.meta.env.VITE_ENABLE_BILLING === 'true'

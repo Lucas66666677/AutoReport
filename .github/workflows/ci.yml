@@ -37,8 +37,12 @@ jobs:
         working-directory: frontend
       - run: npm test
         working-directory: frontend
+      # Not a real endpoint: it only proves the production build refuses to
+      # inline a blank or loopback origin. Deploys supply the real value.
       - run: npm run build
         working-directory: frontend
+        env:
+          VITE_API_URL: https://api.example.invalid
 
   backend:
     runs-on: ubuntu-latest

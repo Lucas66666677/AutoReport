@@ -34,7 +34,10 @@ VITE_ENABLE_REALTIME_COLLABORATION=false
 VITE_ENABLE_BROWSER_EXTENSION=false
 ~~~
 
-VITE_API_URL must be HTTPS and must not point to localhost. The SPA fallback is defined in frontend/vercel.json.
+VITE_API_URL must be HTTPS and must not point to localhost; `npm run build` fails when it is blank,
+loopback, non-HTTPS or otherwise unusable (frontend/src/apiConfig.ts). The SPA fallback is defined in
+frontend/vercel.json, which is why an unset value would otherwise answer API calls with the app shell
+instead of an error.
 
 ## 3. Backend on Render
 
