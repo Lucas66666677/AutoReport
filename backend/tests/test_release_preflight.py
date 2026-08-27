@@ -11,6 +11,9 @@ answers four questions before a release is allowed to proceed:
 4. Does the deployment health gate probe the liveness endpoint rather than
    the dependency-sensitive readiness endpoint, is that route still
    declared, and does it still answer a bare HTTP probe?
+5. Is the Supabase migration chain a valid upgrade path: an unambiguous
+    apply order, still pinned by the release documentation and the deploy
+    check, and re-appliable onto a database that already holds part of it?
 
 Every value used here is a placeholder or generated for the duration of the
 test run. Nothing in this module reads ambient environment variables.
@@ -19,6 +22,7 @@ test run. Nothing in this module reads ambient environment variables.
 import contextlib
 import re
 import unittest
+from datetime import date
 from pathlib import Path
 from unittest.mock import patch
 
@@ -32,6 +36,7 @@ ENV_EXAMPLE = REPOSITORY_ROOT / ".env.example"
 DEPLOYMENT_DOC = REPOSITORY_ROOT / "docs" / "DEPLOYMENT.md"
 OWNER_ACTIONS_DOC = REPOSITORY_ROOT / "docs" / "OWNER_ACTIONS.md"
 DEPLOY_CHECK_SCRIPT = REPOSITORY_ROOT / "scripts" / "deploy-check.ps1"
+MIGRATIONS_DIR = REPOSITORY_ROOT / "supabase" / "migrations"
 
 # The host health gate probes liveness; readiness is for the preflight and
 # for monitoring, both of which can read a 503 instead of acting on it.
@@ -447,6 +452,162 @@ class NoCredentialLooksCommittedTests(unittest.TestCase):
             self.assertIn(rule, rules)
         self.assertIn("!.env.example", rules)
 
+
+class MigrationChainIsAValidUpgradePathTests(unittest.TestCase):
+    """A release may not call migrations ready on the strength of a file listing.
+
+    `docs/DEPLOYMENT.md` tells the owner to apply every file in
+    `supabase/migrations` in filename order, by hand, in the Supabase SQL
+    editor. Nothing records which files a project has already seen, so the
+    chain has to survive being replayed over a database that already holds
+    part of it. A statement that aborts on the second pass stops the script
+    midway and leaves the schema half-upgraded, with every hardening
+    statement below the failure silently unapplied.
+
+    These checks read SQL text only. They open no connection, create no
+    database and run no migration.
+    """
+
+    # PostgreSQL has no IF NOT EXISTS for CREATE POLICY, CREATE TRIGGER or
+    # CREATE TYPE, so the chain guards those by name instead.
+    POLICY = re.compile(
+        r'(?:drop\s+policy\s+if\s+exists\s+"(?P<dropped>[^"]+)")'
+        r'|(?:create\s+policy\s+"(?P<created>[^"]+)")',
+        re.IGNORECASE,
+    )
+    CREATE_TRIGGER = re.compile(r"create\s+trigger\s+(\w+)", re.IGNORECASE)
+    DROP_TRIGGER = re.compile(r"drop\s+trigger\s+if\s+exists\s+(\w+)", re.IGNORECASE)
+    CREATE_TYPE = re.compile(r"create\s+type\s", re.IGNORECASE)
+
+    # Statements that abort a replay unless they carry their own guard.
+    UNGUARDED_STATEMENTS = (
+        ("create table", re.compile(r"create\s+table\s+(?!if\s+not\s+exists)", re.I)),
+        (
+            "create index",
+            re.compile(
+                r"create\s+(?:unique\s+)?index\s+(?!if\s+not\s+exists)", re.I
+            ),
+        ),
+        ("create sequence", re.compile(r"create\s+sequence\s+(?!if\s+not\s+exists)", re.I)),
+        ("create function", re.compile(r"create\s+function\s", re.I)),
+        ("add column", re.compile(r"add\s+column\s+(?!if\s+not\s+exists)", re.I)),
+    )
+
+    FILENAME = re.compile(r"^(?P<stamp>\d{8})_[a-z0-9_]+\.sql$")
+
+    @classmethod
+    def setUpClass(cls):
+        cls.chain = sorted(MIGRATIONS_DIR.glob("*.sql"), key=lambda path: path.name)
+        cls.sql = {path.name: path.read_text(encoding="utf-8") for path in cls.chain}
+        cls.deployment = DEPLOYMENT_DOC.read_text(encoding="utf-8")
+        cls.deploy_check = DEPLOY_CHECK_SCRIPT.read_text(encoding="utf-8")
+
+    def test_the_chain_exists(self):
+        # Every assertion below is vacuous if the directory is empty or moved.
+        self.assertGreater(len(self.chain), 1, MIGRATIONS_DIR.as_posix())
+
+    def test_every_filename_declares_an_unambiguous_place_in_the_chain(self):
+        for name in self.sql:
+            with self.subTest(migration=name):
+                match = self.FILENAME.match(name)
+                self.assertIsNotNone(
+                    match, "expected a YYYYMMDD_lower_snake_case.sql migration name"
+                )
+                stamp = match.group("stamp")
+                # A stamp that sorts but is not a real date makes the apply
+                # order look deliberate when it is not.
+                date(int(stamp[:4]), int(stamp[4:6]), int(stamp[6:]))
+
+    def test_filename_order_is_also_chronological_order(self):
+        stamps = [self.FILENAME.match(name).group("stamp") for name in self.sql]
+        self.assertEqual(
+            stamps,
+            sorted(stamps),
+            "the apply order is filename order, so a migration may not carry a "
+            "datestamp older than the file before it",
+        )
+
+    def test_the_documented_apply_order_is_still_filename_order(self):
+        # The replay checks below assume this process. If the guide ever
+        # describes a tool that records applied migrations instead, revisit
+        # these tests rather than leaving them quietly passing.
+        self.assertIn("in filename order", self.deployment)
+
+    def test_deployment_doc_pins_the_last_link_in_the_chain(self):
+        block = re.search(
+            r"final Closed Beta hardening migration is:\s*\n+~~~text\n(.*?)\n~~~",
+            self.deployment,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(
+            block, "docs/DEPLOYMENT.md must name the final hardening migration"
+        )
+        self.assertEqual(
+            block.group(1).strip(),
+            f"supabase/migrations/{self.chain[-1].name}",
+            "a migration was added without re-pointing docs/DEPLOYMENT.md, so an "
+            "owner following the guide would stop short of the real end",
+        )
+
+    def test_deploy_check_pins_the_first_and_last_links_in_the_chain(self):
+        pinned = {
+            label: filename
+            for filename, label in re.findall(
+                r'supabase\\migrations\\([\w.-]+\.sql)"\)\s+"([^"]+)"',
+                self.deploy_check,
+            )
+        }
+        self.assertEqual(pinned.get("Supabase bootstrap migration"), self.chain[0].name)
+        self.assertEqual(
+            pinned.get("Supabase final hardening migration"), self.chain[-1].name
+        )
+        for label, filename in pinned.items():
+            with self.subTest(check=label):
+                self.assertIn(filename, self.sql, "deploy-check pins a missing file")
+
+    def test_no_migration_uses_a_statement_that_aborts_on_a_replay(self):
+        for name, sql in self.sql.items():
+            for label, pattern in self.UNGUARDED_STATEMENTS:
+                with self.subTest(migration=name, statement=label):
+                    self.assertIsNone(
+                        pattern.search(sql),
+                        f"{label} needs an IF NOT EXISTS or OR REPLACE guard to "
+                        "survive a replay over an already-upgraded database",
+                    )
+
+    def test_every_created_policy_is_dropped_first_in_the_same_migration(self):
+        # The Closed Beta migration dropped the policy names it superseded but
+        # not the names it created, so a replay aborted at the first CREATE
+        # POLICY, above the private-bucket and storage hardening in the same
+        # file.
+        for name, sql in self.sql.items():
+            dropped = set()
+            for match in self.POLICY.finditer(sql):
+                if match.group("dropped"):
+                    dropped.add(match.group("dropped"))
+                    continue
+                with self.subTest(migration=name, policy=match.group("created")):
+                    self.assertIn(
+                        match.group("created"),
+                        dropped,
+                        "a replay raises 42710 duplicate_object here",
+                    )
+
+    def test_every_created_trigger_is_dropped_first_in_the_same_migration(self):
+        for name, sql in self.sql.items():
+            dropped = set(self.DROP_TRIGGER.findall(sql))
+            for trigger in self.CREATE_TRIGGER.findall(sql):
+                with self.subTest(migration=name, trigger=trigger):
+                    self.assertIn(trigger, dropped)
+
+    def test_every_created_type_tolerates_already_existing(self):
+        for name, sql in self.sql.items():
+            if not self.CREATE_TYPE.search(sql):
+                continue
+            with self.subTest(migration=name):
+                # The chain wraps CREATE TYPE in a DO block that swallows the
+                # duplicate_object raised by the second pass.
+                self.assertIn("duplicate_object", sql)
 
 if __name__ == "__main__":
     unittest.main()
