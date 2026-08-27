@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AutoLabReport Bridge",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Send AI responses from ChatGPT, Gemini and Claude back to AutoLabReport.",
   "permissions": ["activeTab", "scripting", "storage", "tabs"],
   "host_permissions": [
@@ -18,7 +18,7 @@
     "*://copilot.microsoft.com/*",
     "http://localhost/*",
     "http://127.0.0.1/*",
-    "*://*.vercel.app/*"
+    "https://auto-report-one.vercel.app/*"
   ],
   "action": {
     "default_title": "AutoLabReport Bridge",
@@ -57,7 +57,7 @@
       "matches": [
         "http://localhost/*",
         "http://127.0.0.1/*",
-        "*://*.vercel.app/*"
+        "https://auto-report-one.vercel.app/*"
       ],
       "js": ["content.js"],
       "run_at": "document_idle"

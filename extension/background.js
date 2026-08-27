@@ -3,6 +3,7 @@ const DEFAULT_SETTINGS = {
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:4174",
+    "https://auto-report-one.vercel.app",
   ],
   preferredAiHost: "auto",
   autoReturn: false,
@@ -226,6 +227,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     if (message.type === "SEND_TO_CHATGPT") {
       const settings = await getSettings();
+      if (!isAutoLabTargetUrl(sender.tab?.url || "", settings.targetUrlPatterns || [])) {
+        sendResponse({ ok: false, error: "拒絕未授權的訊息來源" });
+        return;
+      }
       const effectiveSettings = {
         ...settings,
         autoReturn:
