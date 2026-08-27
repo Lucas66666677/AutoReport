@@ -332,6 +332,29 @@ class DeploymentHealthGateProbesLivenessTests(unittest.TestCase):
     def test_deploy_check_probes_the_documented_health_gate(self):
         self.assertIn(self.documented_health_gate(), self.deploy_check)
 
+    def test_liveness_accepts_the_bare_probe_the_host_actually_sends(self):
+        """A health gate sends `GET /api/health` and nothing else.
+
+        Calling `main.health()` from a test proves the handler answers, not
+        that the route does. Giving liveness a required header, query value or
+        route dependency leaves it declared and still returning `ok` here,
+        while the host's credential-free probe starts getting 401/422 -- the
+        instance drops out of rotation with no check reporting it.
+        """
+        route = next(
+            candidate
+            for candidate in main.app.routes
+            if getattr(candidate, "path", None) == LIVENESS_PATH
+        )
+        dependant = route.dependant
+
+        self.assertEqual(route.dependencies, [])
+        self.assertEqual(main.app.router.dependencies, [])
+        self.assertEqual(dependant.dependencies, [])
+        for kind in ("header_params", "query_params", "body_params", "cookie_params"):
+            with self.subTest(parameters=kind):
+                self.assertEqual([param.name for param in getattr(dependant, kind)], [])
+
 
 class LivenessGateAnswersTheHostProbeTests(unittest.TestCase):
     """The platform probes the gate over HTTP, not by calling the function.
