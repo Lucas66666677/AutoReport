@@ -9,8 +9,8 @@ answers four questions before a release is allowed to proceed:
    look, and does the documentation still match the code?
 3. Is the repository free of anything that looks like a real credential?
 4. Does the deployment health gate probe the liveness endpoint rather than
-   the dependency-sensitive readiness endpoint, and is that route still
-   declared?
+   the dependency-sensitive readiness endpoint, is that route still
+   declared, and does it still answer a bare HTTP probe?
 
 Every value used here is a placeholder or generated for the duration of the
 test run. Nothing in this module reads ambient environment variables.
@@ -23,6 +23,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cryptography.fernet import Fernet
+from fastapi.testclient import TestClient
 
 import main
 
@@ -330,6 +331,32 @@ class DeploymentHealthGateProbesLivenessTests(unittest.TestCase):
 
     def test_deploy_check_probes_the_documented_health_gate(self):
         self.assertIn(self.documented_health_gate(), self.deploy_check)
+
+
+class LivenessGateAnswersTheHostProbeTests(unittest.TestCase):
+    """The platform probes the gate over HTTP, not by calling the function.
+
+    The assertions above call `main.health()` directly, so they stay green
+    for any change that leaves the function intact but makes the path
+    unreachable: a dependency added to the route, an auth or rate-limit
+    middleware placed in front of the API surface, a stricter host or origin
+    check. The health checker sends a bare GET -- no credentials, no cookie
+    and no `Origin` header -- and reads only the status code, so that change
+    would fail the deploy and restart a healthy instance.
+    """
+
+    def test_bare_get_on_the_liveness_path_answers_200(self):
+        # Worst case for the gate: every required readiness check missing.
+        # Liveness must still answer, and readiness must still fail closed,
+        # over the same transport the platform uses.
+        with readiness_environment(supabase=False, encryption=False, pandoc=False):
+            with TestClient(main.app) as client:
+                liveness = client.get(LIVENESS_PATH)
+                readiness = client.get(READINESS_PATH)
+
+        self.assertEqual(liveness.status_code, 200)
+        self.assertEqual(liveness.json()["status"], "ok")
+        self.assertEqual(readiness.status_code, 503)
 
 
 class NoCredentialLooksCommittedTests(unittest.TestCase):
