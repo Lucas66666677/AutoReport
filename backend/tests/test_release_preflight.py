@@ -1,13 +1,16 @@
 """Secret-free release preflight.
 
 Runs in CI with no credentials, no Supabase project and no deployment. It
-answers three questions before a release is allowed to proceed:
+answers four questions before a release is allowed to proceed:
 
 1. Does `/api/readiness` fail closed when required production configuration
    is absent, malformed or unprobeable?
 2. Is that required configuration documented where an owner will actually
    look, and does the documentation still match the code?
 3. Is the repository free of anything that looks like a real credential?
+4. Does the deployment health gate probe the liveness endpoint rather than
+   the dependency-sensitive readiness endpoint, and is that route still
+   declared?
 
 Every value used here is a placeholder or generated for the duration of the
 test run. Nothing in this module reads ambient environment variables.
@@ -28,6 +31,11 @@ ENV_EXAMPLE = REPOSITORY_ROOT / ".env.example"
 DEPLOYMENT_DOC = REPOSITORY_ROOT / "docs" / "DEPLOYMENT.md"
 OWNER_ACTIONS_DOC = REPOSITORY_ROOT / "docs" / "OWNER_ACTIONS.md"
 DEPLOY_CHECK_SCRIPT = REPOSITORY_ROOT / "scripts" / "deploy-check.ps1"
+
+# The host health gate probes liveness; readiness is for the preflight and
+# for monitoring, both of which can read a 503 instead of acting on it.
+LIVENESS_PATH = "/api/health"
+READINESS_PATH = "/api/readiness"
 
 # Disposable stand-ins. The Fernet key is generated per run and never leaves
 # this process; the others are unroutable placeholders.
@@ -262,6 +270,66 @@ class RequiredProductionConfigurationIsDocumentedTests(unittest.TestCase):
                     f'{flag} = os.getenv("{flag}") == "true"',
                     self.backend_source,
                 )
+
+
+class DeploymentHealthGateProbesLivenessTests(unittest.TestCase):
+    """The health gate that keeps the service up must not depend on config.
+
+    `/api/readiness` fails closed by design. Wiring it to the host health
+    gate turns a missing `ENCRYPTION_KEY` or an absent Pandoc into a failed
+    deploy and a restarting instance, which takes away the endpoint the owner
+    needs in order to see which check is missing.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.deployment = DEPLOYMENT_DOC.read_text(encoding="utf-8")
+        cls.deploy_check = DEPLOY_CHECK_SCRIPT.read_text(encoding="utf-8")
+
+    def documented_health_gate(self):
+        match = re.search(
+            r"^deployment health gate:(.+)$", self.deployment, re.MULTILINE
+        )
+        self.assertIsNotNone(
+            match, "docs/DEPLOYMENT.md must declare a 'deployment health gate:' line"
+        )
+        return match.group(1).strip()
+
+    def test_documented_health_gate_is_the_liveness_path(self):
+        gate = self.documented_health_gate()
+        self.assertEqual(gate, LIVENESS_PATH)
+        self.assertNotEqual(
+            gate,
+            READINESS_PATH,
+            "readiness returns 503 on a configuration gap and must not gate the host",
+        )
+
+    def test_liveness_route_stays_declared(self):
+        methods = {}
+        for route in main.app.routes:
+            methods.setdefault(getattr(route, "path", None), set()).update(
+                getattr(route, "methods", set())
+            )
+
+        self.assertIn(
+            LIVENESS_PATH, methods, "the documented health gate must have a route"
+        )
+        self.assertIn("GET", methods[LIVENESS_PATH])
+        # The gate is only meaningful while the two endpoints stay distinct.
+        self.assertIn(READINESS_PATH, methods)
+
+    def test_liveness_answers_while_every_required_check_is_missing(self):
+        with readiness_environment(supabase=False, encryption=False, pandoc=False):
+            payload = main.health()
+
+            with self.assertRaises(main.HTTPException) as raised:
+                main.readiness()
+
+        self.assertEqual(payload["status"], "ok")
+        self.assertEqual(raised.exception.status_code, 503)
+
+    def test_deploy_check_probes_the_documented_health_gate(self):
+        self.assertIn(self.documented_health_gate(), self.deploy_check)
 
 
 class NoCredentialLooksCommittedTests(unittest.TestCase):

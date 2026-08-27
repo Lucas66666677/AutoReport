@@ -102,6 +102,7 @@ fails the build when the lines below stop matching the code, `.env.example`
 and `scripts/deploy-check.ps1`. Edit these lists and the code together.
 
 ~~~text
+deployment health gate: /api/health
 readiness required: supabase, encryption, pandoc
 readiness optional: built_in_ai
 required backend env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ENCRYPTION_KEY, FRONTEND_URL, BACKEND_URL, CORS_ALLOWED_ORIGINS
@@ -111,6 +112,19 @@ required frontend env: VITE_API_URL, VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
 Readiness reports whether built-in AI is configured but does not make AI a
 hard infrastructure check, so a Groq or Gemini outage cannot take the writer
 offline.
+
+### The health gate probes liveness
+
+Set the host's health check path to `/api/health` (Render -> Service ->
+Settings -> Health Check Path). That endpoint reports only that the process
+answers, so it stays green while an owner is still filling configuration in.
+
+`/api/readiness` is dependency-sensitive by design: it returns 503 whenever
+Supabase, `ENCRYPTION_KEY` or Pandoc is absent. Pointing the platform health
+gate at it turns a configuration gap into a failed deploy and a restarting
+instance, which removes the very endpoint an owner needs in order to read
+which check is missing. Probe readiness from the section 5 preflight and from
+monitoring, never from the gate that decides whether the service stays up.
 
 ### Readiness fails closed
 
