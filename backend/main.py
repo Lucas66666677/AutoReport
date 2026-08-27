@@ -35,11 +35,31 @@ load_dotenv(Path(__file__).with_name(".env"))
 
 app = FastAPI(title="AutoLabReport API", version="0.4.0")
 
+# The deployed frontend origin is part of the *default* list, not only of the
+# CORS_ALLOWED_ORIGINS override. The default was localhost-only, and the live
+# Render service does not set the variable, so every browser call from
+# https://auto-report-one.vercel.app to this API was answered with
+# "400 Disallowed CORS origin" -- the deployed frontend could not reach the
+# deployed backend at all. Allowing exactly the one origin this product is
+# served from is what a correct CORS_ALLOWED_ORIGINS already does, not a
+# loosening: it is a single https origin the project owns, and an explicit
+# CORS_ALLOWED_ORIGINS still replaces this list entirely.
+#
+# Same origin the browser extension is scoped to in extension/manifest.json.
+PRODUCTION_ORIGIN = "https://auto-report-one.vercel.app"
+DEFAULT_ALLOWED_ORIGINS = (
+    PRODUCTION_ORIGIN,
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",
+    "http://127.0.0.1:4173",
+)
+
 ALLOWED_ORIGINS = [
     origin.strip()
     for origin in os.getenv(
         "CORS_ALLOWED_ORIGINS",
-        "http://localhost:5173,http://127.0.0.1:5173,http://localhost:4173,http://127.0.0.1:4173",
+        ",".join(DEFAULT_ALLOWED_ORIGINS),
     ).split(",")
     if origin.strip()
 ]

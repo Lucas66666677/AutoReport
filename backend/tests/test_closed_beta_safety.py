@@ -296,3 +296,26 @@ class ClosedBetaMigrationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProductionCorsOriginTests(unittest.TestCase):
+    """The deployed frontend must not depend on a dashboard variable to be allowed.
+
+    CORS_ALLOWED_ORIGINS defaulted to localhost only, and the live Render service
+    does not set it, so preflights from https://auto-report-one.vercel.app were
+    answered with "400 Disallowed CORS origin" -- the deployed frontend could not
+    call the deployed backend at all.
+    """
+
+    def test_production_origin_is_allowed_by_default(self):
+        self.assertIn("https://auto-report-one.vercel.app", main.DEFAULT_ALLOWED_ORIGINS)
+        self.assertIn("https://auto-report-one.vercel.app", main.ALLOWED_ORIGINS)
+
+    def test_local_development_origins_are_still_allowed(self):
+        for origin in ("http://localhost:5173", "http://localhost:4173"):
+            self.assertIn(origin, main.DEFAULT_ALLOWED_ORIGINS)
+
+    def test_defaults_are_exact_origins_never_wildcards(self):
+        for origin in main.DEFAULT_ALLOWED_ORIGINS:
+            self.assertNotIn("*", origin)
+            self.assertTrue(origin.startswith(("https://", "http://localhost", "http://127.0.0.1")))
