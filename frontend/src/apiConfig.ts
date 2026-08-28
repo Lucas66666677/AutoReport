@@ -22,6 +22,98 @@ function isLoopbackHostname(hostname: string): boolean {
   return LOOPBACK_HOSTNAMES.has(host) || host.endsWith('.localhost') || IPV4_LOOPBACK_PATTERN.test(host)
 }
 
+const IPV4_LITERAL_PATTERN = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/
+
+/** Returns the four octets of a dotted-quad literal, or null when the host is a name. */
+function parseIpv4Octets(host: string): number[] | null {
+  const match = IPV4_LITERAL_PATTERN.exec(host)
+  if (!match) {
+    return null
+  }
+  const octets = match.slice(1).map(Number)
+  return octets.every((octet) => octet <= 255) ? octets : null
+}
+
+/** True for IPv4 space that never routes on the public internet: RFC 1918, RFC 6598 CGNAT, RFC 3927 link-local, 0.0.0.0/8. */
+function isPrivateIpv4(octets: number[]): boolean {
+  const [first, second] = octets
+  return (
+    first === 0 ||
+    first === 10 ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168) ||
+    (first === 169 && second === 254) ||
+    (first === 100 && second >= 64 && second <= 127)
+  )
+}
+
+/**
+ * Expands a bracketless IPv6 literal into its eight hextets, or null when the
+ * host is not one. `URL` has already normalised the literal, so every group is
+ * hexadecimal -- an embedded dotted quad arrives as `::ffff:c0a8:1`, not `::ffff:192.168.0.1`.
+ */
+function parseIpv6Hextets(host: string): number[] | null {
+  const halves = host.split('::')
+  if (halves.length > 2) {
+    return null
+  }
+  const toHextets = (half: string): number[] | null => {
+    if (half === '') {
+      return []
+    }
+    const groups = half.split(':')
+    if (!groups.every((group) => /^[0-9a-f]{1,4}$/.test(group))) {
+      return null
+    }
+    return groups.map((group) => parseInt(group, 16))
+  }
+  const head = toHextets(halves[0])
+  const tail = halves.length === 2 ? toHextets(halves[1]) : []
+  if (!head || !tail) {
+    return null
+  }
+  if (halves.length === 1) {
+    return head.length === 8 ? head : null
+  }
+  const missing = 8 - head.length - tail.length
+  return missing >= 1 ? [...head, ...new Array<number>(missing).fill(0), ...tail] : null
+}
+
+/** True for IPv6 space that never routes on the public internet: fc00::/7 unique-local, fe80::/10 link-local, `::`, and IPv4-mapped private or loopback addresses. */
+function isPrivateIpv6(hextets: number[]): boolean {
+  const first = hextets[0]
+  if ((first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80) {
+    return true
+  }
+  if (hextets.every((hextet) => hextet === 0)) {
+    return true
+  }
+  if (hextets.slice(0, 5).every((hextet) => hextet === 0) && hextets[5] === 0xffff) {
+    const mapped = [hextets[6] >> 8, hextets[6] & 0xff, hextets[7] >> 8, hextets[7] & 0xff]
+    return mapped[0] === 127 || isPrivateIpv4(mapped)
+  }
+  return false
+}
+
+/**
+ * True when the host is an address literal that only resolves inside a private
+ * network -- a LAN backend, a VPN peer or a container address. Unlike loopback
+ * it can answer from the build machine, so a bad value looks healthy there and
+ * is unreachable for every visitor.
+ */
+function isPrivateNetworkHostname(hostname: string): boolean {
+  const host = hostname.toLowerCase()
+  const octets = parseIpv4Octets(host)
+  if (octets) {
+    return isPrivateIpv4(octets)
+  }
+  if (host.startsWith('[') && host.endsWith(']')) {
+    const hextets = parseIpv6Hextets(host.slice(1, -1))
+    return hextets ? isPrivateIpv6(hextets) : false
+  }
+  return false
+}
+
 /** Trims the configured value and drops trailing slashes so `${base}/api/x` stays well formed. */
 export function normalizeApiBaseUrl(rawValue: string | undefined | null): string {
   const value = (rawValue ?? '').trim()
@@ -53,6 +145,9 @@ export function describeApiBaseUrlProblem(rawValue: string | undefined | null): 
   }
   if (isLoopbackHostname(url.hostname)) {
     return `"${value}" points at the build machine (loopback), which no visitor's browser can reach`
+  }
+  if (isPrivateNetworkHostname(url.hostname)) {
+    return `"${value}" points at a private network address, which no visitor's browser can reach`
   }
   if (url.protocol !== 'https:') {
     return `"${value}" is not HTTPS, so an HTTPS page would refuse the request as mixed content`
