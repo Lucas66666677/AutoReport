@@ -3,6 +3,7 @@ import {
   describeApiBaseUrlProblem,
   LOCAL_DEV_API_BASE_URL,
   normalizeApiBaseUrl,
+  PUBLIC_SITE_ORIGIN,
   resolveApiBaseUrl,
 } from './apiConfig'
 
@@ -68,6 +69,25 @@ describe('production API origin validation', () => {
     expect(describeApiBaseUrlProblem('api.autolabreport.com')).toMatch(/not an absolute URL/)
     expect(describeApiBaseUrlProblem('/api')).toMatch(/not an absolute URL/)
     expect(describeApiBaseUrlProblem('ws://api.autolabreport.com')).toMatch(/not an http\(s\) URL/)
+  })
+
+  it('rejects the origin the site itself is served from', () => {
+    // Passes every other check -- absolute, public, HTTPS -- and is the one
+    // wrong value a reader of the CORS fix is most likely to reach for. It
+    // makes every call same-origin, where vercel.json's catch-all rewrite
+    // answers 200 with the app shell instead of an error.
+    expect(describeApiBaseUrlProblem(PUBLIC_SITE_ORIGIN)).toMatch(/origin this site is served from/)
+    expect(describeApiBaseUrlProblem(`${PUBLIC_SITE_ORIGIN}/`)).toMatch(/origin this site is served from/)
+    expect(describeApiBaseUrlProblem(`  ${PUBLIC_SITE_ORIGIN}  `)).toMatch(/origin this site is served from/)
+    // A path does not escape the rewrite either: /(.*) covers /api too.
+    expect(describeApiBaseUrlProblem(`${PUBLIC_SITE_ORIGIN}/api`)).toMatch(/origin this site is served from/)
+  })
+
+  it('keeps a separate backend on the same shared host usable', () => {
+    // Only this exact origin is the app shell; a sibling deployment is a real
+    // cross-origin backend that CORS governs normally.
+    expect(describeApiBaseUrlProblem('https://auto-report-api.vercel.app')).toBeNull()
+    expect(describeApiBaseUrlProblem('https://auto-report-one.example.com')).toBeNull()
   })
 
   it('rejects plaintext HTTP and origins carrying a query or fragment', () => {

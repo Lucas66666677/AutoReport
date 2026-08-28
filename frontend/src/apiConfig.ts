@@ -9,6 +9,18 @@
 
 export const LOCAL_DEV_API_BASE_URL = 'http://localhost:8000'
 
+/**
+ * The public origin this SPA is served from -- the same origin the API names as
+ * `PRODUCTION_ORIGIN` and allows through CORS. `backend/tests/test_release_preflight.py`
+ * pins the two literals together, because nothing else compares them.
+ *
+ * It is here so the API origin can be rejected for *being* it. A build given
+ * this value produces same-origin `/api/...` calls, which never reach CORS at
+ * all: the catch-all rewrite in frontend/vercel.json answers them 200 with the
+ * app shell, so `res.ok` is true and the HTML only fails later, as a parse error.
+ */
+export const PUBLIC_SITE_ORIGIN = 'https://auto-report-one.vercel.app'
+
 export type ApiBaseUrlEnv = {
   VITE_API_URL?: string
   DEV?: boolean
@@ -151,6 +163,9 @@ export function describeApiBaseUrlProblem(rawValue: string | undefined | null): 
   }
   if (url.protocol !== 'https:') {
     return `"${value}" is not HTTPS, so an HTTPS page would refuse the request as mixed content`
+  }
+  if (url.origin === PUBLIC_SITE_ORIGIN) {
+    return `"${value}" is the origin this site is served from, so the SPA fallback would answer API calls with the app shell`
   }
   if (url.search || url.hash) {
     return `"${value}" carries a query string or fragment, which breaks request paths appended to it`

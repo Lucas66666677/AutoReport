@@ -37,7 +37,9 @@ VITE_ENABLE_BROWSER_EXTENSION=false
 VITE_API_URL must be HTTPS and must not point to localhost; `npm run build` fails when it is blank,
 loopback, non-HTTPS or otherwise unusable (frontend/src/apiConfig.ts). The SPA fallback is defined in
 frontend/vercel.json, which is why an unset value would otherwise answer API calls with the app shell
-instead of an error.
+instead of an error. For the same reason it must not be this site's own public origin: that
+value is same-origin, so it never reaches CORS and the fallback answers it with the app shell too.
+Point it at the Render backend.
 
 ## 3. Backend on Render
 
