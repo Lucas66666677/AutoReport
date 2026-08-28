@@ -1,7 +1,7 @@
 """Secret-free release preflight.
 
 Runs in CI with no credentials, no Supabase project and no deployment. It
-answers four questions before a release is allowed to proceed:
+answers the questions below before a release is allowed to proceed:
 
 1. Does `/api/readiness` fail closed when required production configuration
    is absent, malformed or unprobeable?
@@ -14,12 +14,15 @@ answers four questions before a release is allowed to proceed:
 5. Is the Supabase migration chain a valid upgrade path: an unambiguous
     apply order, still pinned by the release documentation and the deploy
     check, and re-appliable onto a database that already holds part of it?
+6. Does the frontend host still fall back to the app shell, so the deep
+   links the product hands out survive a cold load?
 
 Every value used here is a placeholder or generated for the duration of the
 test run. Nothing in this module reads ambient environment variables.
 """
 
 import contextlib
+import json
 import re
 import unittest
 from datetime import date
@@ -37,6 +40,10 @@ DEPLOYMENT_DOC = REPOSITORY_ROOT / "docs" / "DEPLOYMENT.md"
 OWNER_ACTIONS_DOC = REPOSITORY_ROOT / "docs" / "OWNER_ACTIONS.md"
 DEPLOY_CHECK_SCRIPT = REPOSITORY_ROOT / "scripts" / "deploy-check.ps1"
 MIGRATIONS_DIR = REPOSITORY_ROOT / "supabase" / "migrations"
+FRONTEND_DIR = REPOSITORY_ROOT / "frontend"
+VERCEL_CONFIG = FRONTEND_DIR / "vercel.json"
+SPA_SHELL = FRONTEND_DIR / "index.html"
+FRONTEND_APP_SOURCE = FRONTEND_DIR / "src" / "App.tsx"
 
 # The host health gate probes liveness; readiness is for the preflight and
 # for monitoring, both of which can read a 503 instead of acting on it.
@@ -608,6 +615,179 @@ class MigrationChainIsAValidUpgradePathTests(unittest.TestCase):
                 # The chain wraps CREATE TYPE in a DO block that swallows the
                 # duplicate_object raised by the second pass.
                 self.assertIn("duplicate_object", sql)
+
+
+def vercel_source_to_pattern(source):
+    """Compile a Vercel rewrite `source` into an anchored regular expression.
+
+    Vercel matches `source` with path-to-regexp: a parenthesised group is a
+    raw regular expression, `:name` is one path segment, and a trailing `*`,
+    `+` or `?` widens it. Everything else is a literal. Syntax outside that
+    vocabulary raises instead of being guessed at, so an unfamiliar rewrite
+    fails the release rather than quietly matching nothing.
+    """
+    parameter = re.compile(r":([A-Za-z_][A-Za-z0-9_]*)([*+?]?)")
+    widened = {"*": "(?:.*)", "+": "(?:.+)", "?": "(?:[^/]*)", "": "(?:[^/]+)"}
+    parts = []
+    index = 0
+    while index < len(source):
+        character = source[index]
+        if character == "(":
+            depth = 0
+            end = index
+            while end < len(source):
+                if source[end] == "(":
+                    depth += 1
+                elif source[end] == ")":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                end += 1
+            if depth != 0:
+                raise ValueError(f"unbalanced group in rewrite source {source!r}")
+            parts.append(source[index : end + 1])
+            index = end + 1
+        elif character == ":":
+            match = parameter.match(source, index)
+            if match is None:
+                raise ValueError(f"unreadable parameter in rewrite source {source!r}")
+            parts.append(widened[match.group(2)])
+            index = match.end()
+        elif character in "[]{}?+*^$|\\":
+            raise ValueError(f"unsupported syntax in rewrite source {source!r}")
+        else:
+            parts.append(re.escape(character))
+            index += 1
+    return re.compile("^" + "".join(parts) + "$")
+
+
+class SpaFallbackServesEveryDeepLinkTests(unittest.TestCase):
+    """The frontend host must answer a path no build artifact occupies.
+
+    The product hands out deep links. A share link leaves the app as
+    `https://<frontend>/p/<document id>` and is opened by someone who has
+    never loaded the site, and a signed-in session rewrites its own URL to
+    `/dashboard/projects` and its siblings, so any refresh is a cold load
+    too. Vercel resolves those against the built files first and finds
+    nothing; only the rewrite in `frontend/vercel.json` turns them into the
+    app shell.
+
+    Nothing else in the release catches a narrowed or dropped rewrite. CI
+    never runs `scripts/deploy-check.ps1`, and that script only checks that
+    the file exists -- a `vercel.json` holding headers and no rewrite passes
+    it. The build, the deploy and the health gate all stay green while every
+    share link 404s.
+
+    These checks read repository files only. They start no server and make
+    no request.
+    """
+
+    #: One representative path per deep link the app hands out. The ids are
+    #: arbitrary; only their shape matters to the rewrite.
+    DEEP_LINKS = (
+        "/",
+        "/p/1f3b8c40-52f7-4a1b-9c6d-0e7a5b2d84c9",
+        "/editor/1f3b8c40-52f7-4a1b-9c6d-0e7a5b2d84c9",
+        "/dashboard",
+        "/dashboard/home",
+        "/dashboard/projects",
+        "/dashboard/settings",
+        "/dashboard/templates",
+        "/dashboard/prompts",
+        "/dashboard/trash",
+    )
+
+    #: What the app source must still contain for DEEP_LINKS to be current.
+    ROUTE_MARKERS = (
+        # App() reads the public share id straight off the pathname.
+        r"/^\/p\/([^/]+)/",
+        # The editor accepts a shared document the same way.
+        r"/^\/editor\/([^/]+)/",
+        # A share link is built from the visitor-facing origin and handed out.
+        "${window.location.origin}/p/${",
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.config = json.loads(VERCEL_CONFIG.read_text(encoding="utf-8"))
+        cls.rewrites = cls.config.get("rewrites", [])
+        cls.app_source = FRONTEND_APP_SOURCE.read_text(encoding="utf-8")
+        cls.deployment = DEPLOYMENT_DOC.read_text(encoding="utf-8")
+        cls.deploy_check = DEPLOY_CHECK_SCRIPT.read_text(encoding="utf-8")
+
+    def destination_for(self, path):
+        """The destination Vercel would serve for `path`, or None for a 404."""
+        for rewrite in self.rewrites:
+            if vercel_source_to_pattern(rewrite["source"]).match(path):
+                return rewrite["destination"]
+        return None
+
+    def documented_fallback(self):
+        match = re.search(r"^spa fallback:(.+)$", self.deployment, re.MULTILINE)
+        self.assertIsNotNone(
+            match, "docs/DEPLOYMENT.md must declare a 'spa fallback:' line"
+        )
+        return match.group(1).strip()
+
+    def test_the_source_reader_rejects_the_shapes_it_must_catch(self):
+        # A catch-all covers a share link; a narrowed rewrite does not, and
+        # that difference is the whole point of the check below it.
+        self.assertTrue(vercel_source_to_pattern("/(.*)").match("/p/abc"))
+        self.assertIsNone(vercel_source_to_pattern("/dashboard/(.*)").match("/p/abc"))
+        self.assertIsNone(vercel_source_to_pattern("/p").match("/p/abc"))
+        # A single-segment parameter stops at the slash.
+        self.assertTrue(vercel_source_to_pattern("/p/:id").match("/p/abc"))
+        self.assertIsNone(vercel_source_to_pattern("/p/:id").match("/p/abc/def"))
+        # Unreadable syntax fails loudly instead of matching nothing.
+        with self.assertRaises(ValueError):
+            vercel_source_to_pattern("/(unbalanced")
+        with self.assertRaises(ValueError):
+            vercel_source_to_pattern("/dashboard*")
+
+    def test_the_frontend_host_configuration_declares_a_rewrite(self):
+        self.assertTrue(
+            self.rewrites,
+            "frontend/vercel.json must keep the SPA fallback rewrite",
+        )
+        for rewrite in self.rewrites:
+            with self.subTest(rewrite=rewrite):
+                self.assertIn("source", rewrite)
+                self.assertIn("destination", rewrite)
+
+    def test_every_deep_link_the_app_hands_out_reaches_the_app_shell(self):
+        fallback = self.documented_fallback()
+        for path in self.DEEP_LINKS:
+            with self.subTest(path=path):
+                self.assertEqual(
+                    self.destination_for(path),
+                    fallback,
+                    f"a cold load of {path} would 404 instead of loading the app",
+                )
+
+    def test_the_deep_link_list_still_matches_the_routes_the_app_declares(self):
+        # Keeps DEEP_LINKS from decaying into paths the app has stopped
+        # using, which would leave this class passing and empty.
+        for marker in self.ROUTE_MARKERS:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, self.app_source)
+        for path in self.DEEP_LINKS:
+            if path.startswith("/dashboard/"):
+                with self.subTest(path=path):
+                    self.assertIn(f"'{path}'", self.app_source)
+
+    def test_the_fallback_destination_is_the_shell_the_build_produces(self):
+        fallback = self.documented_fallback()
+        self.assertTrue(fallback.startswith("/"), "the destination is site-absolute")
+        shell = FRONTEND_DIR / fallback.lstrip("/")
+        self.assertEqual(shell, SPA_SHELL)
+        self.assertTrue(shell.is_file(), f"{fallback} must exist to be served")
+        # Vite rewrites this entry into the hashed bundle at build time; an
+        # index.html without it would deploy as a blank page.
+        self.assertIn("/src/main.tsx", shell.read_text(encoding="utf-8"))
+
+    def test_the_local_deploy_check_still_names_the_host_configuration(self):
+        self.assertIn("vercel.json", self.deploy_check)
+
 
 if __name__ == "__main__":
     unittest.main()
