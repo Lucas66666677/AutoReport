@@ -16,6 +16,9 @@ answers the questions below before a release is allowed to proceed:
     check, and re-appliable onto a database that already holds part of it?
 6. Does the frontend host still fall back to the app shell, so the deep
    links the product hands out survive a cold load?
+7. Does the release still refuse to build the frontend with the site's own
+   public origin as its API origin, and does that origin still agree with
+   the one the API allows through CORS?
 
 Every value used here is a placeholder or generated for the duration of the
 test run. Nothing in this module reads ambient environment variables.
@@ -44,6 +47,8 @@ FRONTEND_DIR = REPOSITORY_ROOT / "frontend"
 VERCEL_CONFIG = FRONTEND_DIR / "vercel.json"
 SPA_SHELL = FRONTEND_DIR / "index.html"
 FRONTEND_APP_SOURCE = FRONTEND_DIR / "src" / "App.tsx"
+FRONTEND_API_CONFIG = FRONTEND_DIR / "src" / "apiConfig.ts"
+VITE_CONFIG = FRONTEND_DIR / "vite.config.ts"
 
 # The host health gate probes liveness; readiness is for the preflight and
 # for monitoring, both of which can read a 503 instead of acting on it.
@@ -787,6 +792,125 @@ class SpaFallbackServesEveryDeepLinkTests(unittest.TestCase):
 
     def test_the_local_deploy_check_still_names_the_host_configuration(self):
         self.assertIn("vercel.json", self.deploy_check)
+
+
+EXPORTED_LINE = re.compile(r"^export (?:const|function|type) ", re.MULTILINE)
+
+
+def ts_exported_string(source, name, source_label):
+    """Read a single `export const NAME = '...'` out of a TypeScript module."""
+    found = re.findall(
+        rf"^export const {re.escape(name)} = '([^']*)'$", source, re.MULTILINE
+    )
+    if len(found) != 1:
+        raise AssertionError(
+            f"{source_label} must declare `export const {name}` exactly once,"
+            f" found {len(found)}"
+        )
+    return found[0]
+
+
+def ts_function_body(source, name, source_label):
+    """Read one exported function, ending where the next export begins.
+
+    Brace matching would have to understand the template literals these
+    functions return, so the region is delimited by the exports around it.
+    """
+    opening = re.search(
+        rf"^export function {re.escape(name)}\(", source, re.MULTILINE
+    )
+    if opening is None:
+        raise AssertionError(f"{source_label} no longer exports `{name}`")
+    following = EXPORTED_LINE.search(source, opening.end())
+    end = following.start() if following else len(source)
+    return source[opening.start():end]
+
+
+class ApiOriginIsNeverTheSiteOwnOriginTests(unittest.TestCase):
+    """The API origin a release is built with must not be the site's own origin.
+
+    `VITE_API_URL` is inlined at build time, so a wrong value is not
+    recoverable at runtime -- and the one wrong value that passes every other
+    check is the public origin the site is served from. It is absolute,
+    public and HTTPS, so it has to be rejected for what it is rather than for
+    its shape.
+
+    It then fails silently past both guards this module already keeps. CORS
+    never runs, because same-origin requests are not cross-origin ones, so
+    the allowlist is not the mechanism in play at all; and the catch-all
+    rewrite proven by `SpaFallbackServesEveryDeepLinkTests` covers `/api/...`
+    as readily as a share link, so those calls answer 200 with the app shell.
+    `res.ok` is true, and the HTML surfaces later as a JSON parse error that
+    points at the backend rather than at the setting that is wrong.
+
+    Nothing compares the two literals: `frontend/src/apiConfig.ts` names the
+    site origin to refuse it, `backend/main.py` names the same origin to
+    allow it through CORS. This class is what keeps them one origin.
+
+    Reads repository files only. It starts no server and makes no request.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.api_config = FRONTEND_API_CONFIG.read_text(encoding="utf-8")
+        cls.vite_config = VITE_CONFIG.read_text(encoding="utf-8")
+
+    def test_the_frontend_and_the_api_name_the_same_public_origin(self):
+        self.assertEqual(
+            ts_exported_string(
+                self.api_config, "PUBLIC_SITE_ORIGIN", "frontend/src/apiConfig.ts"
+            ),
+            main.PRODUCTION_ORIGIN,
+        )
+
+    def test_the_api_origin_check_still_reads_the_site_origin(self):
+        # A constant the check has stopped consulting is dead text, and the
+        # frontend suite would go on passing against a stale literal.
+        self.assertIn(
+            "PUBLIC_SITE_ORIGIN",
+            ts_function_body(
+                self.api_config,
+                "describeApiBaseUrlProblem",
+                "frontend/src/apiConfig.ts",
+            ),
+        )
+
+    def test_the_production_build_still_runs_the_api_origin_check(self):
+        # Unwired, the check is a library function no release ever calls and
+        # an unusable origin ships as a green build.
+        self.assertIn("describeApiBaseUrlProblem", self.vite_config)
+        self.assertIn("VITE_API_URL", self.vite_config)
+
+    def test_the_source_readers_reject_the_shapes_they_must_catch(self):
+        probe = (
+            "export const PUBLIC_SITE_ORIGIN = 'https://example.invalid'\n"
+            "export function describeApiBaseUrlProblem(value: string) {\n"
+            "  return value === PUBLIC_SITE_ORIGIN ? 'no' : null\n"
+            "}\n"
+            "export function resolveApiBaseUrl() {\n"
+            "  return OTHER_CONSTANT\n"
+            "}\n"
+        )
+        self.assertEqual(
+            ts_exported_string(probe, "PUBLIC_SITE_ORIGIN", "probe"),
+            "https://example.invalid",
+        )
+        for absent in ("", "const PUBLIC_SITE_ORIGIN = 'x'\n", probe + probe):
+            with self.subTest(source=absent[:24]):
+                with self.assertRaises(AssertionError):
+                    ts_exported_string(absent, "PUBLIC_SITE_ORIGIN", "probe")
+        # The body must stop at the next export, or every constant named
+        # anywhere later in the module would satisfy the check above.
+        self.assertIn(
+            "PUBLIC_SITE_ORIGIN",
+            ts_function_body(probe, "describeApiBaseUrlProblem", "probe"),
+        )
+        self.assertNotIn(
+            "PUBLIC_SITE_ORIGIN",
+            ts_function_body(probe, "resolveApiBaseUrl", "probe"),
+        )
+        with self.assertRaises(AssertionError):
+            ts_function_body(probe, "missingFunction", "probe")
 
 
 if __name__ == "__main__":
