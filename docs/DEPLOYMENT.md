@@ -103,6 +103,7 @@ and `scripts/deploy-check.ps1`. Edit these lists and the code together.
 
 ~~~text
 deployment health gate: /api/health
+spa fallback: /index.html
 readiness required: supabase, encryption, pandoc
 readiness optional: built_in_ai
 required backend env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ENCRYPTION_KEY, FRONTEND_URL, BACKEND_URL, CORS_ALLOWED_ORIGINS
@@ -125,6 +126,18 @@ gate at it turns a configuration gap into a failed deploy and a restarting
 instance, which removes the very endpoint an owner needs in order to read
 which check is missing. Probe readiness from the section 5 preflight and from
 monitoring, never from the gate that decides whether the service stays up.
+
+### Every deep link depends on the SPA fallback
+
+`frontend/vercel.json` rewrites every path to `/index.html`. That is not a
+convenience. A share link is handed to someone else as
+`https://<frontend>/p/<document id>`, and a signed-in session parks itself on
+`/dashboard/projects` and its siblings, so a cold load or a refresh asks the
+host for a path no build artifact occupies. Narrowing or dropping the rewrite
+turns every one of those into a 404 while the site still builds, deploys and
+answers its health gate. `backend/tests/test_release_preflight.py` reads the
+rewrite and checks that each path the app itself hands out still resolves to
+the shell.
 
 ### Readiness fails closed
 
