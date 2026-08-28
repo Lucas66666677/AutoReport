@@ -106,6 +106,7 @@ and `scripts/deploy-check.ps1`. Edit these lists and the code together.
 ~~~text
 deployment health gate: /api/health
 spa fallback: /index.html
+public site origin: https://auto-report-one.vercel.app
 readiness required: supabase, encryption, pandoc
 readiness optional: built_in_ai
 required backend env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ENCRYPTION_KEY, FRONTEND_URL, BACKEND_URL, CORS_ALLOWED_ORIGINS

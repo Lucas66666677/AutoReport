@@ -854,6 +854,7 @@ class ApiOriginIsNeverTheSiteOwnOriginTests(unittest.TestCase):
     def setUpClass(cls):
         cls.api_config = FRONTEND_API_CONFIG.read_text(encoding="utf-8")
         cls.vite_config = VITE_CONFIG.read_text(encoding="utf-8")
+        cls.deployment = DEPLOYMENT_DOC.read_text(encoding="utf-8")
 
     def test_the_frontend_and_the_api_name_the_same_public_origin(self):
         self.assertEqual(
@@ -862,6 +863,18 @@ class ApiOriginIsNeverTheSiteOwnOriginTests(unittest.TestCase):
             ),
             main.PRODUCTION_ORIGIN,
         )
+
+    def test_the_release_contract_documents_that_same_origin(self):
+        # The owner setting VITE_API_URL in the Vercel dashboard reads this
+        # block, not either source file.
+        documented = re.search(
+            r"^public site origin:(.+)$", self.deployment, re.MULTILINE
+        )
+        self.assertIsNotNone(
+            documented,
+            "docs/DEPLOYMENT.md must declare a 'public site origin:' line",
+        )
+        self.assertEqual(documented.group(1).strip(), main.PRODUCTION_ORIGIN)
 
     def test_the_api_origin_check_still_reads_the_site_origin(self):
         # A constant the check has stopped consulting is dead text, and the
