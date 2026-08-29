@@ -62,6 +62,21 @@ DISPOSABLE_SUPABASE_URL = "https://preflight.invalid"
 DISPOSABLE_SERVICE_ROLE = "preflight-placeholder-not-a-service-role"
 
 
+def _env_example_values() -> dict[str, str]:
+    """The `NAME=value` pairs declared in `.env.example`.
+
+    Read from the file rather than hard-coded, so a reworded placeholder keeps
+    the placeholder-rejection test honest instead of stale.
+    """
+    values: dict[str, str] = {}
+    for line in ENV_EXAMPLE.read_text(encoding="utf-8").splitlines():
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        name, _, value = line.partition("=")
+        values[name.strip()] = value.strip()
+    return values
+
+
 @contextlib.contextmanager
 def readiness_environment(supabase=True, encryption=True, pandoc=True, built_in_ai=False):
     """Pin every readiness input so the result never depends on the host."""
@@ -179,6 +194,69 @@ class ReadinessFailsClosedTests(unittest.TestCase):
                     patch.object(main, "SUPABASE_SERVICE_ROLE_KEY", key),
                 ):
                     self.assertFalse(main._supabase_configured())
+
+    def test_the_env_example_placeholders_never_read_as_configured(self):
+        """A deploy that copies `.env.example` verbatim is not configured.
+
+        Both placeholder values are non-empty strings, so a presence-only
+        check passed them and `/api/readiness` would have reported `supabase:
+        true` over credentials that authenticate nothing. This is the same
+        failure `_encryption_ready` already refuses for a malformed key.
+
+        The placeholders are read from `.env.example` itself, not repeated
+        here, so this stays true if the documented example is ever reworded.
+        """
+        example = _env_example_values()
+        url_placeholder = example["SUPABASE_URL"]
+        role_placeholder = example["SUPABASE_SERVICE_ROLE_KEY"]
+
+        # Guard the guard: if the example stops using a placeholder shape, this
+        # test is asserting nothing -- fail loudly rather than pass vacuously.
+        self.assertTrue(url_placeholder and role_placeholder)
+
+        with (
+            patch.object(main, "SUPABASE_URL", url_placeholder),
+            patch.object(main, "SUPABASE_SERVICE_ROLE_KEY", DISPOSABLE_SERVICE_ROLE),
+        ):
+            self.assertFalse(main._supabase_configured())
+
+        with (
+            patch.object(main, "SUPABASE_URL", DISPOSABLE_SUPABASE_URL),
+            patch.object(main, "SUPABASE_SERVICE_ROLE_KEY", role_placeholder),
+        ):
+            self.assertFalse(main._supabase_configured())
+
+    def test_a_non_https_supabase_url_is_not_configured(self):
+        """An `http://` or host-less value is a misconfiguration, not readiness."""
+        for url in (
+            "http://project.example",
+            "project.example",
+            "https://",
+            "ftp://project.example",
+            "",
+        ):
+            with self.subTest(url=url):
+                with (
+                    patch.object(main, "SUPABASE_URL", url),
+                    patch.object(
+                        main, "SUPABASE_SERVICE_ROLE_KEY", DISPOSABLE_SERVICE_ROLE
+                    ),
+                ):
+                    self.assertFalse(main._supabase_configured())
+
+    def test_a_real_shaped_https_service_role_still_reads_as_configured(self):
+        """Guards the guard: the tightening must not reject a valid config.
+
+        The disposable placeholders this suite uses everywhere else are an
+        `https://` host and a non-placeholder key, so they must still pass --
+        otherwise every other readiness test here would be asserting on a
+        `_supabase_configured` that can never be true.
+        """
+        with (
+            patch.object(main, "SUPABASE_URL", DISPOSABLE_SUPABASE_URL),
+            patch.object(main, "SUPABASE_SERVICE_ROLE_KEY", DISPOSABLE_SERVICE_ROLE),
+        ):
+            self.assertTrue(main._supabase_configured())
 
     def test_not_ready_response_never_echoes_a_configured_value(self):
         with readiness_environment(supabase=False):
