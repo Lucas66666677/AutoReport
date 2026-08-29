@@ -668,8 +668,41 @@ def _post_form(url: str, headers: dict[str, str], payload: dict[str, Any]) -> di
         raise HTTPException(status_code=502, detail="OAuth 服務暫時無法連線，請稍後重試") from None
 
 
+# The literal values `.env.example` documents. A deployment that copies the
+# example without substituting real credentials sets these verbatim, and both
+# are non-empty strings -- so a presence-only check reads them as configured.
+# They are the AutoLabReport equivalent of the malformed ENCRYPTION_KEY that
+# `_encryption_ready` already refuses: present, and unusable.
+_SUPABASE_URL_PLACEHOLDER = "https://your-project.supabase.co"
+_SUPABASE_SERVICE_ROLE_PLACEHOLDER = "your-supabase-service-role-key"
+
+
 def _supabase_configured() -> bool:
-    return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
+    """Whether a *real* Supabase service role is configured.
+
+    Readiness fails closed on three shapes a presence-only check would have
+    passed, moving each failure off the first user who saves an API key and
+    onto the readiness probe, which can afford to fail:
+
+    * the `.env.example` placeholders, copied verbatim into a deploy;
+    * a `SUPABASE_URL` that is not an absolute `https://` URL with a host --
+      an `http://` dev value, or a bare word pasted by mistake.
+
+    It stays a pure configuration-shape check: no network request is made, so
+    the result never depends on whether the project is momentarily reachable.
+    Whether the URL actually resolves is a launch-evidence step a probe cannot
+    stand in for.
+    """
+    if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+        return False
+    if SUPABASE_URL == _SUPABASE_URL_PLACEHOLDER:
+        return False
+    if SUPABASE_SERVICE_ROLE_KEY == _SUPABASE_SERVICE_ROLE_PLACEHOLDER:
+        return False
+    parsed = urllib.parse.urlsplit(SUPABASE_URL)
+    if parsed.scheme != "https" or not parsed.hostname:
+        return False
+    return True
 
 
 def _supabase_request(
