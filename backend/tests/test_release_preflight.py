@@ -543,6 +543,142 @@ class NoCredentialLooksCommittedTests(unittest.TestCase):
         self.assertIn("!.env.example", rules)
 
 
+class ServerSecretsNeverReachTheBrowserTests(unittest.TestCase):
+    """The service-role key and the Fernet key must never reach the browser.
+
+    Vite inlines every ``VITE_``-prefixed variable into the client bundle, and
+    it ships every string literal in the bundled source. So a server secret
+    handed a ``VITE_`` name, or a server-secret env name referenced from bundled
+    source, is served to every visitor. The two secrets this guards are the two
+    worst to expose: ``SUPABASE_SERVICE_ROLE_KEY`` bypasses every RLS policy, and
+    ``ENCRYPTION_KEY`` decrypts every stored user API key.
+
+    Readiness cannot catch this. The deployment is "ready" *because* the secrets
+    are configured; the fault is that a copy of one also went to the browser.
+    The window this matters most is the one the launch is in right now -- an
+    owner pasting the real Supabase and encryption values into hosting env vars,
+    one ``VITE_`` typo away from publishing the service-role key.
+
+    All checks read files only -- no secret value, no network, no running build.
+    """
+
+    #: Server-only. Neither may ever cross into client-shipped configuration.
+    SERVER_ONLY_SECRETS = ("SUPABASE_SERVICE_ROLE_KEY", "ENCRYPTION_KEY")
+    #: The substrings that mark a variable name as one of the above, so a rename
+    #: like ``SUPABASE_SERVICE_ROLE_TOKEN`` is still caught.
+    SERVER_SECRET_MARKERS = ("SERVICE_ROLE", "ENCRYPTION")
+
+    #: What Vite compiles into what the browser downloads. ``frontend/scripts``
+    #: runs in Node at setup time and is never bundled, so a service-role key it
+    #: reads from its own environment is not a browser leak and is out of scope.
+    BUNDLED_SOURCE_ROOT = FRONTEND_DIR / "src"
+    BUNDLED_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".html")
+
+    @classmethod
+    def _vite_names_exposing_a_server_secret(cls, env_text):
+        """``VITE_`` names in ``env_text`` that carry a server-secret marker."""
+        offenders = []
+        for line in env_text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("#") or "=" not in stripped:
+                continue
+            name = stripped.split("=", 1)[0].strip()
+            if name.startswith("VITE_") and any(
+                marker in name for marker in cls.SERVER_SECRET_MARKERS
+            ):
+                offenders.append(name)
+        return offenders
+
+    @classmethod
+    def _server_secrets_named_in(cls, source_text):
+        """Server-only secret names (or their ``VITE_`` form) present in source."""
+        found = []
+        for secret in cls.SERVER_ONLY_SECRETS:
+            if secret in source_text:
+                found.append(secret)
+        return found
+
+    def test_no_vite_variable_carries_a_server_secret(self):
+        offenders = self._vite_names_exposing_a_server_secret(
+            ENV_EXAMPLE.read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            offenders,
+            [],
+            f"these VITE_ variables would inline a server secret into the "
+            f"browser bundle: {offenders}",
+        )
+
+    def test_the_vite_detector_catches_a_planted_leak(self):
+        """Guards the guard: the check above can actually fail."""
+        planted = (
+            "VITE_API_URL=http://localhost:8000\n"
+            "VITE_SUPABASE_SERVICE_ROLE_KEY=your-supabase-service-role-key\n"
+            "VITE_ENCRYPTION_KEY=generate-with-python-cryptography-fernet\n"
+        )
+        self.assertEqual(
+            self._vite_names_exposing_a_server_secret(planted),
+            ["VITE_SUPABASE_SERVICE_ROLE_KEY", "VITE_ENCRYPTION_KEY"],
+        )
+
+    def test_server_secrets_are_declared_only_as_server_variables(self):
+        values = _env_example_values()
+        for secret in self.SERVER_ONLY_SECRETS:
+            with self.subTest(secret=secret):
+                self.assertIn(
+                    secret,
+                    values,
+                    f"{secret} must stay a documented server-only variable",
+                )
+                self.assertNotIn(
+                    f"VITE_{secret}",
+                    values,
+                    f"VITE_{secret} would ship {secret} to the browser",
+                )
+
+    def _bundled_sources(self):
+        if not self.BUNDLED_SOURCE_ROOT.is_dir():
+            return
+        for path in sorted(self.BUNDLED_SOURCE_ROOT.rglob("*")):
+            if path.is_file() and path.suffix in self.BUNDLED_SUFFIXES:
+                yield path
+
+    def test_no_bundled_source_names_a_server_secret(self):
+        scanned = 0
+        for path in self._bundled_sources():
+            scanned += 1
+            relative = path.relative_to(REPOSITORY_ROOT).as_posix()
+            found = self._server_secrets_named_in(
+                path.read_text(encoding="utf-8")
+            )
+            with self.subTest(path=relative):
+                self.assertEqual(
+                    found,
+                    [],
+                    f"{relative} is compiled into the browser bundle and names "
+                    f"the server-only secret(s) {found}",
+                )
+        self.assertGreater(
+            scanned,
+            0,
+            "no bundled frontend source was scanned; the guard would pass "
+            "vacuously if frontend/src moved",
+        )
+
+    def test_the_source_detector_catches_a_planted_leak(self):
+        """Guards the guard: prove the source scan can fail, not just pass."""
+        self.assertEqual(
+            self._server_secrets_named_in(
+                "const k = import.meta.env.VITE_ENCRYPTION_KEY"
+            ),
+            ["ENCRYPTION_KEY"],
+        )
+        self.assertEqual(
+            self._server_secrets_named_in("const url = import.meta.env.VITE_API_URL"),
+            [],
+        )
+
+
 class MigrationChainIsAValidUpgradePathTests(unittest.TestCase):
     """A release may not call migrations ready on the strength of a file listing.
 
