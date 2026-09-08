@@ -2,6 +2,11 @@ import { defineConfig, loadEnv, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { describeApiBaseUrlProblem } from './src/apiConfig'
+import {
+  describeSupabaseAnonKeyProblem,
+  describeSupabaseUrlProblem,
+  probeProjectResponds,
+} from './src/supabaseConfig'
 
 // VITE_API_URL is inlined at build time. A production bundle built without it
 // (or with a leftover localhost value) still builds and deploys fine, and only
@@ -27,9 +32,69 @@ function assertUsableApiBaseUrl(): Plugin {
   }
 }
 
+// VITE_SUPABASE_URL is inlined the same way, and a wrong value fails even more
+// quietly: sign-in hard-redirects the page to `${url}/auth/v1/authorize`, so a
+// project that no longer exists produces a dead navigation with nothing to catch.
+// The structural checks run on every production build. The reachability probe --
+// the one that catches a well-formed URL naming a deleted project, which is what
+// actually shipped -- runs only when Vercel is building a production deployment,
+// so CI and previews never depend on a live third party.
+function assertUsableSupabaseProject(): Plugin {
+  let supabaseUrl = ''
+  return {
+    name: 'autoreport:assert-supabase-project',
+    config(_config, { command, mode }) {
+      if (command !== 'build' || mode !== 'production') {
+        return
+      }
+      const env = loadEnv(mode, process.cwd(), 'VITE_')
+      const urlProblem = describeSupabaseUrlProblem(env.VITE_SUPABASE_URL)
+      if (urlProblem) {
+        throw new Error(
+          [
+            `VITE_SUPABASE_URL is unusable for a production build: ${urlProblem}.`,
+            'Set it to the project URL from Supabase > Project Settings > API (see docs/DEPLOYMENT.md).',
+          ].join('\n'),
+        )
+      }
+      const keyProblem = describeSupabaseAnonKeyProblem(env.VITE_SUPABASE_ANON_KEY)
+      if (keyProblem) {
+        throw new Error(
+          [
+            `VITE_SUPABASE_ANON_KEY is unusable for a production build: ${keyProblem}.`,
+            'Use the project\'s anon/publishable key -- never the service-role key.',
+          ].join('\n'),
+        )
+      }
+      supabaseUrl = (env.VITE_SUPABASE_URL ?? '').trim()
+    },
+    async buildStart() {
+      // Only a real production deploy. CI builds against a deliberately fake
+      // origin to exercise the structural gate above, and must not be made to
+      // depend on a live Supabase project.
+      if (!supabaseUrl || process.env.VERCEL_ENV !== 'production') {
+        return
+      }
+      const outcome = await probeProjectResponds(supabaseUrl)
+      if (!outcome.responded) {
+        throw new Error(
+          [
+            `VITE_SUPABASE_URL names a Supabase project that did not respond: ${supabaseUrl}`,
+            `(${outcome.reason})`,
+            'A bundle is only as good as the project it names: this value is inlined and',
+            'cannot be corrected at runtime, so shipping it would break sign-in for every',
+            'visitor. Check the project still exists in the Supabase dashboard and that',
+            'VITE_SUPABASE_URL in the Vercel project settings points at it.',
+          ].join('\n'),
+        )
+      }
+    },
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [assertUsableApiBaseUrl(), react(), tailwindcss()],
+  plugins: [assertUsableApiBaseUrl(), assertUsableSupabaseProject(), react(), tailwindcss()],
   build: {
     rolldownOptions: {
       output: {

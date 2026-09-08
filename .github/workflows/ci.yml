@@ -37,12 +37,16 @@ jobs:
         working-directory: frontend
       - run: npm test
         working-directory: frontend
-      # Not a real endpoint: it only proves the production build refuses to
-      # inline a blank or loopback origin. Deploys supply the real value.
+      # Not real endpoints: they only prove the production build refuses to
+      # inline a blank, loopback or template value. Deploys supply the real ones.
+      # The Supabase reachability probe is gated on VERCEL_ENV=production, which
+      # is unset here, so this build never depends on a live project.
       - run: npm run build
         working-directory: frontend
         env:
           VITE_API_URL: https://api.example.invalid
+          VITE_SUPABASE_URL: https://project.example.invalid
+          VITE_SUPABASE_ANON_KEY: ci-not-a-real-anon-key
 
   backend:
     runs-on: ubuntu-latest
