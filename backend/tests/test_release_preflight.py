@@ -48,6 +48,7 @@ VERCEL_CONFIG = FRONTEND_DIR / "vercel.json"
 SPA_SHELL = FRONTEND_DIR / "index.html"
 FRONTEND_APP_SOURCE = FRONTEND_DIR / "src" / "App.tsx"
 FRONTEND_API_CONFIG = FRONTEND_DIR / "src" / "apiConfig.ts"
+FRONTEND_SUPABASE_CONFIG = FRONTEND_DIR / "src" / "supabaseConfig.ts"
 VITE_CONFIG = FRONTEND_DIR / "vite.config.ts"
 
 # The host health gate probes liveness; readiness is for the preflight and
@@ -1129,3 +1130,68 @@ class ApiOriginIsNeverTheSiteOwnOriginTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SupabaseProjectIsGatedAtBuildTimeTests(unittest.TestCase):
+    """A bundle is only as good as the Supabase project it names.
+
+    `VITE_SUPABASE_URL` is inlined at build time, so a project that no longer
+    exists cannot be corrected at runtime: `supabaseClient.ts` builds a client
+    against whatever host was baked in, and `signInWithOAuth` hard-redirects the
+    page to `${url}/auth/v1/authorize`. When that host stops resolving the
+    visitor lands on a dead navigation and there is nothing left to catch it.
+
+    The deployed bundle is in precisely that state: it names a Supabase project
+    that has since been deleted, so sign-in has been broken for every visitor
+    while the build, the deploy and this suite all stayed green.
+    `frontend/vite.config.ts` now refuses to produce such a bundle.
+
+    Nothing else compares the placeholder that gate rejects with the one
+    `.env.example` tells an operator to copy -- the same job
+    `ApiOriginIsNeverTheSiteOwnOriginTests` does for the site origin.
+
+    Reads repository files only. It starts no build and makes no request.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.supabase_config = FRONTEND_SUPABASE_CONFIG.read_text(encoding="utf-8")
+        cls.vite_config = VITE_CONFIG.read_text(encoding="utf-8")
+
+    def _declared(self, name):
+        match = re.search(rf"export const {name} = '([^']*)'", self.supabase_config)
+        self.assertIsNotNone(
+            match, f"{name} is no longer declared in frontend/src/supabaseConfig.ts"
+        )
+        return match.group(1)
+
+    def test_the_rejected_placeholders_are_the_documented_ones(self):
+        """Reword `.env.example` and the gate must still reject what it hands out."""
+        example = _env_example_values()
+        self.assertEqual(
+            self._declared("PLACEHOLDER_SUPABASE_URL"),
+            example["VITE_SUPABASE_URL"],
+        )
+        self.assertEqual(
+            self._declared("PLACEHOLDER_SUPABASE_ANON_KEY"),
+            example["VITE_SUPABASE_ANON_KEY"],
+        )
+
+    def test_the_production_build_still_runs_the_supabase_gate(self):
+        """The plugin is the whole mechanism; dropping it restores the old failure."""
+        self.assertIn("assertUsableSupabaseProject()", self.vite_config)
+        for helper in (
+            "describeSupabaseUrlProblem",
+            "describeSupabaseAnonKeyProblem",
+            "probeProjectResponds",
+        ):
+            with self.subTest(helper=helper):
+                self.assertIn(helper, self.vite_config)
+
+    def test_the_reachability_probe_is_scoped_to_a_real_production_deploy(self):
+        """CI builds against a fake origin and must not need a live project.
+
+        The probe is the only rule here that touches the network, so it is
+        gated on Vercel's own production signal rather than on Vite's mode.
+        """
+        self.assertIn("VERCEL_ENV", self.vite_config)
