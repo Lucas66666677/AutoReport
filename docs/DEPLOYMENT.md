@@ -251,7 +251,7 @@ the tests share.
 
 The gate depends on a project setting, and is worth knowing about before you
 rely on it. Vercel's system environment variables are **opt-in**: the dashboard
-carries an *Enable access to System Environment Variables* checkbox, and
+carries an *Automatically expose System Environment Variables* checkbox, and
 `VERCEL=1` is documented as "an indicator to show that system environment
 variables have been exposed to your project's Deployments".
 
@@ -263,7 +263,7 @@ because with system variables hidden there is no signal that says Vercel at all.
 What closes it is the symptom, which is externally visible:
 
 > **A production URL answering `{"revision": null}` means one of two things:**
-> the *Enable access to System Environment Variables* setting is off, or the
+> the *Automatically expose System Environment Variables* setting is off, or the
 > deployment did not come from a git commit. Check the setting first —
 > Project → Settings → Environment Variables.
 

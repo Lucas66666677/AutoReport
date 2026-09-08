@@ -132,7 +132,7 @@ function publishBuildRevision(): Plugin {
           'unset value means this build did not come from one -- and the',
           'bundle it produces could never be tied back to a revision.',
           'System environment variables are opt-in: if this fires unexpectedly,',
-          'check "Enable access to System Environment Variables" in the project',
+          'check "Automatically expose System Environment Variables" in the project',
           'settings. See docs/DEPLOYMENT.md, "Which build is deployed".',
         ].join('\n'),
       )

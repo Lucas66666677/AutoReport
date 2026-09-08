@@ -15,8 +15,9 @@
 // to say which build was serving.
 //
 // Vercel sets `VERCEL_GIT_COMMIT_SHA` on every git-triggered deployment, at
-// build time, from its own record of the commit. That is the value published
-// here, and it is the only one this module reads.
+// build time, from its own record of the commit. That is the only value
+// published here; `VERCEL` and `VERCEL_ENV` are also read to decide whether a
+// missing revision must fail the build.
 //
 // ## Why the document names itself
 //
@@ -43,7 +44,7 @@
 // dedicated gate for. A rejected value is never echoed in a message, because
 // the reason to reject it is that it might not be a SHA.
 
-/** Vercel sets this per deployment, from its own commit record. The only variable read. */
+/** Vercel sets this per deployment, from its own commit record. */
 export const REVISION_ENV_VAR = 'VERCEL_GIT_COMMIT_SHA'
 
 /** Where the emitted document is served from, relative to the site root. */
@@ -149,7 +150,7 @@ export type RevisionDecision = {
  * ## The limit of this gate, stated rather than assumed
  *
  * System environment variables on Vercel are **opt-in**: the dashboard carries
- * an "Enable access to System Environment Variables" checkbox, and `VERCEL=1`
+ * an "Automatically expose System Environment Variables" checkbox, and `VERCEL=1`
  * is documented as "an indicator to show that system environment variables have
  * been exposed to your project's Deployments".
  *
