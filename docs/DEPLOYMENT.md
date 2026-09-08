@@ -170,7 +170,106 @@ pasting one into chat or a screenshot, or by relaxing the required list. The
 required list shrinks only when the product stops depending on that
 capability.
 
-## 6. Canary
+## 6. Which build is deployed
+
+Before this existed, nothing on the frontend said. An audit of the deployed site
+found no commit metadata anywhere: `x-vercel-id` is a per-request routing id,
+`etag` is a content hash of `index.html`, and `/assets/index-<hash>.js` is a
+content hash of the bundle. All three answer *did the bytes change?* — not
+*which commit is this?* Two commits that compile to identical output produce
+identical hashes, and no hash can be mapped back to a commit without rebuilding
+candidates until one matches.
+
+Every production build now publishes Vercel's own `VERCEL_GIT_COMMIT_SHA` in two
+places:
+
+```bash
+curl -fsS https://auto-report-one.vercel.app/version.json
+```
+
+```json
+{ "artifact": "autolabreport-frontend", "revision": "b10ee82f4c73a190d5e28b6c41fa07d93e5b8c24" }
+```
+
+```bash
+curl -sS https://auto-report-one.vercel.app/ | grep build-revision
+```
+
+```html
+<meta name="build-revision" content="b10ee82f4c73a190d5e28b6c41fa07d93e5b8c24">
+```
+
+Compare either with `git rev-parse origin/main`. Check it **before** anything
+else after a deploy: every other check is answered by whichever bundle is
+actually serving, so a green result against the previous build is not evidence
+about the new one.
+
+### Read the payload, never the status code
+
+This is the one thing to get right here, and it is specific to this site. The
+SPA rewrite (see *Every deep link depends on the SPA fallback*) turns **every**
+unknown path into `/index.html` **with status 200**. So a deployment built
+before this feature existed answers `/version.json` with `200 text/html` — the
+app shell. A check that reads only the status code calls that a success.
+
+That is why the document names its own artifact. The check that works:
+
+```bash
+curl -fsS https://auto-report-one.vercel.app/version.json \
+  | jq -er 'select(.artifact == "autolabreport-frontend") | .revision'
+```
+
+| What comes back | What is deployed |
+|---|---|
+| a 40-character SHA | exactly that commit |
+| `jq` fails, or HTML | a build older than this feature — the deploy has not landed |
+| `"revision": null` | this build or later, built outside a Vercel git deployment |
+
+`revision` is `null` on CI, preview and local builds by design: an observability
+field must not be able to fail a build that would otherwise be fine. On a real
+Vercel production deployment the value is always present, so its absence there
+means the deployment did not come from a git commit at all — and the build fails
+rather than shipping a bundle nothing can trace.
+
+Only the SHA is ever published. `VERCEL_GIT_COMMIT_MESSAGE` carries arbitrary
+text, `VERCEL_GIT_COMMIT_REF` a branch name and `VERCEL_URL` an internal
+deployment host; none of them is read. The published value is validated as 7–40
+anchored hexadecimal characters, so a variable holding anything else reports
+`null` rather than being echoed to an anonymous caller, and a rejected value is
+never repeated in the build log — the reason to reject it is that it might not
+be a SHA.
+
+## 7. Rollback
+
+Vercel keeps every deployment immutable and addressable, so a frontend rollback
+is a promotion, not a rebuild.
+
+1. **Record what is live now**, before touching anything:
+   ```bash
+   curl -fsS https://auto-report-one.vercel.app/version.json
+   ```
+   Without this the bad revision is unrecoverable once the alias moves — that is
+   the state this repository was in until now, and it is why the previous
+   incident (a bundle pinned to a deleted Supabase project) could not be dated.
+2. **Find the last good deployment** in Vercel → Project → Deployments. Match it
+   by commit, not by timestamp.
+3. **Promote it** with *Instant Rollback*, or *Promote to Production* on the
+   older deployment. No rebuild: the artifact already exists, so the bundle that
+   comes back is byte-identical to the one that was known good, with the same
+   inlined `VITE_*` values it was built with.
+4. **Confirm the rollback landed** by re-reading `version.json`. It must report
+   the commit you promoted. This is the only check that distinguishes "the
+   rollback worked" from "the alias did not move" — the site answers 200 either
+   way.
+5. **Note what the rollback does not undo.** Inlined build-time configuration
+   travels with the bundle, so promoting an older deployment also restores its
+   `VITE_SUPABASE_URL` and `VITE_API_URL`. If the incident was a configuration
+   change, fix the value in Vercel → Settings → Environment Variables and
+   redeploy; promoting an older artifact will not pick up a corrected variable.
+   Backend, database and Supabase state are untouched by any of this — a
+   frontend rollback rolls back the frontend only.
+
+## 8. Canary
 
 - Owner account acceptance.
 - Two students for one school day.

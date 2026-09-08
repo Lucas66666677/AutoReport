@@ -50,6 +50,7 @@ FRONTEND_APP_SOURCE = FRONTEND_DIR / "src" / "App.tsx"
 FRONTEND_API_CONFIG = FRONTEND_DIR / "src" / "apiConfig.ts"
 FRONTEND_SUPABASE_CONFIG = FRONTEND_DIR / "src" / "supabaseConfig.ts"
 VITE_CONFIG = FRONTEND_DIR / "vite.config.ts"
+FRONTEND_BUILD_REVISION = FRONTEND_DIR / "src" / "buildRevision.ts"
 
 # The host health gate probes liveness; readiness is for the preflight and
 # for monitoring, both of which can read a 503 instead of acting on it.
@@ -1195,3 +1196,173 @@ class SupabaseProjectIsGatedAtBuildTimeTests(unittest.TestCase):
         gated on Vercel's own production signal rather than on Vite's mode.
         """
         self.assertIn("VERCEL_ENV", self.vite_config)
+
+
+class DeployedFrontendNamesItsCommitTests(unittest.TestCase):
+    """Nothing on the deployed frontend said which commit produced it.
+
+    An audit of the live site found no commit metadata at all. `x-vercel-id` is
+    a per-request routing id, `etag` is a content hash of `index.html`, and
+    `/assets/index-<hash>.js` is a content hash of the bundle. Every one of
+    them answers "did the bytes change?", which is a different question: two
+    commits compiling to identical output are indistinguishable, and no hash
+    maps back to a commit without rebuilding candidates until one matches.
+
+    That gap is worse here than on the API. `VITE_*` values are inlined at
+    build time, so *which commit is deployed* and *which configuration is baked
+    in* are the same question -- and the last incident on this frontend, a
+    bundle pinned to a deleted Supabase project, could not even be dated
+    afterwards because no deployment identified itself.
+
+    The trap this class exists to hold shut is the SPA rewrite.
+    `SpaFallbackServesEveryDeepLinkTests` above proves every unknown path
+    resolves to the shell; the consequence is that `/version.json` returns
+    **200 with HTML** on any deployment built before this feature. Status is
+    therefore not evidence, and the published document has to name itself so a
+    reader can tell it from the fallback.
+
+    Reads repository files only. It starts no build and makes no request.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.build_revision = FRONTEND_BUILD_REVISION.read_text(encoding="utf-8")
+        cls.vite_config = VITE_CONFIG.read_text(encoding="utf-8")
+        cls.deployment = DEPLOYMENT_DOC.read_text(encoding="utf-8")
+
+    def _declared(self, name):
+        match = re.search(
+            rf"export const {name} = '([^']*)'", self.build_revision
+        )
+        self.assertIsNotNone(
+            match, f"{name} is no longer declared in frontend/src/buildRevision.ts"
+        )
+        return match.group(1)
+
+    def _registered_plugins(self):
+        """Plugins actually passed to `defineConfig`, not merely defined.
+
+        Read out of the `plugins:` array specifically. Searching the whole file
+        for `publishBuildRevision()` cannot tell a registered plugin from an
+        orphaned one, because the substring also occurs in the declaration
+        `function publishBuildRevision(): Plugin` -- so deleting the array entry
+        leaves the build publishing nothing while the check still passes. That
+        is the exact vacuous pass this repository's other contract tests are
+        written to avoid.
+        """
+        match = re.search(r"plugins:\s*\[(.*?)\]", self.vite_config, re.DOTALL)
+        self.assertIsNotNone(match, "frontend/vite.config.ts declares no plugins array")
+        return {name for name in re.findall(r"(\w+)\(\)", match.group(1))}
+
+    def test_the_production_build_still_publishes_the_revision(self):
+        """The plugin is the whole mechanism; dropping it restores the old silence."""
+        self.assertIn("publishBuildRevision", self._registered_plugins())
+        for helper in (
+            "buildRevisionDocument",
+            "commitShaOrNull",
+            "describeBuildRevisionProblem",
+        ):
+            with self.subTest(helper=helper):
+                self.assertIn(helper, self.vite_config)
+
+    def test_the_other_build_gates_are_still_registered_too(self):
+        """Guards the guard, and the neighbours it shares a mechanism with.
+
+        All three gates live or die by the same array. Asserting the set here
+        means removing any one of them fails a test that says so, rather than
+        only the one whose own check happens to look at the array.
+        """
+        self.assertEqual(
+            self._registered_plugins()
+            & {
+                "assertUsableApiBaseUrl",
+                "assertUsableSupabaseProject",
+                "publishBuildRevision",
+            },
+            {
+                "assertUsableApiBaseUrl",
+                "assertUsableSupabaseProject",
+                "publishBuildRevision",
+            },
+        )
+
+    @staticmethod
+    def _without_comments(source):
+        """`source` with block and line comments removed.
+
+        The check below is about what the build *reads*, not about what the
+        files discuss: both modules name the excluded variables in prose,
+        explaining why they are excluded, and that documentation is the reason
+        the exclusion survives a rewrite.
+        """
+        source = re.sub(r"/\*.*?\*/", "", source, flags=re.DOTALL)
+        return re.sub(r"//.*", "", source)
+
+    def test_only_the_commit_sha_variable_is_read(self):
+        """The neighbouring Vercel variables are the ones reached for by mistake.
+
+        `VERCEL_GIT_COMMIT_MESSAGE` carries arbitrary text a committer wrote,
+        `VERCEL_GIT_COMMIT_REF` a branch name, and `VERCEL_URL` an internal
+        deployment host. The document this build publishes is public, so the
+        only variable the code may touch is the SHA -- plus `VERCEL_ENV`, which
+        selects the strictness and is never published.
+        """
+        self.assertEqual(self._declared("REVISION_ENV_VAR"), "VERCEL_GIT_COMMIT_SHA")
+        code = self._without_comments(self.build_revision) + self._without_comments(
+            self.vite_config
+        )
+        referenced = set(re.findall(r"\bVERCEL_[A-Z_]+\b", code))
+        self.assertEqual(
+            referenced,
+            {"VERCEL_GIT_COMMIT_SHA", "VERCEL_ENV"},
+            "the build reads a Vercel variable beyond the commit SHA and the "
+            "environment selector",
+        )
+
+    def test_the_build_only_fails_on_a_real_production_deploy(self):
+        """An observability field must not be able to break CI or a preview.
+
+        On Vercel a git-triggered production deployment always carries the SHA,
+        so its absence *there* means the build did not come from a commit --
+        the exact thing being made visible. Everywhere else the revision is
+        null and the build proceeds.
+        """
+        self.assertIn("VERCEL_ENV", self.vite_config)
+
+    def test_the_published_document_names_the_artifact_the_doc_tells_you_to_check(self):
+        """The rewrite makes this the whole check, so the two must not drift.
+
+        An operator following `docs/DEPLOYMENT.md` greps for this exact string.
+        Rename it in one place and the documented probe silently starts
+        reporting "the deploy has not landed" for a healthy deployment.
+        """
+        artifact = self._declared("BUILD_ARTIFACT_NAME")
+        self.assertTrue(artifact, "the published document no longer names an artifact")
+        self.assertIn(artifact, self.deployment)
+
+    def test_the_documented_probe_does_not_trust_the_status_code(self):
+        """Reading only the status is the mistake this site invites.
+
+        Every unknown path answers 200 with the app shell, so `curl -f` alone
+        succeeds against a deployment that publishes no revision at all. The
+        runbook has to check the payload, and say why.
+        """
+        self.assertIn("version.json", self.deployment)
+        self.assertIn("status code", self.deployment)
+
+    def test_the_rollback_runbook_reads_the_revision_before_and_after(self):
+        """A rollback nobody can confirm is a rollback nobody can trust.
+
+        The site answers 200 whether or not the alias actually moved, so the
+        published revision is the only signal that distinguishes a completed
+        rollback from one that silently did nothing -- and recording the bad
+        revision first is what makes the incident datable at all.
+        """
+        rollback = self.deployment.split("## 7. Rollback", 1)
+        self.assertEqual(len(rollback), 2, "docs/DEPLOYMENT.md has no rollback section")
+        section = rollback[1].split("\n## ", 1)[0]
+        self.assertIn("version.json", section)
+        self.assertIn("Instant Rollback", section)
+        # Promoting an older artifact restores the configuration inlined into
+        # it, which is the one way a frontend rollback surprises an operator.
+        self.assertIn("VITE_SUPABASE_URL", section)

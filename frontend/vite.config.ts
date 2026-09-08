@@ -7,6 +7,14 @@ import {
   describeSupabaseUrlProblem,
   probeProjectResponds,
 } from './src/supabaseConfig'
+import {
+  BUILD_REVISION_META_NAME,
+  BUILD_REVISION_PATH,
+  REVISION_ENV_VAR,
+  buildRevisionDocument,
+  commitShaOrNull,
+  describeBuildRevisionProblem,
+} from './src/buildRevision'
 
 // VITE_API_URL is inlined at build time. A production bundle built without it
 // (or with a leftover localhost value) still builds and deploys fine, and only
@@ -92,9 +100,75 @@ function assertUsableSupabaseProject(): Plugin {
   }
 }
 
+// Nothing on the deployed frontend says which commit produced it. The bundle
+// filename and the etag are content hashes -- they answer "did the bytes
+// change?", not "which commit is this?" -- and two commits compiling to the
+// same output are indistinguishable. This publishes Vercel's own record of the
+// commit, in two places for one reason each:
+//
+//   - `version.json`, so a probe can read it without parsing HTML;
+//   - a `<meta>` in `index.html`, because `vercel.json` rewrites every unknown
+//     path to the app shell, so the shell is what a probe of *any* path
+//     actually receives. Putting the revision in the shell means every response
+//     the site can give identifies its own build.
+//
+// Strict on a real production deploy, quiet everywhere else. On Vercel a
+// git-triggered deployment always has this value; its absence there means the
+// deployment cannot be traced to a commit at all, which is the failure this
+// exists to prevent. CI, previews and local builds have no such guarantee and
+// must not be broken by an observability field, so they emit a null revision.
+function publishBuildRevision(): Plugin {
+  let revision: string | null = null
+  return {
+    name: 'autoreport:publish-build-revision',
+    configResolved() {
+      const raw = process.env[REVISION_ENV_VAR]
+      revision = commitShaOrNull(raw)
+      if (revision || process.env.VERCEL_ENV !== 'production') {
+        return
+      }
+      const problem = describeBuildRevisionProblem(raw)
+      throw new Error(
+        [
+          `A production deployment cannot be traced to a commit: ${problem}.`,
+          'Vercel sets this itself on every git-connected deployment, so an',
+          'unset value means this build did not come from one -- and the',
+          'bundle it produces could never be tied back to a revision.',
+          'See docs/DEPLOYMENT.md, "Which build is deployed".',
+        ].join('\n'),
+      )
+    },
+    generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: BUILD_REVISION_PATH,
+        source: buildRevisionDocument(revision),
+      })
+    },
+    transformIndexHtml() {
+      if (!revision) {
+        return []
+      }
+      return [
+        {
+          tag: 'meta',
+          attrs: { name: BUILD_REVISION_META_NAME, content: revision },
+          injectTo: 'head',
+        },
+      ]
+    },
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [assertUsableApiBaseUrl(), assertUsableSupabaseProject(), react(), tailwindcss()],
+  plugins: [
+    assertUsableApiBaseUrl(),
+    assertUsableSupabaseProject(),
+    publishBuildRevision(),
+    react(),
+    tailwindcss(),
+  ],
   build: {
     rolldownOptions: {
       output: {
