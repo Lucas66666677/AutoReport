@@ -7,6 +7,12 @@ import {
   describeSupabaseUrlProblem,
   probeProjectResponds,
 } from './src/supabaseConfig'
+import {
+  BUILD_REVISION_META_NAME,
+  BUILD_REVISION_PATH,
+  buildRevisionDocument,
+  resolveBuildRevision,
+} from './src/buildRevision'
 
 // VITE_API_URL is inlined at build time. A production bundle built without it
 // (or with a leftover localhost value) still builds and deploys fine, and only
@@ -92,9 +98,76 @@ function assertUsableSupabaseProject(): Plugin {
   }
 }
 
+// Nothing on the deployed frontend says which commit produced it. The bundle
+// filename and the etag are content hashes -- they answer "did the bytes
+// change?", not "which commit is this?" -- and two commits compiling to the
+// same output are indistinguishable. This publishes Vercel's own record of the
+// commit, in two places for one reason each:
+//
+//   - `version.json`, so a probe can read it without parsing HTML;
+//   - a `<meta>` in `index.html`, because `vercel.json` rewrites every unknown
+//     path to the app shell, so the shell is what a probe of *any* path
+//     actually receives. Putting the revision in the shell means every response
+//     the site can give identifies its own build.
+//
+// Any build that has a commit SHA publishes it -- production, preview, CI or
+// local. Only *strictness* is scoped to production: a production deployment
+// that cannot name its commit fails, while nothing else may be broken by an
+// observability field. `resolveBuildRevision` states that rule once, so this
+// hook holds no policy of its own and the rule stays testable without a build.
+function publishBuildRevision(): Plugin {
+  let revision: string | null = null
+  return {
+    name: 'autoreport:publish-build-revision',
+    configResolved() {
+      const decision = resolveBuildRevision(process.env)
+      revision = decision.revision
+      if (!decision.problem) {
+        return
+      }
+      throw new Error(
+        [
+          `A production deployment cannot be traced to a commit: ${decision.problem}.`,
+          'Vercel sets this itself on every git-connected deployment, so an',
+          'unset value means this build did not come from one -- and the',
+          'bundle it produces could never be tied back to a revision.',
+          'System environment variables are opt-in: if this fires unexpectedly,',
+          'check "Automatically expose System Environment Variables" in the project',
+          'settings. See docs/DEPLOYMENT.md, "Which build is deployed".',
+        ].join('\n'),
+      )
+    },
+    generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: BUILD_REVISION_PATH,
+        source: buildRevisionDocument(revision),
+      })
+    },
+    transformIndexHtml() {
+      if (!revision) {
+        return []
+      }
+      return [
+        {
+          tag: 'meta',
+          attrs: { name: BUILD_REVISION_META_NAME, content: revision },
+          injectTo: 'head',
+        },
+      ]
+    },
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [assertUsableApiBaseUrl(), assertUsableSupabaseProject(), react(), tailwindcss()],
+  plugins: [
+    assertUsableApiBaseUrl(),
+    assertUsableSupabaseProject(),
+    publishBuildRevision(),
+    react(),
+    tailwindcss(),
+  ],
   build: {
     rolldownOptions: {
       output: {
