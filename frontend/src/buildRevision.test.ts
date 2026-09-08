@@ -3,10 +3,13 @@ import {
   BUILD_ARTIFACT_NAME,
   BUILD_REVISION_PATH,
   REVISION_ENV_VAR,
+  VERCEL_ENVIRONMENT_ENV_VAR,
+  VERCEL_FLAG_ENV_VAR,
   buildRevisionDocument,
   commitShaOrNull,
   describeBuildRevisionProblem,
   readBuildRevision,
+  resolveBuildRevision,
 } from './buildRevision'
 
 /** A real 40-character SHA-1, in the shape Vercel injects. */
@@ -145,6 +148,124 @@ describe('buildRevisionDocument', () => {
 
   it.each(NOT_A_COMMIT_SHA)('cannot be made to publish %j', (value) => {
     expect(JSON.parse(buildRevisionDocument(value)).revision).toBeNull()
+  })
+})
+
+describe('resolveBuildRevision', () => {
+  // The rule this file exists to pin down. It was previously split between a
+  // plugin hook and a paragraph of prose that disagreed with it: the prose said
+  // previews publish null, while the code published the SHA on any build that
+  // had one. Vercel sets the SHA on previews, so previews published it.
+
+  describe('publishing is not gated on the environment', () => {
+    it.each([
+      ['a production deployment', { VERCEL: '1', VERCEL_ENV: 'production' }],
+      ['a preview deployment', { VERCEL: '1', VERCEL_ENV: 'preview' }],
+      ['a development deployment', { VERCEL: '1', VERCEL_ENV: 'development' }],
+      ['a build outside Vercel with the SHA supplied', {}],
+    ])('publishes the commit on %s', (_label, env) => {
+      expect(resolveBuildRevision({ ...env, VERCEL_GIT_COMMIT_SHA: A_COMMIT_SHA })).toEqual({
+        revision: A_COMMIT_SHA,
+        problem: null,
+      })
+    })
+
+    it('publishes the commit on a preview, which is what the runbook now says', () => {
+      // The exact case an independent build caught the documentation getting
+      // wrong. A preview is where knowing which commit you are looking at is
+      // most useful, and this project's previews are behind deployment
+      // protection, so there is nothing to withhold.
+      const decision = resolveBuildRevision({
+        VERCEL: '1',
+        VERCEL_ENV: 'preview',
+        VERCEL_GIT_COMMIT_SHA: A_COMMIT_SHA,
+      })
+      expect(decision.revision).toBe(A_COMMIT_SHA)
+      expect(decision.problem).toBeNull()
+    })
+
+    it.each(NOT_A_COMMIT_SHA)('refuses to publish %j even on a preview', (value) => {
+      const decision = resolveBuildRevision({
+        VERCEL: '1',
+        VERCEL_ENV: 'preview',
+        VERCEL_GIT_COMMIT_SHA: value,
+      })
+      expect(decision.revision).toBeNull()
+      // A preview must not fail on it either: strictness is production-only.
+      expect(decision.problem).toBeNull()
+    })
+  })
+
+  describe('strictness is scoped to production', () => {
+    it('fails a production deployment that cannot name its commit', () => {
+      const decision = resolveBuildRevision({ VERCEL: '1', VERCEL_ENV: 'production' })
+      expect(decision.revision).toBeNull()
+      expect(decision.problem).toContain(REVISION_ENV_VAR)
+    })
+
+    it('fails a production deployment whose SHA is a branch name', () => {
+      const decision = resolveBuildRevision({
+        VERCEL: '1',
+        VERCEL_ENV: 'production',
+        VERCEL_GIT_COMMIT_SHA: 'refs/heads/main',
+      })
+      expect(decision.problem).toContain('not a commit SHA')
+      expect(decision.problem).not.toContain('refs/heads/main')
+    })
+
+    it.each([
+      ['a preview', 'preview'],
+      ['a development deployment', 'development'],
+      ['a custom environment', 'staging'],
+    ])('does not fail %s with no SHA', (_label, environment) => {
+      expect(resolveBuildRevision({ VERCEL: '1', VERCEL_ENV: environment })).toEqual({
+        revision: null,
+        problem: null,
+      })
+    })
+
+    it('does not fail CI or a local build', () => {
+      // No system variables at all: the ordinary case for `npm run build`, and
+      // for the CI job that builds against deliberately fake origins.
+      expect(resolveBuildRevision({})).toEqual({ revision: null, problem: null })
+    })
+  })
+
+  describe('the limit of the gate', () => {
+    it('cannot fail a production build when system variables are not exposed', () => {
+      // Vercel's system environment variables are opt-in, and `VERCEL=1` is
+      // documented as the indicator that they were exposed. With the setting
+      // off, a production build looks exactly like a local one, so the strict
+      // branch cannot fire. Asserted rather than left implicit, because it is
+      // the one state where this gate does not hold -- and `docs/DEPLOYMENT.md`
+      // names the symptom an operator would see instead.
+      expect(resolveBuildRevision({ VERCEL_ENV: 'production' })).toEqual({
+        revision: null,
+        problem: null,
+      })
+    })
+
+    it('fails when the system flag is exposed without an environment', () => {
+      // The one partial exposure that is detectable. Both variables come from
+      // the same setting, so this should not occur -- and treating it as safe
+      // would be assuming the environment is not production.
+      const decision = resolveBuildRevision({ VERCEL: '1' })
+      expect(decision.problem).toContain(VERCEL_ENVIRONMENT_ENV_VAR)
+    })
+
+    it('fails when the environment is present but blank', () => {
+      expect(resolveBuildRevision({ VERCEL: '1', VERCEL_ENV: '   ' }).problem).toContain(
+        VERCEL_ENVIRONMENT_ENV_VAR,
+      )
+    })
+
+    it('names the setting to check, not just the variable', () => {
+      // An operator hitting this needs to know it may be a checkbox, not a
+      // broken deploy. The plugin message carries that; this pins the variable
+      // names the message is built from.
+      expect(VERCEL_FLAG_ENV_VAR).toBe('VERCEL')
+      expect(VERCEL_ENVIRONMENT_ENV_VAR).toBe('VERCEL_ENV')
+    })
   })
 })
 

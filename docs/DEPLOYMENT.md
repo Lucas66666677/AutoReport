@@ -225,11 +225,53 @@ curl -fsS https://auto-report-one.vercel.app/version.json \
 | `jq` fails, or HTML | a build older than this feature — the deploy has not landed |
 | `"revision": null` | this build or later, built outside a Vercel git deployment |
 
-`revision` is `null` on CI, preview and local builds by design: an observability
-field must not be able to fail a build that would otherwise be fine. On a real
-Vercel production deployment the value is always present, so its absence there
-means the deployment did not come from a git commit at all — and the build fails
-rather than shipping a bundle nothing can trace.
+### Which builds publish a revision
+
+**Every build that has a commit SHA publishes it — previews included.** Vercel
+sets `VERCEL_GIT_COMMIT_SHA` on preview deployments too, and a preview is
+exactly where knowing which commit you are looking at is useful. Only
+*strictness* is scoped to production.
+
+| Build | Publishes | Fails without a SHA |
+|---|---|---|
+| Vercel production | the commit | **yes** |
+| Vercel preview | the commit | no |
+| CI / local | `null` (no SHA is set) | no |
+
+An observability field must never break a build that is otherwise fine, so only
+a production deployment fails. There, the value is always present on a
+git-connected deploy, and its absence means the deployment did not come from a
+commit — a bundle nothing can trace.
+
+`frontend/src/buildRevision.ts` states this as one function,
+`resolveBuildRevision`, so the rule has a single definition that the build and
+the tests share.
+
+### The limit of the production gate
+
+The gate depends on a project setting, and is worth knowing about before you
+rely on it. Vercel's system environment variables are **opt-in**: the dashboard
+carries an *Enable access to System Environment Variables* checkbox, and
+`VERCEL=1` is documented as "an indicator to show that system environment
+variables have been exposed to your project's Deployments".
+
+With that setting off, `VERCEL_ENV` is hidden as well — so a production build is
+indistinguishable from a local one and the strict branch cannot fire. The build
+succeeds and publishes `{"revision": null}`. No build-time check can close that,
+because with system variables hidden there is no signal that says Vercel at all.
+
+What closes it is the symptom, which is externally visible:
+
+> **A production URL answering `{"revision": null}` means one of two things:**
+> the *Enable access to System Environment Variables* setting is off, or the
+> deployment did not come from a git commit. Check the setting first —
+> Project → Settings → Environment Variables.
+
+That is a configuration change for the owner to make deliberately; nothing in
+this repository changes it. The one partial state that *is* detectable — the
+`VERCEL` flag exposed while `VERCEL_ENV` is not — fails the build rather than
+being assumed safe, since assuming it is safe means assuming the environment is
+not production.
 
 Only the SHA is ever published. `VERCEL_GIT_COMMIT_MESSAGE` carries arbitrary
 text, `VERCEL_GIT_COMMIT_REF` a branch name and `VERCEL_URL` an internal

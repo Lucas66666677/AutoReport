@@ -10,10 +10,8 @@ import {
 import {
   BUILD_REVISION_META_NAME,
   BUILD_REVISION_PATH,
-  REVISION_ENV_VAR,
   buildRevisionDocument,
-  commitShaOrNull,
-  describeBuildRevisionProblem,
+  resolveBuildRevision,
 } from './src/buildRevision'
 
 // VITE_API_URL is inlined at build time. A production bundle built without it
@@ -112,29 +110,30 @@ function assertUsableSupabaseProject(): Plugin {
 //     actually receives. Putting the revision in the shell means every response
 //     the site can give identifies its own build.
 //
-// Strict on a real production deploy, quiet everywhere else. On Vercel a
-// git-triggered deployment always has this value; its absence there means the
-// deployment cannot be traced to a commit at all, which is the failure this
-// exists to prevent. CI, previews and local builds have no such guarantee and
-// must not be broken by an observability field, so they emit a null revision.
+// Any build that has a commit SHA publishes it -- production, preview, CI or
+// local. Only *strictness* is scoped to production: a production deployment
+// that cannot name its commit fails, while nothing else may be broken by an
+// observability field. `resolveBuildRevision` states that rule once, so this
+// hook holds no policy of its own and the rule stays testable without a build.
 function publishBuildRevision(): Plugin {
   let revision: string | null = null
   return {
     name: 'autoreport:publish-build-revision',
     configResolved() {
-      const raw = process.env[REVISION_ENV_VAR]
-      revision = commitShaOrNull(raw)
-      if (revision || process.env.VERCEL_ENV !== 'production') {
+      const decision = resolveBuildRevision(process.env)
+      revision = decision.revision
+      if (!decision.problem) {
         return
       }
-      const problem = describeBuildRevisionProblem(raw)
       throw new Error(
         [
-          `A production deployment cannot be traced to a commit: ${problem}.`,
+          `A production deployment cannot be traced to a commit: ${decision.problem}.`,
           'Vercel sets this itself on every git-connected deployment, so an',
           'unset value means this build did not come from one -- and the',
           'bundle it produces could never be tied back to a revision.',
-          'See docs/DEPLOYMENT.md, "Which build is deployed".',
+          'System environment variables are opt-in: if this fires unexpectedly,',
+          'check "Enable access to System Environment Variables" in the project',
+          'settings. See docs/DEPLOYMENT.md, "Which build is deployed".',
         ].join('\n'),
       )
     },

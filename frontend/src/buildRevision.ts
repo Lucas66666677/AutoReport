@@ -101,6 +101,98 @@ export function describeBuildRevisionProblem(value: string | undefined | null): 
   return null
 }
 
+/** Set to `1` by Vercel *only when* system environment variables are exposed. */
+export const VERCEL_FLAG_ENV_VAR = 'VERCEL'
+
+/** `production`, `preview` or `development`. Exposed by the same setting. */
+export const VERCEL_ENVIRONMENT_ENV_VAR = 'VERCEL_ENV'
+
+export type BuildEnvironment = {
+  VERCEL?: string
+  VERCEL_ENV?: string
+  VERCEL_GIT_COMMIT_SHA?: string
+}
+
+export type RevisionDecision = {
+  /** What the build should publish. */
+  revision: string | null
+  /** Why the build must fail instead, or `null` to proceed. */
+  problem: string | null
+}
+
+/**
+ * What a build should publish, and whether it may proceed without a revision.
+ *
+ * One function so the rule has one statement. It was previously spread between
+ * a plugin hook and a paragraph of prose, and the two disagreed: the prose said
+ * previews publish `null`, while the code published the SHA on any build that
+ * had one -- previews included, because Vercel sets it there too.
+ *
+ * The rule, stated once:
+ *
+ * | `VERCEL` | `VERCEL_ENV` | SHA present | Result |
+ * | --- | --- | --- | --- |
+ * | any | any | yes | publish it |
+ * | `1` | `production` | no | **fail the build** |
+ * | `1` | anything else | no | publish `null` |
+ * | `1` | absent | no | **fail the build** -- see below |
+ * | unset | any | no | publish `null` |
+ *
+ * Publishing is not gated on the environment. A preview is precisely where
+ * knowing which commit you are looking at is useful, the value is a commit SHA
+ * of a public repository, and this project's previews are behind deployment
+ * protection anyway. Only *strictness* is gated: a production deployment that
+ * cannot name its commit is the failure this feature exists to prevent, while
+ * CI, previews and local builds must never be broken by an observability
+ * field.
+ *
+ * ## The limit of this gate, stated rather than assumed
+ *
+ * System environment variables on Vercel are **opt-in**: the dashboard carries
+ * an "Enable access to System Environment Variables" checkbox, and `VERCEL=1`
+ * is documented as "an indicator to show that system environment variables have
+ * been exposed to your project's Deployments".
+ *
+ * With that setting off, `VERCEL_ENV` is absent too -- so a *production* build
+ * is indistinguishable from a local one, and the strict branch cannot fire. The
+ * build then publishes `null` and succeeds. Nothing in a build can close that,
+ * because with system variables hidden there is no signal that says Vercel at
+ * all; what closes it is the observable symptom, which `docs/DEPLOYMENT.md`
+ * names: a *production* URL answering `{"revision": null}` means either the
+ * checkbox is off or the deployment did not come from a commit.
+ *
+ * The one partial state that *is* detectable is handled: `VERCEL` exposed while
+ * `VERCEL_ENV` is not. The two are exposed by the same setting, so that
+ * combination should not occur -- and if it ever did, assuming it is safe would
+ * be assuming the environment is not production. It fails instead.
+ */
+export function resolveBuildRevision(env: BuildEnvironment): RevisionDecision {
+  const revision = commitShaOrNull(env.VERCEL_GIT_COMMIT_SHA)
+  if (revision) {
+    return { revision, problem: null }
+  }
+
+  const systemVariablesExposed = Boolean(env.VERCEL)
+  if (!systemVariablesExposed) {
+    return { revision: null, problem: null }
+  }
+
+  const environment = (env.VERCEL_ENV ?? '').trim()
+  if (!environment) {
+    return {
+      revision: null,
+      problem:
+        `${VERCEL_FLAG_ENV_VAR} is set but ${VERCEL_ENVIRONMENT_ENV_VAR} is not, so which ` +
+        'environment this build targets cannot be determined',
+    }
+  }
+  if (environment !== 'production') {
+    return { revision: null, problem: null }
+  }
+
+  return { revision: null, problem: describeBuildRevisionProblem(env.VERCEL_GIT_COMMIT_SHA) }
+}
+
 export type BuildRevisionDocument = {
   artifact: string
   revision: string | null

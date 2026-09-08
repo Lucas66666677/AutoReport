@@ -1239,6 +1239,18 @@ class DeployedFrontendNamesItsCommitTests(unittest.TestCase):
         )
         return match.group(1)
 
+    def _plugin_body(self, name):
+        """The source of one plugin factory, up to the next top-level `function`.
+
+        Several plugins share this file and legitimately make different
+        environment decisions, so a check written against the whole config
+        cannot say which one it is talking about.
+        """
+        marker = f"function {name}("
+        self.assertIn(marker, self.vite_config, f"{name} is no longer declared")
+        body = self.vite_config.split(marker, 1)[1]
+        return body.split("\nfunction ")[0].split("\nexport default")[0]
+
     def _registered_plugins(self):
         """Plugins actually passed to `defineConfig`, not merely defined.
 
@@ -1257,13 +1269,61 @@ class DeployedFrontendNamesItsCommitTests(unittest.TestCase):
     def test_the_production_build_still_publishes_the_revision(self):
         """The plugin is the whole mechanism; dropping it restores the old silence."""
         self.assertIn("publishBuildRevision", self._registered_plugins())
-        for helper in (
-            "buildRevisionDocument",
-            "commitShaOrNull",
-            "describeBuildRevisionProblem",
-        ):
+        for helper in ("buildRevisionDocument", "resolveBuildRevision"):
             with self.subTest(helper=helper):
                 self.assertIn(helper, self.vite_config)
+
+    def test_the_publishing_rule_has_one_definition(self):
+        """Which builds publish, and which fail, is decided in exactly one place.
+
+        It was previously split between the plugin hook and a paragraph of
+        prose, and the two disagreed: the prose said previews publish `null`,
+        while the code published the SHA on any build that had one -- and Vercel
+        sets the SHA on previews, so previews published it. A rule stated twice
+        is a rule that drifts, so the hook now carries no policy of its own.
+        """
+        self.assertIn("resolveBuildRevision", self.build_revision)
+        for helper in ("commitShaOrNull", "describeBuildRevisionProblem"):
+            with self.subTest(helper=helper):
+                self.assertIn(helper, self.build_revision)
+        # Scoped to this plugin's own body. The Supabase gate legitimately
+        # carries its own `VERCEL_ENV !== 'production'` guard -- a check written
+        # against the whole file would read that as a violation and pressure a
+        # later edit into deleting a gate this one has nothing to do with.
+        self.assertNotIn("VERCEL", self._plugin_body("publishBuildRevision"))
+
+    def test_the_supabase_gate_keeps_its_own_production_guard(self):
+        """Guards the neighbour the check above had to be narrowed around.
+
+        Its reachability probe is the only rule that touches the network, so it
+        is scoped to a real production deploy; losing that guard would make CI
+        and every preview depend on a live third party.
+        """
+        supabase = self._plugin_body("assertUsableSupabaseProject")
+        self.assertIn("VERCEL_ENV", supabase)
+        self.assertIn("probeProjectResponds", supabase)
+
+    def test_the_runbook_states_the_preview_behaviour_the_build_has(self):
+        """The documentation drifted from the build once; this is the anchor.
+
+        An independent build with `VERCEL_ENV=preview` and a real SHA emitted
+        both the document and the meta tag while the runbook said previews emit
+        `null`. Publishing is not gated on the environment -- only strictness
+        is -- and the runbook has to say so.
+        """
+        self.assertIn('Vercel preview', self.deployment)
+        self.assertNotIn('`revision` is `null` on CI, preview', self.deployment)
+
+    def test_the_runbook_names_the_setting_the_production_gate_depends_on(self):
+        """The gate is opt-in, and a reader has to be told where it can not hold.
+
+        Vercel's system environment variables are enabled by a project setting.
+        With it off, `VERCEL_ENV` is hidden too, so a production build is
+        indistinguishable from a local one and the strict branch cannot fire.
+        Nothing in a build can close that; naming the symptom is what does.
+        """
+        self.assertIn('System Environment Variables', self.deployment)
+        self.assertIn('"revision": null', self.deployment)
 
     def test_the_other_build_gates_are_still_registered_too(self):
         """Guards the guard, and the neighbours it shares a mechanism with.
@@ -1311,12 +1371,18 @@ class DeployedFrontendNamesItsCommitTests(unittest.TestCase):
         code = self._without_comments(self.build_revision) + self._without_comments(
             self.vite_config
         )
-        referenced = set(re.findall(r"\bVERCEL_[A-Z_]+\b", code))
+        # `*_ENV_VAR` identifiers are the constants that *name* these variables,
+        # not further variables being read.
+        referenced = {
+            name
+            for name in re.findall(r"\bVERCEL[A-Z_]*\b", code)
+            if not name.endswith("_ENV_VAR")
+        }
         self.assertEqual(
             referenced,
-            {"VERCEL_GIT_COMMIT_SHA", "VERCEL_ENV"},
-            "the build reads a Vercel variable beyond the commit SHA and the "
-            "environment selector",
+            {"VERCEL_GIT_COMMIT_SHA", "VERCEL_ENV", "VERCEL"},
+            "the build reads a Vercel variable beyond the commit SHA, the "
+            "environment selector, and the flag saying those were exposed",
         )
 
     def test_the_build_only_fails_on_a_real_production_deploy(self):
