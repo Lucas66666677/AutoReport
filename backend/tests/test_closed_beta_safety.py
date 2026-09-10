@@ -9,6 +9,15 @@ import urllib.error
 import main
 
 
+def _statements(sql: str) -> str:
+    """`sql` with its leading comment block removed, so headers may differ."""
+    lines = sql.replace("\r\n", "\n").split("\n")
+    index = 0
+    while index < len(lines) and (lines[index].startswith("--") or not lines[index].strip()):
+        index += 1
+    return "\n".join(lines[index:]).strip("\n")
+
+
 class NumericIntegrityTests(unittest.TestCase):
     def test_preserves_equivalent_numeric_facts_and_units(self):
         source = "電壓為 12.0 V，電流為 3.20 mA，誤差 2%。"
@@ -228,6 +237,15 @@ class ClosedBetaMigrationTests(unittest.TestCase):
         self.assertIn('create policy "report_recordings_closed_beta_read"', self.sql)
 
     def test_clean_database_bootstrap_matches_canonical_schema(self):
+        """The snapshot and the bootstrap migration must not drift apart.
+
+        Statements only. The two files' opening comment blocks are allowed to
+        differ, and now do: `schema_and_rls.sql` reads as an instruction to run
+        it against a new project, and it is one migration of nine, so its header
+        says so and points at `supabase/bringup.sql`. What must stay identical is
+        the SQL -- a schema change landing in one file and not the other is
+        exactly what this test is for.
+        """
         canonical = (
             self.repository_root / "supabase" / "schema_and_rls.sql"
         ).read_text(encoding="utf-8")
@@ -238,7 +256,8 @@ class ClosedBetaMigrationTests(unittest.TestCase):
             / "20260626_initial_schema_and_rls.sql"
         ).read_text(encoding="utf-8")
 
-        self.assertEqual(bootstrap, canonical)
+        self.assertEqual(_statements(bootstrap), _statements(canonical))
+        self.assertTrue(_statements(bootstrap), "the bootstrap migration is all comments")
 
     def test_profile_client_insert_policy_is_removed(self):
         self.assertIn(
