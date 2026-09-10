@@ -6,7 +6,7 @@ Updated: 2026-07-24
 
 | 平台 | 要做什么 | 控制台位置 | 所需值 | 为什么 | 如何验证 | 是否阻塞 Beta |
 |---|---|---|---|---|---|---|
-| Supabase Database | 在全新 staging 按 migration 顺序执行至 `20260724_staging_bringup_hardening.sql` | Project Settings／CLI Migration 管理 | Project ref 与本机保存的数据库密码；不要贴到聊天 | 建立 RLS、trigger、quota RPC 与私有 Storage | dry-run 清单一致、push 成功并完成下方权限矩阵 | 是 |
+| Supabase Database | 在全新项目一次贴上 `supabase/bringup.sql`（等同按顺序执行全部 9 个 migration，至 `20260724_staging_bringup_hardening.sql`）| Project Settings／CLI Migration 管理 | Project ref 与本机保存的数据库密码；不要贴到聊天 | 建立 RLS、trigger、quota RPC 与私有 Storage | dry-run 清单一致、push 成功并完成下方权限矩阵 | 是 |
 | Supabase Auth URL | 配置正式与 staging URL | Authentication → URL Configuration | Site URL、允许的 redirect URL | OAuth／Magic Link 必须回到正确网站 | 两个域名登录后不循环、不跳错站 | 是 |
 | Supabase Email | 启用 Magic Link 与邮件模板 | Authentication → Providers → Email | 发件设置、模板、redirect | Google 故障时仍能登录 | Beta 邮箱收到链接并完成登录 | 若承诺 Email 则是 |
 | Google OAuth | 发布或配置测试用户；填入 Supabase provider | Google Cloud → OAuth consent screen／Credentials；Supabase → Providers → Google | Client ID、Client Secret、Supabase callback URI、授权域名 | 解决 403 access_denied 并提供主要登录 | 非项目拥有者账号成功登录／登出／重登 | 若承诺 Google 则是 |

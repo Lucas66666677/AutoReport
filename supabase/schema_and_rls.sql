@@ -1,5 +1,13 @@
--- AutoLabReport Supabase schema and RLS policies.
--- Run this in Supabase SQL Editor after enabling Auth providers.
+-- AutoLabReport Supabase schema and RLS policies -- FIRST MIGRATION ONLY.
+--
+-- This file is byte-identical to supabase/migrations/20260626_initial_schema_and_rls.sql
+-- and it is NOT a complete setup. Eight later migrations add workspaces, community
+-- templates, ownership transfers, recording storage, Yjs persistence, profile
+-- preferences, the closed-beta security rules and the bring-up hardening.
+--
+-- To bring up a new project, run supabase/bringup.sql instead: it is every
+-- migration in the order the Supabase CLI applies them. This file is kept only
+-- because older notes refer to it.
 
 create extension if not exists "pgcrypto";
 
