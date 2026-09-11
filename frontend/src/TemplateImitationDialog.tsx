@@ -45,6 +45,7 @@ export default function TemplateImitationDialog({
   initialInstructions,
   provider,
   providerLabel,
+  blockedReason = null,
   onGenerate,
   onCreate,
   onSavePreset,
@@ -57,6 +58,7 @@ export default function TemplateImitationDialog({
   initialInstructions: string
   provider: ImitationProviderChoice
   providerLabel: string
+  blockedReason?: string | null
   onGenerate: (request: ImitationRequestBody) => Promise<ImitationResult>
   onCreate: (title: string, markdown: string) => Promise<void>
   onSavePreset: (preset: ImitationPreset, instructions: string) => void
@@ -95,6 +97,10 @@ export default function TemplateImitationDialog({
   }
 
   async function generate() {
+    if (blockedReason) {
+      setError(blockedReason)
+      return
+    }
     if (!material.trim()) {
       setError('請先貼上這次的新資料（數據、筆記或題目）')
       return
@@ -247,6 +253,11 @@ export default function TemplateImitationDialog({
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
                   <p className="text-sm font-semibold text-slate-950">3. 使用的模型</p>
                   <p className="mt-1 text-sm text-slate-600">{providerLabel}</p>
+                  {blockedReason && (
+                    <p className="mt-2 rounded-xl border border-amber-200 bg-amber-50 p-2.5 text-xs leading-5 text-amber-900">
+                      {blockedReason}
+                    </p>
+                  )}
                   <button type="button" onClick={onOpenAiSettings} className="mt-2 text-xs font-semibold text-blue-700 hover:underline">
                     改用 ChatGPT、Claude、Gemini 或 DeepSeek（在 AI 設定填入自己的 API Key）
                   </button>
@@ -294,7 +305,8 @@ export default function TemplateImitationDialog({
                 <button
                   type="button"
                   onClick={() => void generate()}
-                  disabled={busy}
+                  disabled={busy || Boolean(blockedReason)}
+                  title={blockedReason ?? undefined}
                   className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
                 >
                   {status === 'generating' ? 'AI 生成中…' : '開始生成'}
@@ -305,7 +317,7 @@ export default function TemplateImitationDialog({
                 <button type="button" onClick={() => setResult(null)} disabled={busy} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40">
                   返回修改
                 </button>
-                <button type="button" onClick={() => void generate()} disabled={busy} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40">
+                <button type="button" onClick={() => void generate()} disabled={busy || Boolean(blockedReason)} className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40">
                   {status === 'generating' ? 'AI 生成中…' : '重新生成'}
                 </button>
                 <button

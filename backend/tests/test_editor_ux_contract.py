@@ -258,5 +258,30 @@ class EditorUxContractTests(unittest.TestCase):
         self.assertIn("這些數字不在你提供的資料中", dialog)
 
 
+    def test_imitation_warns_before_the_work_when_quota_is_gone(self):
+        """With 0 built-in calls left the dialog let users fill everything, then failed."""
+        source = _text(APP)
+        self.assertIn("blockedReason={imitationBlockedReason}", source)
+        self.assertIn("今日內建 AI 額度已用完（每天台灣時間早上 8 點重置）", source)
+        dialog = _text(SRC / "TemplateImitationDialog.tsx")
+        self.assertIn("disabled={busy || Boolean(blockedReason)}", dialog)
+
+    def test_guests_are_not_shown_an_endless_quota_loading_state(self):
+        source = _text(APP)
+        self.assertIn("{!user ? '登入後可用' : quotaLoading", source)
+        self.assertIn("status: !isSignedIn ? '登入後可用'", source)
+        self.assertIn("isSignedIn={Boolean(user)}", source)
+
+
+    def test_header_search_actually_searches(self):
+        """The 「搜尋報告、模板或設定...」 input had no handler; typing did nothing."""
+        source = _text(APP)
+        self.assertIn("<GlobalSearch", source)
+        self.assertIn("onOpenDocument={selectDocument}", source)
+        search = _text(SRC / "GlobalSearch.tsx")
+        self.assertIn("onChange={(event) => {", search)
+        self.assertIn("searchEverything(query, documents, templates)", search)
+
+
 if __name__ == "__main__":
     unittest.main()

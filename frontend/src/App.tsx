@@ -94,6 +94,7 @@ import {
   type DocumentVersion,
   type DocumentVersionRow,
 } from './documentVersions'
+import GlobalSearch from './GlobalSearch'
 import TemplateImitationDialog, {
   type ImitationProviderChoice,
   type ImitationRequestBody,
@@ -387,6 +388,13 @@ type PromptLibraryItem = {
   content: string
   updatedAt: string
 }
+
+const GLOBAL_SEARCH_TEMPLATES = DEFAULT_TEMPLATES.map(({ id, title, category, description }) => ({
+  id,
+  title,
+  category,
+  description,
+}))
 
 type ReportTemplate = (typeof DEFAULT_TEMPLATES)[number] & {
   authorName?: string
@@ -1429,7 +1437,7 @@ function DocumentSidebar({
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">AI 額度</p>
                     <p className="mt-1 text-sm font-semibold text-slate-950">
-                      {quotaLoading ? '讀取中...' : quota ? `剩餘 ${quota.remaining} / ${quota.limit} 次` : '—'}
+                      {!user ? '登入後可用' : quotaLoading ? '讀取中...' : quota ? `剩餘 ${quota.remaining} / ${quota.limit} 次` : '—'}
                     </p>
                   </div>
                   <Gauge className="h-4 w-4 text-slate-400" strokeWidth={2} />
@@ -1816,6 +1824,7 @@ function AiSettingsView({
   settings,
   quota,
   quotaLoading,
+  isSignedIn = true,
   userApiKeySaving,
   notePreferences,
   preferencesLoading,
@@ -1828,6 +1837,7 @@ function AiSettingsView({
   settings: AiSettings
   quota: AiQuota | null
   quotaLoading: boolean
+  isSignedIn?: boolean
   userApiKeySaving: boolean
   notePreferences: NotePreferences
   preferencesLoading: boolean
@@ -1865,7 +1875,7 @@ function AiSettingsView({
     {
       id: 'built_in' as AiProvider,
       title: '內建額度',
-      status: isPro ? 'Pro 高級 AI 可用' : quota ? `剩餘 ${remaining} / ${limit} 次` : '額度讀取中',
+      status: !isSignedIn ? '登入後可用' : isPro ? 'Pro 高級 AI 可用' : quota ? `剩餘 ${remaining} / ${limit} 次` : '額度讀取中',
       description: isPro ? '付費版直接使用 AutoLabReport 的高級 AI。' : '免費版先提供 3 次測試額度，適合確認流程。',
       icon: Gauge,
     },
@@ -1930,7 +1940,7 @@ function AiSettingsView({
               </p>
             </div>
             <p className="text-sm font-semibold text-slate-500">
-              {quotaLoading ? '讀取中...' : quota ? `已用 ${used} 次，剩餘 ${remaining} / ${limit} 次` : '目前無法取得額度'}
+              {!isSignedIn ? '登入後可使用每日內建 AI 額度' : quotaLoading ? '讀取中...' : quota ? `已用 ${used} 次，剩餘 ${remaining} / ${limit} 次` : '目前無法取得額度'}
             </p>
           </div>
           <div className="mt-5 h-2 overflow-hidden rounded-full bg-slate-100">
@@ -2406,6 +2416,7 @@ function PromptLibraryView({
 function BillingView({
   quota,
   quotaLoading,
+  isSignedIn = true,
   billingConfig,
   actionLoading,
   onOpenAiSettings,
@@ -2414,6 +2425,7 @@ function BillingView({
 }: {
   quota: AiQuota | null
   quotaLoading: boolean
+  isSignedIn?: boolean
   billingConfig: BillingConfig | null
   actionLoading: 'checkout' | 'portal' | null
   onOpenAiSettings: () => void
@@ -2467,7 +2479,7 @@ function BillingView({
           <div className="mt-7">
             <div className="mb-2 flex items-center justify-between text-sm">
               <span className="font-medium text-zinc-600 dark:text-zinc-300">
-                {quotaLoading ? '讀取中...' : `剩餘 ${quota?.remaining ?? '-'} / ${quota?.limit ?? '-'} 次`}
+                {!isSignedIn ? '登入後可用' : quotaLoading ? '讀取中...' : `剩餘 ${quota?.remaining ?? '-'} / ${quota?.limit ?? '-'} 次`}
               </span>
               <span className="text-zinc-400">每日重置</span>
             </div>
@@ -7541,6 +7553,11 @@ function WorkspaceApp({
   const imitationProviderLabel = usesOwnApiKey
     ? `${API_PROVIDER_NAMES[aiSettings.userApiProvider] ?? aiSettings.userApiProvider}・自備 API Key${aiSettings.defaultModel ? `・${aiSettings.defaultModel}` : ''}`
     : `內建 AI・每次生成消耗 1 次額度${aiQuota ? `（今日剩餘 ${aiQuota.remaining} 次）` : ''}`
+  const imitationBlockedReason = !usesOwnApiKey && !user
+    ? '內建 AI 需要登入後使用；也可以在 AI 設定改用自己的 API Key。'
+    : !usesOwnApiKey && aiQuota && aiQuota.remaining <= 0
+      ? '今日內建 AI 額度已用完（每天台灣時間早上 8 點重置）。可以到 AI 設定改用自己的 ChatGPT、Claude、Gemini 或 DeepSeek API Key 繼續。'
+      : null
 
   const assistTasks = [
     {
@@ -8161,15 +8178,13 @@ function WorkspaceApp({
         </header>
       ) : (
         <header className="sticky top-0 z-40 flex h-16 shrink-0 items-center justify-between gap-4 border-b border-slate-200/80 bg-slate-50/85 px-5 backdrop-blur-xl">
-          <div className="relative min-w-0 flex-1 max-w-xl">
-            <Search className="pointer-events-none absolute left-4 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" strokeWidth={2} />
-            <input
-              type="search"
-              aria-label="全域搜尋"
-              placeholder="搜尋報告、模板或設定..."
-              className="h-11 w-full rounded-2xl border border-slate-200/80 bg-white pl-11 pr-4 text-sm font-medium text-slate-700 shadow-sm shadow-slate-200/60 outline-none transition placeholder:text-slate-400 focus:border-blue-200 focus:shadow-md focus:shadow-blue-100/60 focus:ring-4 focus:ring-blue-100/70"
-            />
-          </div>
+          <GlobalSearch
+            documents={documents}
+            templates={GLOBAL_SEARCH_TEMPLATES}
+            onOpenDocument={selectDocument}
+            onOpenTemplate={() => setCurrentView('templates')}
+            onOpenView={(view) => setCurrentView(view as AppView)}
+          />
           <div className="flex shrink-0 items-center gap-3">
             {syncStatus === 'exporting' && (
               <span className="hidden text-sm font-medium text-amber-500 lg:inline">正在打包 Word</span>
@@ -8271,6 +8286,7 @@ function WorkspaceApp({
         />
       ) : currentView === 'settings' ? (
         <AiSettingsView
+          isSignedIn={Boolean(user)}
           settings={aiSettings}
           quota={aiQuota}
           quotaLoading={aiQuotaLoading}
@@ -8292,6 +8308,7 @@ function WorkspaceApp({
         />
       ) : currentView === 'billing' ? (
         <BillingView
+          isSignedIn={Boolean(user)}
           quota={aiQuota}
           quotaLoading={aiQuotaLoading}
           billingConfig={billingConfig}
@@ -8867,6 +8884,7 @@ function WorkspaceApp({
           initialInstructions={imitation.instructions}
           provider={imitationProvider}
           providerLabel={imitationProviderLabel}
+          blockedReason={imitationBlockedReason}
           onGenerate={generateImitation}
           onCreate={createImitatedDocument}
           onSavePreset={(modes, instructions) => saveImitationPreset(imitation.source, modes, instructions)}
