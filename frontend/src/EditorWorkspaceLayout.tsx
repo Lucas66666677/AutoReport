@@ -175,7 +175,7 @@ export default function EditorWorkspaceLayout({
             event.preventDefault()
           }}
           onKeyDown={handleDividerKeyDown}
-          title="拖曳调整宽度；方向键微调"
+          title="拖曳調整寬度；方向鍵微調"
         >
           <span aria-hidden="true" />
         </div>

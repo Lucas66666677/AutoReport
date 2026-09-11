@@ -30,7 +30,6 @@ import {
   Download,
   Eye,
   ExternalLink,
-  FileClock,
   FileText,
   FileCode2,
   FilePlus2,
@@ -1449,7 +1448,7 @@ function DocumentSidebar({
                   <div>
                     <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">AI 額度</p>
                     <p className="mt-1 text-sm font-semibold text-slate-950">
-                      {quotaLoading ? '讀取中...' : `${quota?.remaining ?? 3} / ${quota?.limit ?? 3} 次`}
+                      {quotaLoading ? '讀取中...' : quota ? `剩餘 ${quota.remaining} / ${quota.limit} 次` : '—'}
                     </p>
                   </div>
                   <Gauge className="h-4 w-4 text-slate-400" strokeWidth={2} />
@@ -1457,7 +1456,7 @@ function DocumentSidebar({
                 <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-slate-100">
                   <div
                     className="h-full rounded-full bg-slate-950 transition-all"
-                    style={{ width: `${quotaLoading ? 35 : quota ? remainingPercent : 100}%` }}
+                    style={{ width: `${quotaLoading ? 35 : quota ? remainingPercent : 0}%` }}
                   />
                 </div>
                 <p className="mt-2 text-[11px] font-medium text-slate-400">
@@ -1483,7 +1482,7 @@ function DocumentSidebar({
                 <button
                   type="button"
                   title="建立新資料夾"
-                  onClick={onCreateFolder}
+                  onClick={() => onCreateFolder()}
                   className="grid h-8 w-8 place-items-center rounded-lg text-slate-400 transition hover:bg-white hover:text-slate-950 hover:shadow-sm"
                 >
                   <FolderPlus className="h-4 w-4" strokeWidth={2} />
@@ -1862,9 +1861,10 @@ function AiSettingsView({
 
   const isPro = quota?.plan === 'pro'
   const used = quota ? Math.max(0, quota.used) : 0
-  const limit = quota?.limit ?? 3
-  const remaining = quota?.remaining ?? 3
-  const remainingPercent = Math.max(0, Math.min(100, (remaining / Math.max(limit, 1)) * 100))
+  // Unknown is not full: before the quota loads (or if it fails) show a dash, not 3 / 3.
+  const limit = quota?.limit ?? 0
+  const remaining = quota?.remaining ?? 0
+  const remainingPercent = quota ? Math.max(0, Math.min(100, (remaining / Math.max(limit, 1)) * 100)) : 0
   const modelOptions = isPro
     ? [
         { value: '', label: 'AutoLab Premium（自動選擇）' },
@@ -1883,7 +1883,7 @@ function AiSettingsView({
     {
       id: 'built_in' as AiProvider,
       title: '內建額度',
-      status: isPro ? 'Pro 高級 AI 可用' : `${remaining} / ${limit} 次可用`,
+      status: isPro ? 'Pro 高級 AI 可用' : quota ? `剩餘 ${remaining} / ${limit} 次` : '額度讀取中',
       description: isPro ? '付費版直接使用 AutoLabReport 的高級 AI。' : '免費版先提供 3 次測試額度，適合確認流程。',
       icon: Gauge,
     },
@@ -1948,7 +1948,7 @@ function AiSettingsView({
               </p>
             </div>
             <p className="text-sm font-semibold text-slate-500">
-              {quotaLoading ? '讀取中...' : `已用 ${used} 次，剩餘 ${remaining} / ${limit} 次`}
+              {quotaLoading ? '讀取中...' : quota ? `已用 ${used} 次，剩餘 ${remaining} / ${limit} 次` : '目前無法取得額度'}
             </p>
           </div>
           <div className="mt-5 h-2 overflow-hidden rounded-full bg-slate-100">
@@ -2826,36 +2826,16 @@ function ProjectsView({
       return rightTime - leftTime
     })
   const sharedDocuments = fileDocuments.filter((document) => document.shareSetting !== 'private')
-  const snippets = [
-    {
-      id: 'error-python-snippet',
-      title: '誤差分析 Python 繪圖片段',
-      owner: 'Lucas Shelby',
-      updatedAt: '6 月 10 日',
-      status: '草稿',
-      icon: FileCode2,
-    },
-    {
-      id: 'markdown-table-snippet',
-      title: 'Markdown 表格清理片段',
-      owner: 'Lucas Shelby',
-      updatedAt: '6 月 8 日',
-      status: '已匯出',
-      icon: Code2,
-    },
-  ]
-  const conversionRecords = [
-    {
-      title: '光學實驗原始 Word',
-      status: '已轉換',
-      time: '今天 13:42',
-    },
-    {
-      title: '數據表 PDF',
-      status: '需檢查',
-      time: '昨天 20:11',
-    },
-  ]
+  // There is no snippet backend yet. This list used to hold two hard-coded
+  // snippets "owned" by a fixed name, shown to every user as if they were theirs.
+  const snippets: Array<{
+    id: string
+    title: string
+    owner: string
+    updatedAt: string
+    status: string
+    icon: typeof FileCode2
+  }> = []
   const visibleDocuments =
     activeTab === 'shared' ? sharedDocuments : activeTab === 'files' || activeTab === 'imports' ? fileDocuments : []
   const visibleSnippets = activeTab === 'snippets' ? snippets : []
@@ -2942,23 +2922,6 @@ function ProjectsView({
               </p>
             </div>
           </button>
-        </section>
-
-        <section className="mb-6 grid gap-3 md:grid-cols-2">
-          {conversionRecords.map((record) => (
-            <div key={record.title} className="flex items-center gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="grid h-10 w-10 place-items-center rounded-xl bg-slate-100 text-slate-500">
-                <FileClock className="h-5 w-5" strokeWidth={1.8} />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="truncate text-sm font-semibold text-slate-950">{record.title}</p>
-                <p className="text-xs text-slate-400">{record.time}</p>
-              </div>
-              <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ring-1 ${getStatusStyle(record.status)}`}>
-                {record.status}
-              </span>
-            </div>
-          ))}
         </section>
 
         <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
@@ -3283,7 +3246,6 @@ function TemplatesView({
         authorName: 'AutoLabReport',
         source: 'system' as const,
         visibility: 'community' as const,
-        useCount: 128,
         tags: [template.category, 'STEM'],
       })),
       {
@@ -3296,7 +3258,6 @@ function TemplatesView({
         authorName: 'AutoLabReport',
         source: 'system',
         visibility: 'community',
-        useCount: 96,
         tags: ['心得', '課堂作業'],
       },
       {
@@ -3309,7 +3270,6 @@ function TemplatesView({
         authorName: 'AutoLabReport',
         source: 'system',
         visibility: 'community',
-        useCount: 74,
         tags: ['論文', '研究'],
       },
       {
@@ -3322,7 +3282,6 @@ function TemplatesView({
         authorName: 'AutoLabReport',
         source: 'system',
         visibility: 'community',
-        useCount: 63,
         tags: ['教案', 'STEAM'],
       },
       {
@@ -3335,7 +3294,6 @@ function TemplatesView({
         authorName: 'AutoLabReport',
         source: 'system',
         visibility: 'community',
-        useCount: 42,
         tags: ['長文', '書稿'],
       },
     ],
@@ -3354,7 +3312,6 @@ function TemplatesView({
         authorName: 'Lucas Shelby',
         source: 'community',
         visibility: 'community',
-        useCount: 31,
         tags: ['光學', '普物'],
       },
       {
@@ -3367,7 +3324,6 @@ function TemplatesView({
         authorName: 'Ming Chen',
         source: 'community',
         visibility: 'community',
-        useCount: 19,
         tags: ['教案', '活動'],
       },
       {
@@ -3380,7 +3336,6 @@ function TemplatesView({
         authorName: 'Yuki Lin',
         source: 'community',
         visibility: 'community',
-        useCount: 22,
         tags: ['閱讀', '心得'],
       },
     ],
@@ -3577,7 +3532,9 @@ function TemplatesView({
                     <span className="rounded-full bg-white px-3 py-1 text-xs font-semibold text-slate-500 ring-1 ring-slate-200">
                       {template.category}
                     </span>
-                    <span className="text-xs font-semibold text-slate-400">{template.useCount ?? 0} 次套用</span>
+                    {template.useCount ? (
+                      <span className="text-xs font-semibold text-slate-400">{template.useCount} 次套用</span>
+                    ) : null}
                   </div>
                   <div className="space-y-2">
                     <div className="h-2 w-24 rounded-full bg-slate-200" />
@@ -5553,7 +5510,7 @@ function WorkspaceApp({
 
     saveActiveDocumentVersion('Agent 修改前自動備份')
     syncEditorValue(nextMarkdown.endsWith('\n') ? nextMarkdown : `${nextMarkdown}\n`)
-    setBridgeToast('已套用 Agent 修改，原版本已備份')
+    setBridgeToast('已套用 Agent 修改，原版本已備份在這台瀏覽器（更多操作 → 版本歷史）')
   }
 
   function applyPendingAiChange() {
@@ -5590,7 +5547,7 @@ function WorkspaceApp({
     pendingAiSelectionRef.current = null
     setPendingAiChange(null)
     setAiSelectionMenu((current) => ({ ...current, visible: false }))
-    setBridgeToast('已套用 AI 修改，原版本已備份')
+    setBridgeToast('已套用 AI 修改，原版本已備份在這台瀏覽器（更多操作 → 版本歷史）')
   }
 
   async function requestAiEdit(action: 'rewrite' | 'expand') {
@@ -5600,7 +5557,10 @@ function WorkspaceApp({
     }
 
     const activeSelection = activeAiSelectionRef.current
-    if (!activeSelection) return
+    if (!activeSelection) {
+      setBridgeToast('請先在編輯器中選取要處理的文字')
+      return
+    }
 
     pendingAiSelectionRef.current = activeSelection
     const result = await runAiTask({
@@ -5866,7 +5826,10 @@ function WorkspaceApp({
   }
 
   async function createDocumentForParent(parentId: string | null) {
-    if (databaseLoading) return
+    if (databaseLoading) {
+      setBridgeToast('資料同步中，請稍候再試')
+      return
+    }
 
     if (supabase && shouldUseSupabaseDocuments) {
       setDatabaseLoading(true)
@@ -5968,7 +5931,10 @@ function WorkspaceApp({
   }
 
   async function createDocumentFromTemplate(template: ReportTemplate) {
-    if (databaseLoading) return
+    if (databaseLoading) {
+      setBridgeToast('資料同步中，請稍候再試')
+      return
+    }
     // The create dialog calls this directly for its template cards. Left open,
     // it covers the editor the new document was just loaded into, so the click
     // appears to do nothing and a second click creates a duplicate.
@@ -6236,7 +6202,10 @@ function WorkspaceApp({
   }
 
   async function deleteDocument(id: string) {
-    if (databaseLoading) return
+    if (databaseLoading) {
+      setBridgeToast('資料同步中，請稍候再試')
+      return
+    }
 
     const targetDocument = documents.find((document) => document.id === id)
     if (!targetDocument) return
@@ -6521,6 +6490,75 @@ function WorkspaceApp({
       createSafeExportFilename(activeDocument?.title, 'docx'),
       'exporting',
     )
+  }
+
+  async function printSearchablePdf() {
+    if (isEditorEmpty || !preview) {
+      setRenderError('請等待預覽同步完成後再列印')
+      return
+    }
+
+    const previousViewMode = editorViewMode
+    if (displayedEditorViewMode === 'edit') {
+      changeEditorViewMode('preview')
+      await new Promise<void>((resolve) => {
+        window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()))
+      })
+    }
+
+    const source = document.getElementById('pdf-preview-content')
+    const previewHtml = source?.innerHTML ?? ''
+    const previewClass = source?.className ?? ''
+    if (displayedEditorViewMode === 'edit') changeEditorViewMode(previousViewMode)
+    if (!source || !previewHtml.trim()) {
+      setRenderError('找不到預覽內容，請稍後再試')
+      return
+    }
+
+    // A same-origin iframe holding only the report: the app's scroll containers
+    // would otherwise clip a direct window.print() to the first screen.
+    const frame = document.createElement('iframe')
+    frame.setAttribute('aria-hidden', 'true')
+    frame.style.cssText = 'position:fixed;right:0;bottom:0;width:0;height:0;border:0;visibility:hidden'
+    document.body.appendChild(frame)
+    const frameDocument = frame.contentDocument
+    const frameWindow = frame.contentWindow
+    if (!frameDocument || !frameWindow) {
+      frame.remove()
+      setRenderError('無法建立列印內容，請改用「匯出 PDF（圖片版）」')
+      return
+    }
+
+    const stylesheets = Array.from(document.querySelectorAll('link[rel="stylesheet"], style'))
+      .map((node) => node.outerHTML)
+      .join('\n')
+    const safeTitle = (activeDocument?.title || 'AutoLabReport').replace(/[<>&"]/g, '')
+    frameDocument.open()
+    frameDocument.write(
+      `<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><title>${safeTitle}</title>${stylesheets}` +
+        '<style>@page{size:A4;margin:12mm}html,body{background:#fff!important;margin:0}' +
+        '#pdf-preview-content{max-width:none!important;box-shadow:none!important;border:0!important}' +
+        'h1,h2,h3,table,pre,img{break-inside:avoid}</style></head>' +
+        `<body><div id="pdf-preview-content" class="${previewClass} pdf-print-mode">${previewHtml}</div></body></html>`,
+    )
+    frameDocument.close()
+
+    const images = Array.from(frameDocument.images)
+    await Promise.all(
+      images.map((image) =>
+        image.complete
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => {
+              image.addEventListener('load', () => resolve(), { once: true })
+              image.addEventListener('error', () => resolve(), { once: true })
+            }),
+      ),
+    )
+    await frameDocument.fonts?.ready
+
+    frameWindow.addEventListener('afterprint', () => window.setTimeout(() => frame.remove(), 500), { once: true })
+    frameWindow.focus()
+    frameWindow.print()
   }
 
   async function exportPdfReport() {
@@ -6933,6 +6971,24 @@ function WorkspaceApp({
   const isAiConnected =
     aiSettings.preferredProvider === 'extension' ||
     (aiSettings.preferredProvider === 'user_api_key' && aiSettings.userApiProvider !== 'none')
+  // The badge used to label the default built-in provider a free demo, while
+  // runAiTask sends it to /api/ai/run and spends the daily quota.
+  const aiStatus: { ok: boolean; title: string; detail: string } = (() => {
+    if (aiSettings.preferredProvider === 'built_in') {
+      if (aiQuota && aiQuota.remaining <= 0) {
+        return { ok: false, title: '今日內建 AI 額度已用完', detail: '明天會重置；也可以到 AI 設定改用自備 API Key。' }
+      }
+      return {
+        ok: true,
+        title: '內建 AI',
+        detail: aiQuota
+          ? `每次處理消耗 1 次額度，今日剩餘 ${aiQuota.remaining} / ${aiQuota.limit} 次。`
+          : '每次處理消耗 1 次每日額度。',
+      }
+    }
+    if (isAiConnected) return { ok: true, title: 'AI 已連接', detail: 'API 或插件目前可用，不消耗內建額度。' }
+    return { ok: false, title: '尚未設定 AI', detail: '請到 AI 設定選擇 API Provider 並安全儲存 API Key。' }
+  })()
   const assistTasks = [
     {
       title: '生成報告',
@@ -7296,7 +7352,7 @@ function WorkspaceApp({
               type="button"
               onClick={() => setIsAssistDrawerOpen(true)}
               className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl bg-slate-950 px-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2"
-              title="开启 AI Assist"
+              title="開啟 AI Assist"
             >
               <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
               <span className="hidden lg:inline">AI Assist</span>
@@ -7305,7 +7361,7 @@ function WorkspaceApp({
               type="button"
               onClick={() => setIsAgentDrawerOpen(true)}
               className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-              title="开启 AI Agent"
+              title="開啟 AI Agent"
             >
               <Beaker className="h-4 w-4" strokeWidth={2} />
               <span className="hidden lg:inline">AI Agent</span>
@@ -7369,6 +7425,18 @@ function WorkspaceApp({
                   >
                     <CheckSquare className="h-4 w-4" strokeWidth={2} />
                     報告完整度檢查
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAdvancedMenuOpen(false)
+                      setCurrentView('history')
+                    }}
+                    disabled={!activeDocument}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <History className="h-4 w-4" strokeWidth={2} />
+                    版本歷史
                   </button>
                   <button
                     type="button"
@@ -7494,7 +7562,18 @@ function WorkspaceApp({
                     className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
                   >
                     <Download className="h-4 w-4" strokeWidth={2} />
-                    匯出 PDF
+                    匯出 PDF（圖片版）
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAdvancedMenuOpen(false)
+                      void printSearchablePdf()
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
+                  >
+                    <Download className="h-4 w-4" strokeWidth={2} />
+                    列印／另存 PDF（文字可選取）
                   </button>
                   <button
                     type="button"
@@ -7728,7 +7807,7 @@ function WorkspaceApp({
                     onClick={() => wrapSelection('**', '**', '粗體文字')}
                     className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                     title="粗體"
-                    aria-label="将选中文字设为粗体"
+                    aria-label="將選取文字設為粗體"
                   >
                     <Bold className="h-4 w-4" strokeWidth={2} />
                   </button>
@@ -7738,7 +7817,7 @@ function WorkspaceApp({
                     onClick={headingSelection}
                     className="grid h-8 w-8 place-items-center rounded-lg text-slate-600 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
                     title="標題"
-                    aria-label="将选中文字设为标题"
+                    aria-label="將選取文字設為標題"
                   >
                     <Heading2 className="h-4 w-4" strokeWidth={2} />
                   </button>
@@ -7758,10 +7837,10 @@ function WorkspaceApp({
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={() => setIsAssistDrawerOpen(true)}
                     className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-100 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-                    title="用 AI 处理选中文字"
+                    title="用 AI 處理選取的文字"
                   >
                     <PanelRightOpen className="h-4 w-4" strokeWidth={2} />
-                    AI 改写所选
+                    AI 改寫選取內容
                   </button>
                 </div>
               )}
@@ -7857,7 +7936,7 @@ function WorkspaceApp({
             ) : isEditorEmpty ? (
               <div className="mx-auto flex h-full min-h-[360px] max-w-4xl flex-col items-center justify-center rounded-2xl border border-dashed border-slate-300 bg-white px-6 py-12 text-center">
                 <p className="max-w-md text-base leading-relaxed text-slate-500">
-                  开始撰写或贴上内容，这里会即时显示报告预览。
+                  開始撰寫或貼上內容，這裡會即時顯示報告預覽。
                 </p>
               </div>
             ) : preview ? (
@@ -7916,15 +7995,15 @@ function WorkspaceApp({
                 <div className="mt-5 flex items-center gap-3 rounded-2xl bg-slate-50 px-4 py-3 ring-1 ring-slate-200">
                   <span
                     className={`h-2.5 w-2.5 rounded-full ${
-                      isAiConnected ? 'bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.12)]' : 'bg-amber-400 shadow-[0_0_0_4px_rgba(251,191,36,0.14)]'
+                      aiStatus.ok ? 'bg-emerald-500 shadow-[0_0_0_4px_rgba(16,185,129,0.12)]' : 'bg-amber-400 shadow-[0_0_0_4px_rgba(251,191,36,0.14)]'
                     }`}
                   />
                   <div>
                     <p className="text-sm font-semibold text-slate-800">
-                      {isAiConnected ? 'AI 已連接' : '範例模式'}
+                      {aiStatus.title}
                     </p>
                     <p className="text-xs text-slate-500">
-                      {isAiConnected ? 'API 或插件目前可用。' : '可先體驗流程，不消耗 AI。'}
+                      {aiStatus.detail}
                     </p>
                   </div>
                 </div>
@@ -7971,6 +8050,9 @@ function WorkspaceApp({
                     >
                       開始處理
                     </button>
+                    {activeAssistTaskConfig.title === '整理內容' && (
+                      <p className="mt-2 text-xs leading-5 text-slate-500">會處理你在編輯器中選取的文字，請先選取再按「開始處理」。</p>
+                    )}
                   </div>
                 ) : (
                   <div className="space-y-3">
@@ -8361,16 +8443,16 @@ function WorkspaceApp({
                 <textarea
                   value={outlineBrief.requirements}
                   onChange={(event) => setOutlineBrief((current) => ({ ...current, requirements: event.target.value }))}
-                  placeholder="必备章节、字数、问题或评分标准"
+                  placeholder="必備章節、字數、問題或評分標準"
                   className="mt-2 h-28 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-3 font-normal leading-6 outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-900"
                 />
               </label>
               <label className="text-sm font-semibold text-zinc-700 dark:text-zinc-300">
-                原始数据
+                原始數據
                 <textarea
                   value={outlineBrief.rawData}
                   onChange={(event) => setOutlineBrief((current) => ({ ...current, rawData: event.target.value }))}
-                  placeholder="可貼上 Excel/CSV 数据；数字和单位会被标记为不可擅改"
+                  placeholder="可貼上 Excel/CSV 數據；數字和單位會被標記為不可擅改"
                   className="mt-2 h-28 w-full resize-none rounded-xl border border-zinc-200 bg-zinc-50 p-3 font-mono text-xs font-normal leading-6 outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-900"
                 />
               </label>
@@ -8379,12 +8461,12 @@ function WorkspaceApp({
                 <input
                   value={outlineBrief.formatRequirements}
                   onChange={(event) => setOutlineBrief((current) => ({ ...current, formatRequirements: event.target.value }))}
-                  placeholder="例如：中英双语摘要、图表编号、IEEE 引用"
+                  placeholder="例如：中英雙語摘要、圖表編號、IEEE 引用"
                   className="mt-2 h-11 w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 font-normal outline-none focus:border-zinc-400 dark:border-zinc-800 dark:bg-zinc-900"
                 />
               </label>
               <label className="text-sm font-semibold text-zinc-700 dark:text-zinc-300 sm:col-span-2">
-                参考章节结构（可选）
+                參考章節結構（可選）
               <textarea
                 value={outlineExampleText}
                 onChange={(event) => setOutlineExampleText(event.target.value)}
