@@ -4,7 +4,7 @@ Use this only after reading docs/product/RELEASE_READINESS.md and docs/OWNER_ACT
 
 ## P0
 
-- [ ] Apply every dated Supabase migration through `20260911_document_versions.sql` in clean staging.
+- [ ] Apply every dated Supabase migration through `20260912_template_imitation_presets.sql` in clean staging.
 - [ ] Run owner／viewer／editor／anonymous permission matrix.
 - [ ] Confirm report_images and report_recordings are private.
 - [ ] Configure Email and／or Google Auth on the final domains.

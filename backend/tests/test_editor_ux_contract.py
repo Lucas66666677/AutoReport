@@ -245,5 +245,18 @@ class EditorUxContractTests(unittest.TestCase):
         self.assertIn("if (isEditorWorkspaceCompact && mode === 'split') return null", _text(APP))
 
 
+    def test_template_imitation_is_reachable_and_keeps_the_source(self):
+        """模板臨摹: template cards and the editor menu open it; results become a new report."""
+        source = _text(APP)
+        self.assertIn("AI 臨摹", source)
+        self.assertIn("AI 臨摹成新報告", source)
+        self.assertIn("`${API_BASE_URL}/api/templates/imitate`", source)
+        self.assertIn(".from('template_imitation_presets')", source)
+        self.assertIn("await createDocumentFromTemplate(template)", source)
+        dialog = _text(SRC / "TemplateImitationDialog.tsx")
+        self.assertIn("buildImitationRequest(", dialog)
+        self.assertIn("這些數字不在你提供的資料中", dialog)
+
+
 if __name__ == "__main__":
     unittest.main()

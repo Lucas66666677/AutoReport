@@ -178,6 +178,34 @@ class AiRunRequest(BaseModel):
     model: str | None = None
 
 
+class ImitationSection(BaseModel):
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    heading: str = Field(default="", max_length=500)
+    body: str = Field(default="", max_length=100_000)
+    mode: Literal["keep", "replace", "rewrite"]
+    hint: str = Field(default="", max_length=2_000)
+
+
+class TemplateImitationRequest(BaseModel):
+    provider: Literal["built_in", "user_api_key"] = "built_in"
+    api_provider: Literal["openai", "gemini", "anthropic", "deepseek", "none"] | None = None
+    model: str | None = None
+    title: str = Field(default="", max_length=300)
+    material: str = Field(max_length=200_000)
+    instructions: str = Field(default="", max_length=10_000)
+    sections: list[ImitationSection] = Field(min_length=1, max_length=120)
+
+
+class TemplateImitationResponse(BaseModel):
+    markdown: str
+    generated_section_ids: list[str]
+    missing_section_ids: list[str]
+    unverified_numbers: list[str]
+    provider: str
+    model: str | None = None
+    remaining_quota: int | None = None
+
+
 class AiRunResponse(BaseModel):
     markdown: str
     provider: str
@@ -2502,6 +2530,211 @@ def decline_incoming_report_transfer(
         ok=True,
         report_id=UUID(str(row["report_id"])),
         status="rejected",
+    )
+
+
+IMITATION_PENDING_NOTE = "（待補：AI 沒有產生這一段，已保留原文，請依新資料修改）"
+IMITATION_NUMBER_RE = re.compile(r"(?<![\w.])[-+]?\d+(?:\.\d+)?")
+IMITATION_LIST_MARKER_RE = re.compile(r"^\s*\d+[.)]\s", re.MULTILINE)
+
+
+def _normalize_number(token: str) -> str:
+    try:
+        value = float(token)
+    except ValueError:
+        return token
+    text = f"{value:.10f}".rstrip("0").rstrip(".")
+    return "0" if text in {"-0", "+0", ""} else text.lstrip("+")
+
+
+def _imitation_numbers(text: str) -> list[str]:
+    without_markers = IMITATION_LIST_MARKER_RE.sub(" ", text)
+    return [_normalize_number(token) for token in IMITATION_NUMBER_RE.findall(without_markers)]
+
+
+def _build_imitation_prompt(body: TemplateImitationRequest) -> str:
+    targets = [section for section in body.sections if section.mode != "keep"]
+    outline = []
+    for section in body.sections:
+        label = section.heading.strip() or "（開頭，無標題）"
+        role = {"keep": "保留原文，不要輸出", "replace": "依新資料重寫", "rewrite": "沿用原文，改成符合新資料"}[section.mode]
+        outline.append(f"- [{section.id}] {label} → {role}")
+    target_blocks = []
+    for section in targets:
+        target_blocks.append(
+            json.dumps(
+                {
+                    "id": section.id,
+                    "heading": section.heading.strip(),
+                    "mode": section.mode,
+                    "original": section.body[:8_000],
+                    "hint": section.hint,
+                },
+                ensure_ascii=False,
+            )
+        )
+    return "\n".join(
+        [
+            "你是報告撰寫助理。使用者有一份做好的範本，要照同樣的格式產生一份新報告，只換掉需要換的內容。",
+            "",
+            "規則：",
+            "1. 只輸出 JSON，格式為 {\"sections\": {\"段落 id\": \"該段內文 Markdown\"}}，只包含下方「要產生的段落」。",
+            "2. 不要輸出標題行（# 開頭），標題由系統保留。",
+            "3. 沿用原段落的格式：原本是表格就用相同欄位的表格，原本是條列就用條列，長度與語氣相近。",
+            "4. mode=replace：依「新資料」重寫整段；mode=rewrite：保留仍然適用的句子，只改成符合新資料。",
+            "5. 所有數字、單位、名稱只能來自「新資料」或「補充說明」；缺少的資訊寫「（待補：說明缺什麼）」，不要自行編造數據。",
+            "6. 使用與範本相同的語言（通常是繁體中文）。",
+            "",
+            f"新報告標題：{body.title.strip() or '（沿用範本）'}",
+            "",
+            "範本結構：",
+            *outline,
+            "",
+            "要產生的段落（JSON Lines）：",
+            *target_blocks,
+            "",
+            "新資料：",
+            body.material.strip(),
+            "",
+            f"補充說明：{body.instructions.strip() or '（無）'}",
+        ]
+    )
+
+
+def _parse_imitation_sections(raw: str) -> dict[str, str]:
+    text = raw.strip()
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", text, flags=re.DOTALL)
+    if fenced:
+        text = fenced.group(1).strip()
+    start, end = text.find("{"), text.rfind("}")
+    candidates = [text[start : end + 1]] if start != -1 and end > start else []
+    start_list, end_list = text.find("["), text.rfind("]")
+    if start_list != -1 and end_list > start_list:
+        candidates.append(text[start_list : end_list + 1])
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(data, dict) and isinstance(data.get("sections"), (dict, list)):
+            data = data["sections"]
+        if isinstance(data, list):
+            data = {
+                str(item.get("id")): item.get("markdown") or item.get("body") or item.get("content")
+                for item in data
+                if isinstance(item, dict) and item.get("id")
+            }
+        if isinstance(data, dict):
+            return {
+                str(key): value.strip()
+                for key, value in data.items()
+                if isinstance(value, str) and value.strip()
+            }
+    return {}
+
+
+def _strip_generated_heading(text: str, heading: str) -> str:
+    lines = text.strip().splitlines()
+    if lines and heading.strip() and lines[0].strip().lstrip("#").strip() == heading.strip().lstrip("#").strip():
+        lines = lines[1:]
+    return "\n".join(lines).strip()
+
+
+def _assemble_imitation(
+    body: TemplateImitationRequest, generated: dict[str, str]
+) -> tuple[str, list[str], list[str]]:
+    parts: list[str] = []
+    produced: list[str] = []
+    missing: list[str] = []
+    for section in body.sections:
+        if section.mode == "keep":
+            content = section.body.strip("\n")
+        elif generated.get(section.id):
+            content = _strip_generated_heading(generated[section.id], section.heading)
+            produced.append(section.id)
+        else:
+            missing.append(section.id)
+            original = section.body.strip("\n")
+            content = f"{IMITATION_PENDING_NOTE}\n\n{original}" if original else IMITATION_PENDING_NOTE
+        block = section.heading.rstrip()
+        if content:
+            block = f"{block}\n\n{content}" if block else content
+        if block:
+            parts.append(block)
+    return "\n\n".join(parts).rstrip() + "\n", produced, missing
+
+
+@app.post("/api/templates/imitate", response_model=TemplateImitationResponse)
+def imitate_template(
+    body: TemplateImitationRequest,
+    authorization: str | None = Header(default=None),
+):
+    if not body.material.strip():
+        raise HTTPException(status_code=400, detail="請貼上這次的新資料")
+    if not any(section.mode != "keep" for section in body.sections):
+        raise HTTPException(status_code=400, detail="至少要有一個段落設為「替換」或「依新資料改寫」")
+
+    user = _get_user_from_authorization(authorization)
+    quota: dict[str, Any] | None = None
+    decrypted_user_api_key: str | None = None
+    decrypted_user_api_provider: str | None = None
+    quota_reserved = False
+    try:
+        if body.provider == "built_in":
+            if user is None:
+                raise HTTPException(status_code=401, detail="內建 AI 需要登入後使用")
+            quota = _reserve_ai_quota(user)
+            quota_reserved = True
+        else:
+            if user is None:
+                raise HTTPException(status_code=401, detail="自備 API Key 需要登入後使用")
+            decrypted_user_api_key, decrypted_user_api_provider = _get_decrypted_user_api_key(
+                user,
+                body.api_provider,
+            )
+
+        request = AiRunRequest(
+            provider=body.provider,
+            action="custom",
+            text=body.material[:200_000],
+            prompt=_build_imitation_prompt(body)[:300_000],
+            api_provider=body.api_provider,
+            model=body.model,
+        )
+        raw, model = _run_ai_provider(request, decrypted_user_api_key, decrypted_user_api_provider)
+        generated = {} if model == "fallback-rule" else _parse_imitation_sections(raw)
+        markdown, produced, missing = _assemble_imitation(body, generated)
+
+        allowed = set(_imitation_numbers(body.material + "\n" + body.instructions + "\n" + body.title))
+        for section in body.sections:
+            allowed.update(_imitation_numbers(section.heading))
+            if section.mode != "replace":
+                allowed.update(_imitation_numbers(section.body))
+        unverified: list[str] = []
+        for section_id in produced:
+            for number in _imitation_numbers(generated[section_id]):
+                if number not in allowed and number not in unverified:
+                    unverified.append(number)
+        _log_ai_usage(user, request, model, "success")
+    except HTTPException:
+        if quota_reserved and user is not None:
+            _refund_ai_quota(user)
+        raise
+    except Exception:
+        if quota_reserved and user is not None:
+            _refund_ai_quota(user)
+        raise
+    finally:
+        decrypted_user_api_key = None
+
+    return TemplateImitationResponse(
+        markdown=markdown,
+        generated_section_ids=produced,
+        missing_section_ids=missing,
+        unverified_numbers=unverified[:30],
+        provider=body.provider,
+        model=model,
+        remaining_quota=quota["remaining"] if quota else None,
     )
 
 
