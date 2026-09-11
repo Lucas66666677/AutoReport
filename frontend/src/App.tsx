@@ -6509,6 +6509,9 @@ function WorkspaceApp({
     const source = document.getElementById('pdf-preview-content')
     const previewHtml = source?.innerHTML ?? ''
     const previewClass = source?.className ?? ''
+    // The preview lazy-loads images. In the hidden print frame they are never in
+    // view, so they would not load and the image wait below would stall.
+    const printableHtml = previewHtml.replace(/\sloading="lazy"/g, '')
     if (displayedEditorViewMode === 'edit') changeEditorViewMode(previousViewMode)
     if (!source || !previewHtml.trim()) {
       setRenderError('找不到預覽內容，請稍後再試')
@@ -6539,7 +6542,7 @@ function WorkspaceApp({
         '<style>@page{size:A4;margin:12mm}html,body{background:#fff!important;margin:0}' +
         '#pdf-preview-content{max-width:none!important;box-shadow:none!important;border:0!important}' +
         'h1,h2,h3,table,pre,img{break-inside:avoid}</style></head>' +
-        `<body><div id="pdf-preview-content" class="${previewClass} pdf-print-mode">${previewHtml}</div></body></html>`,
+        `<body><div id="pdf-preview-content" class="${previewClass} pdf-print-mode">${printableHtml}</div></body></html>`,
     )
     frameDocument.close()
 
@@ -6551,6 +6554,7 @@ function WorkspaceApp({
           : new Promise<void>((resolve) => {
               image.addEventListener('load', () => resolve(), { once: true })
               image.addEventListener('error', () => resolve(), { once: true })
+              window.setTimeout(resolve, 10_000)
             }),
       ),
     )
