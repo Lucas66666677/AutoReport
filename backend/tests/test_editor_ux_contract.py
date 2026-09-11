@@ -113,5 +113,16 @@ class EditorUxContractTests(unittest.TestCase):
         self.assertNotIn("{template.useCount ?? 0} 次套用", source)
 
 
+    def test_print_pdf_cannot_stall_on_lazy_images(self):
+        """Lazy preview images never load in the hidden print frame, so print never ran."""
+        source = _text(APP)
+        start = source.index("async function printSearchablePdf(")
+        body = source[start : source.index("async function exportPdfReport(", start)]
+        self.assertIn('loading="lazy"', body, "print copy must strip lazy loading")
+        self.assertIn("${printableHtml}", body)
+        self.assertNotIn("${previewHtml}</div>", body)
+        self.assertIn("window.setTimeout(resolve, 10_000)", body)
+
+
 if __name__ == "__main__":
     unittest.main()
