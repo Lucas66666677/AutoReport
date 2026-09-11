@@ -109,6 +109,7 @@ import {
 import { resolveApiBaseUrl } from './apiConfig'
 import { analyzeReportQuality } from './reportQuality'
 import { createPrivateReportImageUrl, REPORT_IMAGE_BUCKET } from './reportImageStorage'
+import { insertOwnedDocument } from './documentInsert'
 import { supabaseClient as supabase } from './supabaseClient'
 import { useExtensionBridge } from './useExtensionBridge'
 import { useSettings, type NotePreferences } from './useSettings'
@@ -5870,22 +5871,18 @@ function WorkspaceApp({
     if (supabase && shouldUseSupabaseDocuments) {
       setDatabaseLoading(true)
       try {
-        const { data, error } = await supabase
-          .from('documents')
-          .insert([{
+        const client = supabase
+        const documentId = await insertOwnedDocument(
+          (row) => client.from('documents').insert([row]),
+          {
             title: '未命名報告',
             content: '',
             share_setting: 'private',
             user_id: user?.id,
             parent_id: parentId,
-          }])
-          .select('*')
-          .single()
-
-        if (error) throw error
-
-        const nextDocument = mapSupabaseDocument(data as SupabaseDocumentRow)
-        await refreshSupabaseDocuments(nextDocument.id)
+          },
+        )
+        await refreshSupabaseDocuments(documentId)
       } catch (err) {
         const message = err instanceof Error ? err.message : '新增報告失敗'
         setBridgeToast(`新增報告失敗：${message}`)
@@ -5946,15 +5943,12 @@ function WorkspaceApp({
     if (supabase && shouldUseSupabaseDocuments) {
       setDatabaseLoading(true)
       try {
-        const { data, error } = await supabase
-          .from('documents')
-          .insert([{ title: safeTitle, content: importedMarkdown, share_setting: 'private', user_id: user?.id }])
-          .select('*')
-          .single()
-        if (error) throw error
-
-        const nextDocument = mapSupabaseDocument(data as SupabaseDocumentRow)
-        await refreshSupabaseDocuments(nextDocument.id)
+        const client = supabase
+        const documentId = await insertOwnedDocument(
+          (row) => client.from('documents').insert([row]),
+          { title: safeTitle, content: importedMarkdown, share_setting: 'private', user_id: user?.id },
+        )
+        await refreshSupabaseDocuments(documentId)
         setIsSidebarCollapsed(true)
         setCurrentView('editor')
       } catch (err) {
@@ -5979,16 +5973,12 @@ function WorkspaceApp({
     if (supabase && shouldUseSupabaseDocuments) {
       setDatabaseLoading(true)
       try {
-        const { data, error } = await supabase
-          .from('documents')
-          .insert([{ title: template.title, content: template.content, share_setting: 'private', user_id: user?.id }])
-          .select('*')
-          .single()
-
-        if (error) throw error
-
-        const nextDocument = mapSupabaseDocument(data as SupabaseDocumentRow)
-        await refreshSupabaseDocuments(nextDocument.id)
+        const client = supabase
+        const documentId = await insertOwnedDocument(
+          (row) => client.from('documents').insert([row]),
+          { title: template.title, content: template.content, share_setting: 'private', user_id: user?.id },
+        )
+        await refreshSupabaseDocuments(documentId)
         window.setTimeout(() => {
           editorRef.current?.focus()
           editorRef.current?.setPosition({ lineNumber: 1, column: 1 })
