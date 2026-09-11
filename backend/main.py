@@ -1892,6 +1892,10 @@ def _build_agent_prompt(body: AgentRunRequest) -> str:
     )
 
 
+AGENT_EDIT_WITHHELD_NOTE = "AI 建議的修改更動了原文的數字或單位，已自動略過；文件沒有被修改，其餘檢查結果仍可參考。"
+AGENT_UNPARSEABLE_NOTE = "AI 回覆的格式無法解析，這次改用規則版檢查。"
+
+
 def _run_agent_provider(
     body: AgentRunRequest,
     user_api_key: str | None = None,
@@ -1907,7 +1911,13 @@ def _run_agent_provider(
         model=body.model,
     )
     text, model = _run_ai_provider(ai_body, user_api_key, user_api_provider)
-    response = _parse_agent_json(text, body.mode)
+    try:
+        response = _parse_agent_json(text, body.mode)
+    except HTTPException:
+        # Not the JSON we asked for: answer with the rule-based review instead of
+        # failing a call the user already spent quota on.
+        response = _fallback_agent_response(body)
+        response.findings = [AGENT_UNPARSEABLE_NOTE, *response.findings][:12]
     response.model = model
     return response, model
 
@@ -2115,7 +2125,19 @@ def run_agent(body: AgentRunRequest, authorization: str | None = Header(default=
             model = response.model
 
         if response.proposed_markdown:
-            _enforce_numeric_integrity(body.document_markdown, response.proposed_markdown)
+            is_valid, differences = validate_numeric_integrity(
+                body.document_markdown, response.proposed_markdown
+            )
+            if not is_valid:
+                # Withhold only the edit; the rest of the review is still useful.
+                logger.warning(
+                    "Agent proposal withheld by numeric-integrity guard. missing=%s added=%s",
+                    differences["missing"],
+                    differences["added"],
+                )
+                response.proposed_markdown = None
+                response.patch_summary = None
+                response.findings = [AGENT_EDIT_WITHHELD_NOTE, *response.findings][:12]
 
         response.remaining_quota = quota["remaining"] if quota else None
         response.model = model
