@@ -124,5 +124,32 @@ class EditorUxContractTests(unittest.TestCase):
         self.assertIn("window.setTimeout(resolve, 10_000)", body)
 
 
+    def test_version_history_is_backed_by_the_cloud_when_signed_in(self):
+        """Snapshots lived only in localStorage; a new device or cleared storage lost them."""
+        source = _text(APP)
+        self.assertIn(".from('document_versions')", source)
+        self.assertIn("versionToRow(", source)
+        self.assertIn("cloudBacked={shouldUseSupabaseDocuments}", source)
+        migration = (SRC.parents[1] / "supabase" / "migrations" / "20260911_document_versions.sql").read_text(encoding="utf-8")
+        self.assertIn("enable row level security", migration)
+        self.assertIn("public.can_edit_document(document_id)", migration)
+
+    def test_save_as_template_is_not_a_placeholder(self):
+        """存為範本 only showed a toast about a future templates table."""
+        source = _text(APP)
+        self.assertNotIn("已保留為範本入口", source)
+        self.assertIn("void saveActiveDocumentAsTemplate()", source)
+        self.assertIn(".from('report_templates')", source)
+
+
+    def test_ownership_transfer_is_not_a_placeholder(self):
+        """轉移筆記擁有權 only toasted that a backend flow was missing."""
+        source = _text(APP)
+        self.assertNotIn("轉移筆記擁有權需要後端權限流程", source)
+        self.assertIn("/transfer/request`", source)
+        self.assertIn("/api/reports/transfer/incoming", source)
+        self.assertIn("/api/reports/transfer/${requestId}/${decision}", source)
+
+
 if __name__ == "__main__":
     unittest.main()

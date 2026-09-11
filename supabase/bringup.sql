@@ -5,7 +5,7 @@
 -- backend/tests/test_supabase_bringup.py fails when this drifts from
 -- supabase/migrations/.
 --
--- A fresh project needs all 9 migrations, applied in the order the
+-- A fresh project needs all 10 migrations, applied in the order the
 -- Supabase CLI applies them (filename order). supabase/schema_and_rls.sql is
 -- byte-identical to the FIRST migration alone; a project brought up from that
 -- file is missing every later one.
@@ -26,10 +26,11 @@
 --   7. 20260702_profiles_preferences.sql
 --   8. 20260723_closed_beta_security.sql
 --   9. 20260724_staging_bringup_hardening.sql
+--   10. 20260911_document_versions.sql
 
 
 -- ==========================================================================
--- 1/9  20260626_initial_schema_and_rls.sql
+-- 1/10  20260626_initial_schema_and_rls.sql
 -- ==========================================================================
 
 -- AutoLabReport Supabase schema and RLS policies.
@@ -474,7 +475,7 @@ using (auth.uid() = user_id);
 
 
 -- ==========================================================================
--- 2/9  20260627_workspaces_and_rls.sql
+-- 2/10  20260627_workspaces_and_rls.sql
 -- ==========================================================================
 
 -- AutoLabReport workspace migration.
@@ -777,7 +778,7 @@ using (
 
 
 -- ==========================================================================
--- 3/9  20260701_community_templates.sql
+-- 3/10  20260701_community_templates.sql
 -- ==========================================================================
 
 -- Community template review and usage tracking.
@@ -902,7 +903,7 @@ using (auth.uid() = user_id);
 
 
 -- ==========================================================================
--- 4/9  20260701_report_ownership_transfers.sql
+-- 4/10  20260701_report_ownership_transfers.sql
 -- ==========================================================================
 
 -- Secure, double-confirmed report ownership transfers.
@@ -1121,7 +1122,7 @@ grant execute on function public.confirm_report_ownership_transfer(text, uuid)
 
 
 -- ==========================================================================
--- 5/9  20260701_report_recordings_storage.sql
+-- 5/10  20260701_report_recordings_storage.sql
 -- ==========================================================================
 
 -- Private recording bucket. Closed Beta keeps the UI disabled; the later
@@ -1181,7 +1182,7 @@ using (
 
 
 -- ==========================================================================
--- 6/9  20260701_yjs_collaboration_persistence.sql
+-- 6/10  20260701_yjs_collaboration_persistence.sql
 -- ==========================================================================
 
 -- Primary Yjs state storage. The service role owns all writes.
@@ -1204,7 +1205,7 @@ revoke all on table public.collaboration_documents from anon, authenticated;
 
 
 -- ==========================================================================
--- 7/9  20260702_profiles_preferences.sql
+-- 7/10  20260702_profiles_preferences.sql
 -- ==========================================================================
 
 -- Ensure every authenticated user has a profile and cloud preferences.
@@ -1278,7 +1279,7 @@ with check (auth.uid() = id);
 
 
 -- ==========================================================================
--- 8/9  20260723_closed_beta_security.sql
+-- 8/10  20260723_closed_beta_security.sql
 -- ==========================================================================
 
 -- Closed Beta security baseline.
@@ -1634,7 +1635,7 @@ using (
 
 
 -- ==========================================================================
--- 9/9  20260724_staging_bringup_hardening.sql
+-- 9/10  20260724_staging_bringup_hardening.sql
 -- ==========================================================================
 
 -- Staging bring-up hardening.
@@ -1731,3 +1732,61 @@ using (
 drop policy if exists "report_recordings_insert_own_folder" on storage.objects;
 drop policy if exists "report_recordings_update_own_folder" on storage.objects;
 drop policy if exists "report_recordings_delete_own_folder" on storage.objects;
+
+
+-- ==========================================================================
+-- 10/10  20260911_document_versions.sql
+-- ==========================================================================
+
+-- Cloud-backed report version history.
+-- Run after 20260724_staging_bringup_hardening.sql.
+--
+-- Versions used to live only in the browser (localStorage), so a snapshot taken
+-- before an AI rewrite was gone on another device or after clearing site data.
+-- Rows are append-only: there are no client UPDATE policies, and only the report
+-- owner can delete a snapshot.
+
+create table if not exists public.document_versions (
+  id uuid primary key default gen_random_uuid(),
+  document_id uuid not null references public.documents(id) on delete cascade,
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  title text not null default '',
+  content text not null,
+  note text not null default '',
+  created_at timestamptz not null default now(),
+  constraint document_versions_content_size check (char_length(content) <= 500000),
+  constraint document_versions_title_size check (char_length(title) <= 500),
+  constraint document_versions_note_size check (char_length(note) <= 200)
+);
+
+create index if not exists document_versions_document_created_idx
+  on public.document_versions (document_id, created_at desc);
+
+alter table public.document_versions enable row level security;
+
+drop policy if exists "document_versions_select_readers" on public.document_versions;
+create policy "document_versions_select_readers"
+on public.document_versions for select
+to authenticated
+using (public.can_read_document(document_id));
+
+drop policy if exists "document_versions_insert_editors" on public.document_versions;
+create policy "document_versions_insert_editors"
+on public.document_versions for insert
+to authenticated
+with check (
+  auth.uid() = user_id
+  and public.can_edit_document(document_id)
+);
+
+drop policy if exists "document_versions_delete_owner" on public.document_versions;
+create policy "document_versions_delete_owner"
+on public.document_versions for delete
+to authenticated
+using (public.is_document_owner(document_id, auth.uid()));
+
+-- Supabase's default privileges grant anon and authenticated everything on new
+-- public tables, including TRUNCATE, which RLS does not cover. Keep only what
+-- the app uses.
+revoke all on public.document_versions from anon, authenticated;
+grant select, insert, delete on public.document_versions to authenticated;

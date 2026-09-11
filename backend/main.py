@@ -376,6 +376,20 @@ class OwnershipTransferConfirmResponse(BaseModel):
     to_user: UUID
 
 
+class IncomingTransferResponse(BaseModel):
+    id: UUID
+    report_id: UUID
+    report_title: str
+    from_email: str | None = None
+    expires_at: datetime
+
+
+class TransferDecisionResponse(BaseModel):
+    ok: bool
+    report_id: UUID
+    status: Literal["accepted", "rejected"]
+
+
 def render_markdown(text: str) -> str:
     # Closed Beta treats every fenced code block as inert report content.
     return text
@@ -2234,11 +2248,6 @@ def request_report_ownership_transfer(
     body: OwnershipTransferRequest,
     authorization: str | None = Header(default=None),
 ):
-    if not OWNERSHIP_TRANSFER_EMAIL_CONFIGURED:
-        raise HTTPException(
-            status_code=503,
-            detail="Closed Beta 尚未啟用所有權轉移郵件；請聯絡產品管理員處理。",
-        )
     sender = _require_user(authorization)
     sender_id = sender.get("id")
     if not isinstance(sender_id, str) or not sender_id:
@@ -2306,23 +2315,29 @@ def request_report_ownership_transfer(
     if not created:
         raise HTTPException(status_code=502, detail="無法建立轉移請求")
 
-    confirmation_url = (
-        f"{FRONTEND_URL}/transfer/confirm"
-        f"?token={urllib.parse.quote(raw_token, safe='')}"
-    )
-    _send_transfer_confirmation_email(
-        recipient_email,
-        str(report.get("title") or "未命名報告"),
-        confirmation_url,
-        expires_at,
-    )
+    if OWNERSHIP_TRANSFER_EMAIL_CONFIGURED:
+        confirmation_url = (
+            f"{FRONTEND_URL}/transfer/confirm"
+            f"?token={urllib.parse.quote(raw_token, safe='')}"
+        )
+        _send_transfer_confirmation_email(
+            recipient_email,
+            str(report.get("title") or "未命名報告"),
+            confirmation_url,
+            expires_at,
+        )
+        message = "確認信已發送給接收者，連結將於 24 小時後失效"
+    else:
+        # No mailer: the recipient accepts in the app while signed in as
+        # themselves (see /api/reports/transfer/incoming and .../accept).
+        message = "已送出轉移請求；對方登入 AutoLabReport 後可在首頁接受，24 小時內有效"
     raw_token = ""
 
     return OwnershipTransferRequestResponse(
         ok=True,
         transfer_request_id=UUID(str(created[0]["id"])),
         expires_at=expires_at,
-        message="確認信已發送給接收者，連結將於 24 小時後失效",
+        message=message,
     )
 
 
@@ -2365,6 +2380,128 @@ def confirm_report_ownership_transfer(
         report_id=UUID(str(result["report_id"])),
         from_user=UUID(str(result["from_user"])),
         to_user=UUID(str(result["to_user"])),
+    )
+
+
+def _require_user_id(authorization: str | None) -> str:
+    user = _require_user(authorization)
+    user_id = user.get("id")
+    if not isinstance(user_id, str) or not user_id:
+        raise HTTPException(status_code=401, detail="無效的使用者")
+    return user_id
+
+
+def _load_pending_transfer_for_recipient(request_id: UUID, recipient_id: str) -> dict[str, Any]:
+    rows = _supabase_request(
+        "/rest/v1/transfer_requests"
+        f"?id=eq.{request_id}"
+        "&select=id,report_id,from_user,to_user,token_hash,status,expires_at"
+    )
+    if not rows:
+        raise HTTPException(status_code=404, detail="找不到轉移請求")
+    row = rows[0]
+    if row.get("to_user") != recipient_id:
+        raise HTTPException(status_code=403, detail="此轉移請求不屬於目前登入帳號")
+    if row.get("status") != "pending":
+        raise HTTPException(status_code=409, detail="此轉移請求已處理")
+    return row
+
+
+@app.get("/api/reports/transfer/incoming", response_model=list[IncomingTransferResponse])
+def list_incoming_report_transfers(authorization: str | None = Header(default=None)):
+    recipient_id = _require_user_id(authorization)
+    now = urllib.parse.quote(datetime.now(UTC).isoformat(), safe="")
+    rows = _supabase_request(
+        "/rest/v1/transfer_requests"
+        f"?to_user=eq.{recipient_id}"
+        "&status=eq.pending"
+        f"&expires_at=gt.{now}"
+        "&select=id,report_id,from_user,expires_at"
+        "&order=created_at.desc"
+    ) or []
+    if not rows:
+        return []
+
+    report_ids = ",".join(sorted({str(row["report_id"]) for row in rows}))
+    sender_ids = ",".join(sorted({str(row["from_user"]) for row in rows}))
+    titles = {
+        str(report["id"]): str(report.get("title") or "未命名報告")
+        for report in (_supabase_request(f"/rest/v1/documents?id=in.({report_ids})&select=id,title") or [])
+    }
+    emails = {
+        str(profile["id"]): profile.get("email")
+        for profile in (_supabase_request(f"/rest/v1/profiles?id=in.({sender_ids})&select=id,email") or [])
+    }
+    return [
+        IncomingTransferResponse(
+            id=UUID(str(row["id"])),
+            report_id=UUID(str(row["report_id"])),
+            report_title=titles.get(str(row["report_id"]), "未命名報告"),
+            from_email=emails.get(str(row["from_user"])),
+            expires_at=row["expires_at"],
+        )
+        for row in rows
+    ]
+
+
+@app.post("/api/reports/transfer/{request_id}/accept", response_model=TransferDecisionResponse)
+def accept_incoming_report_transfer(
+    request_id: UUID,
+    authorization: str | None = Header(default=None),
+):
+    recipient_id = _require_user_id(authorization)
+    row = _load_pending_transfer_for_recipient(request_id, recipient_id)
+
+    # Same function the emailed link uses: it re-checks recipient, status,
+    # expiry and that the sender still owns the report, all under a row lock.
+    result = _supabase_request(
+        "/rest/v1/rpc/confirm_report_ownership_transfer",
+        method="POST",
+        payload={
+            "p_token_hash": row["token_hash"],
+            "p_recipient_user_id": recipient_id,
+        },
+    )
+    if not isinstance(result, dict) or not result.get("ok"):
+        code = result.get("code") if isinstance(result, dict) else "invalid_token"
+        if code == "expired":
+            raise HTTPException(status_code=410, detail="此轉移請求已過期")
+        if code == "wrong_recipient":
+            raise HTTPException(status_code=403, detail="此轉移請求不屬於目前登入帳號")
+        if code in {"already_processed", "owner_changed", "report_missing"}:
+            raise HTTPException(status_code=409, detail="此轉移請求已處理或報告擁有者已變更")
+        raise HTTPException(status_code=400, detail="無法完成轉移")
+
+    return TransferDecisionResponse(
+        ok=True,
+        report_id=UUID(str(result["report_id"])),
+        status="accepted",
+    )
+
+
+@app.post("/api/reports/transfer/{request_id}/decline", response_model=TransferDecisionResponse)
+def decline_incoming_report_transfer(
+    request_id: UUID,
+    authorization: str | None = Header(default=None),
+):
+    recipient_id = _require_user_id(authorization)
+    row = _load_pending_transfer_for_recipient(request_id, recipient_id)
+    _supabase_request(
+        "/rest/v1/transfer_requests"
+        f"?id=eq.{request_id}"
+        f"&to_user=eq.{recipient_id}"
+        "&status=eq.pending",
+        method="PATCH",
+        payload={
+            "status": "rejected",
+            "cancelled_at": datetime.now(UTC).isoformat(),
+        },
+        extra_headers={"Prefer": "return=minimal"},
+    )
+    return TransferDecisionResponse(
+        ok=True,
+        report_id=UUID(str(row["report_id"])),
+        status="rejected",
     )
 
 
