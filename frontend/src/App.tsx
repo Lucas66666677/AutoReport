@@ -1020,6 +1020,15 @@ function getInitialWorkspace() {
   }
 }
 
+// Opening a report used to collapse the workspace sidebar on every screen and
+// nothing expanded it again, so after the first report the other pages showed an
+// icon rail. Only phones need the room.
+function collapseSidebarOnSmallScreens(setCollapsed: (collapsed: boolean) => void) {
+  if (typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches) {
+    setCollapsed(true)
+  }
+}
+
 function DocumentSidebar({
   documents,
   activeDocumentId,
@@ -1199,7 +1208,7 @@ function DocumentSidebar({
               event.stopPropagation()
               onTogglePin()
             }}
-            className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-blue-700 group-hover:opacity-100"
+            className="grid h-7 w-7 place-items-center rounded-lg text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-blue-700 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
           >
             {pinState === 'pinned' ? (
               <PinOff className="h-3.5 w-3.5" strokeWidth={2} />
@@ -1243,7 +1252,7 @@ function DocumentSidebar({
         >
           <FolderOpen className="h-4 w-4" strokeWidth={2} />
         </button>
-        {pinnedItems.map((item) => (
+        {[...pinnedItems, ...moreItems].map((item) => (
           <button
             key={item.id}
             type="button"
@@ -1314,7 +1323,7 @@ function DocumentSidebar({
                 setExpandedFolderIds((current) => new Set(current).add(document.id))
                 onCreateDocumentInFolder(document.id)
               }}
-              className="rounded-lg p-1 text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-blue-700 group-hover:opacity-100"
+              className="rounded-lg p-1 text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-blue-700 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
             >
               <Plus className="h-4 w-4" strokeWidth={2} />
             </button>
@@ -1335,7 +1344,7 @@ function DocumentSidebar({
             type="button"
             title="重新命名"
             onClick={() => onRenameDocument(document.id)}
-            className="rounded-lg p-1 text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-slate-900 group-hover:opacity-100"
+            className="rounded-lg p-1 text-slate-400 opacity-0 transition hover:bg-slate-100 hover:text-slate-900 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
           >
             <Pencil className="h-4 w-4" strokeWidth={2} />
           </button>
@@ -1343,7 +1352,7 @@ function DocumentSidebar({
             type="button"
             title={isFolder ? '刪除資料夾' : '刪除檔案'}
             onClick={() => onDeleteDocument(document.id)}
-            className="rounded-lg p-1 text-slate-400 opacity-0 transition hover:bg-red-50 hover:text-red-600 group-hover:opacity-100"
+            className="rounded-lg p-1 text-slate-400 opacity-0 transition hover:bg-red-50 hover:text-red-600 group-hover:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100"
           >
             <Trash2 className="h-4 w-4" strokeWidth={2} />
           </button>
@@ -1770,6 +1779,7 @@ function getInitialAppView(initialSharedDocument?: Document | null): AppView {
   if (typeof window === 'undefined') return 'dashboard'
   if (window.location.pathname === '/dashboard/home' || window.location.pathname === '/dashboard') return 'dashboard'
   if (window.location.pathname === '/dashboard/projects') return 'projects'
+  if (window.location.pathname === '/dashboard/favorites') return 'favorites'
   if (window.location.pathname === '/dashboard/settings') return 'settings'
   if (window.location.pathname === '/dashboard/templates') return 'templates'
   if (window.location.pathname === '/dashboard/prompts') return 'prompts'
@@ -2840,6 +2850,9 @@ function DashboardView({
 
 type ProjectTab = 'files' | 'imports' | 'snippets' | 'shared'
 
+// Tall enough for the six row actions; used to decide whether the menu opens upward.
+const PROJECT_MENU_HEIGHT = 300
+
 function ProjectsView({
   documents,
   onOpenDocument,
@@ -2863,6 +2876,7 @@ function ProjectsView({
 }) {
   const [activeTab, setActiveTab] = useState<ProjectTab>('files')
   const [openMenuId, setOpenMenuId] = useState<string | null>(null)
+  const [menuPosition, setMenuPosition] = useState<{ top?: number; bottom?: number; right: number } | null>(null)
   const menuRef = useRef<HTMLDivElement | null>(null)
   const markdownInputRef = useRef<HTMLInputElement | null>(null)
   const tabs: Array<{ id: ProjectTab; label: string }> = [
@@ -2922,9 +2936,17 @@ function ProjectsView({
         setOpenMenuId(null)
       }
     }
+    // The menu is fixed to the viewport, so it would float away from its row on scroll.
+    const closeMenu = () => setOpenMenuId(null)
 
     document.addEventListener('mousedown', handleClickOutside)
-    return () => document.removeEventListener('mousedown', handleClickOutside)
+    window.addEventListener('resize', closeMenu)
+    document.addEventListener('scroll', closeMenu, true)
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside)
+      window.removeEventListener('resize', closeMenu)
+      document.removeEventListener('scroll', closeMenu, true)
+    }
   }, [])
 
   return (
@@ -3038,7 +3060,19 @@ function ProjectsView({
                   <div ref={openMenuId === document.id ? menuRef : null} className="relative justify-self-end">
                     <button
                       type="button"
-                      onClick={() => setOpenMenuId((current) => (current === document.id ? null : document.id))}
+                      onClick={(event) => {
+                        // The list is a clipped, scrolling panel: a menu anchored below the
+                        // last rows opened off-screen and 刪除 could not be clicked. A fixed
+                        // menu escapes the clipping and opens upward near the bottom.
+                        const rect = event.currentTarget.getBoundingClientRect()
+                        const opensUpward = window.innerHeight - rect.bottom < PROJECT_MENU_HEIGHT + 16
+                        setMenuPosition(
+                          opensUpward
+                            ? { bottom: window.innerHeight - rect.top + 8, right: window.innerWidth - rect.right }
+                            : { top: rect.bottom + 8, right: window.innerWidth - rect.right },
+                        )
+                        setOpenMenuId((current) => (current === document.id ? null : document.id))
+                      }}
                       className="grid h-9 w-9 place-items-center rounded-xl text-slate-400 transition hover:bg-white hover:text-slate-950 hover:shadow-sm"
                       aria-label="文件操作"
                       title="文件操作"
@@ -3046,7 +3080,7 @@ function ProjectsView({
                       <MoreHorizontal className="h-5 w-5" strokeWidth={2} />
                     </button>
                     {openMenuId === document.id && (
-                      <div className="absolute right-0 top-full z-20 mt-2 w-48 overflow-hidden rounded-2xl border border-slate-200 bg-white py-2 text-sm shadow-xl shadow-slate-200/70">
+                      <div style={menuPosition ?? undefined} className="fixed z-50 w-48 overflow-hidden rounded-2xl border border-slate-200 bg-white py-2 text-sm shadow-xl shadow-slate-200/70">
                         <button type="button" onClick={() => onOpenDocument(document.id)} className="flex w-full items-center gap-2 px-4 py-2.5 text-left font-medium text-slate-600 transition hover:bg-slate-50 hover:text-slate-950">
                           <FileText className="h-4 w-4" /> 開啟
                         </button>
@@ -4382,22 +4416,50 @@ function WorkspaceApp({
     [shouldUseSupabaseDocuments],
   )
 
+  // Every view change used to replaceState and nothing handled popstate, so the
+  // browser's Back button left AutoLabReport and a refresh lost the open report.
+  const hasSyncedInitialRouteRef = useRef(false)
+  const isRestoringFromHistoryRef = useRef(false)
   useEffect(() => {
-    if (typeof window === 'undefined' || currentView === 'editor') return
+    if (typeof window === 'undefined') return
+    // On first load the deep-link effect below opens /editor/<id>; wait for it.
+    const pendingDeepLink = !hasOpenedSharedDocRef.current && getSharedDocumentIdFromLocation()
+    if (pendingDeepLink && !hasSyncedInitialRouteRef.current) return
+    // From here on the app owns /editor/ URLs; the deep-link effect must not
+    // re-open (and re-apply) a report the user is already editing.
+    hasOpenedSharedDocRef.current = true
 
     const routeByView: Partial<Record<AppView, string>> = {
       dashboard: '/dashboard/home',
       projects: '/dashboard/projects',
+      favorites: '/dashboard/favorites',
       settings: '/dashboard/settings',
+      billing: '/dashboard/settings',
       templates: '/dashboard/templates',
       prompts: '/dashboard/prompts',
       trash: '/dashboard/trash',
     }
-    const nextPath = routeByView[currentView] ?? '/dashboard/home'
-    if (window.location.pathname !== nextPath) {
-      window.history.replaceState(null, '', nextPath)
+    // The editor and its sub-pages share the report's URL.
+    const isReportView = currentView === 'editor' || currentView === 'history' || currentView === 'quality'
+    const nextPath = isReportView
+      ? activeDocumentId
+        ? `/editor/${encodeURIComponent(activeDocumentId)}`
+        : null
+      : (routeByView[currentView] ?? '/dashboard/home')
+    if (!nextPath || window.location.pathname === nextPath) {
+      hasSyncedInitialRouteRef.current = true
+      return
     }
-  }, [currentView])
+    // Correcting the URL after Back/Forward must not add an entry: a push here
+    // would erase the Forward history the user just created.
+    if (hasSyncedInitialRouteRef.current && !isRestoringFromHistoryRef.current) {
+      window.history.pushState(null, '', nextPath)
+    } else {
+      window.history.replaceState(null, '', nextPath)
+      hasSyncedInitialRouteRef.current = true
+    }
+  }, [activeDocumentId, currentView])
+
 
   useEffect(() => {
     if (typeof window === 'undefined') return
@@ -4541,7 +4603,7 @@ function WorkspaceApp({
           : undefined
         if (documentToOpen) {
           applyLoadedDocument(documentToOpen)
-          setIsSidebarCollapsed(true)
+          collapseSidebarOnSmallScreens(setIsSidebarCollapsed)
           setCurrentView('editor')
         }
 
@@ -5121,7 +5183,7 @@ function WorkspaceApp({
         return [sharedDocument, ...currentDocuments]
       })
       applyLoadedDocument(sharedDocument)
-      setIsSidebarCollapsed(true)
+      collapseSidebarOnSmallScreens(setIsSidebarCollapsed)
       setCurrentView('editor')
       window.history.replaceState(null, '', `/editor/${encodeURIComponent(sharedDocument.id)}`)
     }
@@ -6065,7 +6127,7 @@ function WorkspaceApp({
     const nextDocument = createDocument(`未命名報告 ${fileCount + 1}`, '', parentId)
     setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
     loadDocument(nextDocument)
-    setIsSidebarCollapsed(true)
+    collapseSidebarOnSmallScreens(setIsSidebarCollapsed)
     setCurrentView('editor')
   }
 
@@ -6089,7 +6151,7 @@ function WorkspaceApp({
     const nextDocument = createDocument(title, content, null)
     setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
     loadDocument(nextDocument)
-    setIsSidebarCollapsed(true)
+    collapseSidebarOnSmallScreens(setIsSidebarCollapsed)
     setCurrentView('editor')
     setBridgeToast('Markdown 檔案已匯入')
   }
@@ -6118,7 +6180,7 @@ function WorkspaceApp({
           { title: safeTitle, content: importedMarkdown, share_setting: 'private', user_id: user?.id },
         )
         await refreshSupabaseDocuments(documentId)
-        setIsSidebarCollapsed(true)
+        collapseSidebarOnSmallScreens(setIsSidebarCollapsed)
         setCurrentView('editor')
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Google Drive 匯入失敗'
@@ -6132,7 +6194,7 @@ function WorkspaceApp({
     const nextDocument = createDocument(safeTitle, importedMarkdown, null)
     setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
     loadDocument(nextDocument)
-    setIsSidebarCollapsed(true)
+    collapseSidebarOnSmallScreens(setIsSidebarCollapsed)
     setCurrentView('editor')
   }
 
@@ -6171,7 +6233,7 @@ function WorkspaceApp({
     const nextDocument = createDocument(template.title, template.content, null)
     setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
     loadDocument(nextDocument)
-    setIsSidebarCollapsed(true)
+    collapseSidebarOnSmallScreens(setIsSidebarCollapsed)
     setCurrentView('editor')
     window.setTimeout(() => {
       editorRef.current?.focus()
@@ -6254,7 +6316,10 @@ function WorkspaceApp({
   }
 
   async function moveDocument(id: string) {
-    if (databaseLoading) return
+    if (databaseLoading) {
+      setBridgeToast('資料同步中，請稍候再試')
+      return
+    }
 
     const targetDocument = documents.find((document) => document.id === id && document.type === 'file' && !document.isTrashed)
     if (!targetDocument) return
@@ -6311,7 +6376,11 @@ function WorkspaceApp({
 
   function selectDocument(id: string) {
     const nextDocument = documents.find((document) => document.id === id)
-    if (!nextDocument || nextDocument.type !== 'file' || nextDocument.isTrashed) return
+    if (!nextDocument || nextDocument.isTrashed) {
+      setBridgeToast(databaseLoading ? '資料同步中，請稍候再試' : '找不到這份文件，可能已被移到垃圾桶')
+      return
+    }
+    if (nextDocument.type !== 'file') return
     if (getDocumentPermission(nextDocument, user) === 'none') {
       setBridgeToast('您沒有權限存取此文件')
       setCurrentView('dashboard')
@@ -6320,12 +6389,15 @@ function WorkspaceApp({
     }
 
     loadDocument(nextDocument)
-    setIsSidebarCollapsed(true)
+    collapseSidebarOnSmallScreens(setIsSidebarCollapsed)
     setCurrentView('editor')
   }
 
   async function renameDocument(id: string) {
-    if (databaseLoading) return
+    if (databaseLoading) {
+      setBridgeToast('資料同步中，請稍候再試')
+      return
+    }
 
     const targetDocument = documents.find((document) => document.id === id)
     if (!targetDocument) return
@@ -6361,7 +6433,10 @@ function WorkspaceApp({
   }
 
   async function updateActiveDocumentTitle(nextTitle: string) {
-    if (databaseLoading) return
+    if (databaseLoading) {
+      setBridgeToast('資料同步中，請稍候再試')
+      return
+    }
     if (!isActiveDocumentOwner) {
       setBridgeToast('只有文件擁有者可以重新命名')
       setTitleDraft(activeDocument?.title ?? '')
@@ -6422,6 +6497,7 @@ function WorkspaceApp({
 
     const deleteLabel = targetDocument.type === 'folder' ? '資料夾與其中所有項目' : '檔案'
     if (!window.confirm(`將${deleteLabel}「${targetDocument.title}」移至垃圾桶？`)) return
+    const trashedMessage = `已將「${targetDocument.title}」移至垃圾桶，可在垃圾桶復原`
 
     const idsToDelete = new Set<string>([id])
     let previousSize = 0
@@ -6463,6 +6539,7 @@ function WorkspaceApp({
             setCurrentView('dashboard')
           }
         }
+        setBridgeToast(trashedMessage)
       } catch (err) {
         const message = err instanceof Error ? err.message : '刪除報告失敗'
         setBridgeToast(`刪除報告失敗：${message}`)
@@ -6492,6 +6569,7 @@ function WorkspaceApp({
         setCurrentView('dashboard')
       }
     }
+    setBridgeToast(trashedMessage)
   }
 
   async function restoreDocument(id: string) {
@@ -6532,6 +6610,7 @@ function WorkspaceApp({
         idsToRestore.has(document.id) ? { ...document, isTrashed: false, updatedAt: now } : document,
       ),
     )
+    setBridgeToast(`已復原「${targetDocument.title}」`)
   }
 
   async function hardDeleteDocument(id: string) {
@@ -6606,7 +6685,10 @@ function WorkspaceApp({
   }
 
   async function toggleDocumentFavorite(id: string) {
-    if (databaseLoading) return
+    if (databaseLoading) {
+      setBridgeToast('資料同步中，請稍候再試')
+      return
+    }
 
     const targetDocument = documents.find((document) => document.id === id)
     if (!targetDocument || targetDocument.type !== 'file' || targetDocument.isTrashed) return
@@ -7015,6 +7097,51 @@ function WorkspaceApp({
       setBridgeToast('無法連線到伺服器，請稍後再試')
     }
   }
+
+  // Back / Forward: show the view (or report) the URL now names.
+  // Dialogs and drawers could only be closed with their own buttons. Escape now
+  // closes whichever is open; a pending AI change still needs an explicit choice.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== 'Escape' || event.defaultPrevented) return
+      setTransferTarget(null)
+      setIsShareModalOpen(false)
+      setIsOutlineModalOpen(false)
+      setIsCreateModalOpen(false)
+      setIsExtensionModalOpen(false)
+      setIsAdvancedMenuOpen(false)
+      setIsAssistDrawerOpen(false)
+      setIsAgentDrawerOpen(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
+  const handleHistoryNavigationRef = useRef<() => void>(() => undefined)
+  useEffect(() => {
+    handleHistoryNavigationRef.current = () => {
+      hasOpenedSharedDocRef.current = true
+      // The state updates below re-render synchronously (popstate is a discrete
+      // event), so the URL sync sees this flag; clear it right after.
+      isRestoringFromHistoryRef.current = true
+      window.setTimeout(() => {
+        isRestoringFromHistoryRef.current = false
+      }, 0)
+      const documentId = getSharedDocumentIdFromLocation()
+      const target = documentId ? documents.find((document) => document.id === documentId) : undefined
+      if (target && target.type === 'file' && !target.isTrashed) {
+        if (target.id !== activeDocumentId) loadDocument(target)
+        setCurrentView('editor')
+        return
+      }
+      setCurrentView(getInitialAppView())
+    }
+  })
+  useEffect(() => {
+    const onPopState = () => handleHistoryNavigationRef.current()
+    window.addEventListener('popstate', onPopState)
+    return () => window.removeEventListener('popstate', onPopState)
+  }, [])
 
   async function syncWithGithub() {
     if (!ENABLE_GITHUB_SYNC) {

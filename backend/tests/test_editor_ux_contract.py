@@ -151,5 +151,84 @@ class EditorUxContractTests(unittest.TestCase):
         self.assertIn("/api/reports/transfer/${requestId}/${decision}", source)
 
 
+    def test_projects_row_menu_cannot_open_off_screen(self):
+        """The row menu opened below the last rows inside a clipped, scrolling panel; 刪除 was unreachable."""
+        source = _text(APP)
+        self.assertNotIn('className="absolute right-0 top-full z-20 mt-2 w-48', source)
+        self.assertIn("style={menuPosition ?? undefined}", source)
+        self.assertIn("window.innerHeight - rect.bottom < PROJECT_MENU_HEIGHT + 16", source)
+
+    def test_browser_back_and_refresh_keep_the_user_in_the_app(self):
+        """Every navigation used replaceState and nothing listened to popstate, so Back left the app."""
+        source = _text(APP)
+        self.assertIn("window.history.pushState(null, '', nextPath)", source)
+        self.assertIn("window.addEventListener('popstate', onPopState)", source)
+        self.assertIn("`/editor/${encodeURIComponent(activeDocumentId)}`", source)
+
+    def test_row_actions_are_reachable_without_a_mouse_hover(self):
+        """Sidebar rename/delete were opacity-0 until hover: invisible on touch screens and to keyboard focus."""
+        for line in _text(APP).splitlines():
+            if "opacity-0" in line and "group-hover:opacity-100" in line:
+                with self.subTest(line=line.strip()[:80]):
+                    self.assertIn("focus-visible:opacity-100", line)
+                    self.assertIn("[@media(hover:none)]:opacity-100", line)
+
+    def test_rename_and_open_explain_why_nothing_happened(self):
+        source = _text(APP)
+        body = _function_body(source, "async function renameDocument(", 200)
+        self.assertRegex(body, r"if \(databaseLoading\) \{\s*setBridgeToast\(")
+        self.assertIn("找不到這份文件，可能已被移到垃圾桶", source)
+
+
+    def test_app_written_editor_urls_do_not_reopen_the_report(self):
+        """The deep-link effect would re-apply the open report on any dependency change, discarding typing."""
+        source = _text(APP)
+        self.assertIn("if (pendingDeepLink && !hasSyncedInitialRouteRef.current) return", source)
+        handler = source[source.index("handleHistoryNavigationRef.current = () => {"):][:200]
+        self.assertIn("hasOpenedSharedDocRef.current = true", handler)
+        self.assertGreater(
+            source.index("const handleHistoryNavigationRef"),
+            source.index("function loadDocument(document: Document)"),
+        )
+
+
+    def test_escape_closes_dialogs_and_drawers(self):
+        """No dialog handled Escape; a mis-opened dialog needed its own close button."""
+        source = _text(APP)
+        self.assertIn("if (event.key !== 'Escape' || event.defaultPrevented) return", source)
+        self.assertIn("setIsCreateModalOpen(false)", source)
+
+    def test_no_sync_guard_returns_silently(self):
+        """移動 / title edit / 收藏 did nothing while syncing, with no message."""
+        self.assertNotRegex(_text(APP), r"if \(databaseLoading\) return\b")
+
+
+    def test_back_does_not_erase_forward_history(self):
+        """Back landed on a mismatched path; the sync pushed a new entry and Forward stopped working."""
+        source = _text(APP)
+        self.assertIn("if (hasSyncedInitialRouteRef.current && !isRestoringFromHistoryRef.current) {", source)
+        handler = source[source.index("handleHistoryNavigationRef.current = () => {"):][:400]
+        self.assertIn("isRestoringFromHistoryRef.current = true", handler)
+
+
+    def test_opening_a_report_does_not_strand_the_sidebar_as_a_rail(self):
+        """After the first report, home and 項目 showed a 64px rail without 垃圾桶 / 設定."""
+        source = _text(APP)
+        self.assertNotIn("setIsSidebarCollapsed(true)", source)
+        self.assertIn("window.matchMedia('(max-width: 767px)').matches", source)
+        branch = source[source.index("  if (isCollapsed) {"):]
+        branch = branch[: branch.index("\n  return (", 20)]
+        self.assertIn("[...pinnedItems, ...moreItems].map(", branch)
+
+
+    def test_trash_and_restore_confirm_success(self):
+        """Moving to the trash and 復原 were silent; only 永久刪除 said anything."""
+        source = _text(APP)
+        delete_body = _function_body(source, "async function deleteDocument(", 5000)
+        self.assertGreaterEqual(delete_body.count("setBridgeToast(trashedMessage)"), 2)
+        restore_body = _function_body(source, "async function restoreDocument(", 2500)
+        self.assertIn("已復原「", restore_body)
+
+
 if __name__ == "__main__":
     unittest.main()
