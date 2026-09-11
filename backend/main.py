@@ -1800,7 +1800,7 @@ def _fallback_agent_response(body: AgentRunRequest) -> AgentRunResponse:
         AgentChecklistItem(**item) for item in _basic_report_checklist(markdown)
     ]
     findings = [
-        item.note for item in checklist if item.status in {"warn", "fail"}
+        f"{item.label}：{item.note}" for item in checklist if item.status in {"warn", "fail"}
     ][:8]
     if not findings:
         findings = ["整體章節已具備基礎完整度，下一步可加強數據解釋、誤差來源與結論收束。"]
