@@ -82,6 +82,26 @@ class CloudDocumentInsertContractTests(unittest.TestCase):
         )
         self.assertEqual(document_inserts_followed_by_select(clean), 0)
 
+    def test_creating_from_a_template_closes_the_create_dialog_first(self):
+        """The dialog's template cards call createDocumentFromTemplate directly.
+
+        While creation always failed with 403 nobody could see that it never
+        closed the dialog. Once creation worked, the new report opened behind the
+        still-open dialog, the click looked like it did nothing, and a second
+        click made a duplicate -- three identical reports in one minute on
+        2026-09-11. The dialog must be closed before the insert is attempted.
+        """
+        source = APP.read_text(encoding="utf-8")
+        start = source.find("async function createDocumentFromTemplate(")
+        self.assertNotEqual(start, -1, "createDocumentFromTemplate not found in App.tsx")
+        insert_at = source.find("insertOwnedDocument(", start)
+        self.assertNotEqual(insert_at, -1, "createDocumentFromTemplate no longer creates via insertOwnedDocument")
+        self.assertIn(
+            "setIsCreateModalOpen(false)",
+            source[start:insert_at],
+            "createDocumentFromTemplate must close the create dialog before inserting",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
