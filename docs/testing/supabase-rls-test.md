@@ -26,6 +26,7 @@ Supabase applies the files in lexical order:
 8. `20260723_closed_beta_security.sql`
 9. `20260724_staging_bringup_hardening.sql`
 10. `20260911_document_versions.sql`
+11. `20260912_template_imitation_presets.sql`
 
 The first migration is intentionally identical to `supabase/schema_and_rls.sql`.
 A unit test prevents those files from drifting. Earlier repositories kept the base

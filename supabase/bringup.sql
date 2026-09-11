@@ -5,7 +5,7 @@
 -- backend/tests/test_supabase_bringup.py fails when this drifts from
 -- supabase/migrations/.
 --
--- A fresh project needs all 10 migrations, applied in the order the
+-- A fresh project needs all 11 migrations, applied in the order the
 -- Supabase CLI applies them (filename order). supabase/schema_and_rls.sql is
 -- byte-identical to the FIRST migration alone; a project brought up from that
 -- file is missing every later one.
@@ -27,10 +27,11 @@
 --   8. 20260723_closed_beta_security.sql
 --   9. 20260724_staging_bringup_hardening.sql
 --   10. 20260911_document_versions.sql
+--   11. 20260912_template_imitation_presets.sql
 
 
 -- ==========================================================================
--- 1/10  20260626_initial_schema_and_rls.sql
+-- 1/11  20260626_initial_schema_and_rls.sql
 -- ==========================================================================
 
 -- AutoLabReport Supabase schema and RLS policies.
@@ -475,7 +476,7 @@ using (auth.uid() = user_id);
 
 
 -- ==========================================================================
--- 2/10  20260627_workspaces_and_rls.sql
+-- 2/11  20260627_workspaces_and_rls.sql
 -- ==========================================================================
 
 -- AutoLabReport workspace migration.
@@ -778,7 +779,7 @@ using (
 
 
 -- ==========================================================================
--- 3/10  20260701_community_templates.sql
+-- 3/11  20260701_community_templates.sql
 -- ==========================================================================
 
 -- Community template review and usage tracking.
@@ -903,7 +904,7 @@ using (auth.uid() = user_id);
 
 
 -- ==========================================================================
--- 4/10  20260701_report_ownership_transfers.sql
+-- 4/11  20260701_report_ownership_transfers.sql
 -- ==========================================================================
 
 -- Secure, double-confirmed report ownership transfers.
@@ -1122,7 +1123,7 @@ grant execute on function public.confirm_report_ownership_transfer(text, uuid)
 
 
 -- ==========================================================================
--- 5/10  20260701_report_recordings_storage.sql
+-- 5/11  20260701_report_recordings_storage.sql
 -- ==========================================================================
 
 -- Private recording bucket. Closed Beta keeps the UI disabled; the later
@@ -1182,7 +1183,7 @@ using (
 
 
 -- ==========================================================================
--- 6/10  20260701_yjs_collaboration_persistence.sql
+-- 6/11  20260701_yjs_collaboration_persistence.sql
 -- ==========================================================================
 
 -- Primary Yjs state storage. The service role owns all writes.
@@ -1205,7 +1206,7 @@ revoke all on table public.collaboration_documents from anon, authenticated;
 
 
 -- ==========================================================================
--- 7/10  20260702_profiles_preferences.sql
+-- 7/11  20260702_profiles_preferences.sql
 -- ==========================================================================
 
 -- Ensure every authenticated user has a profile and cloud preferences.
@@ -1279,7 +1280,7 @@ with check (auth.uid() = id);
 
 
 -- ==========================================================================
--- 8/10  20260723_closed_beta_security.sql
+-- 8/11  20260723_closed_beta_security.sql
 -- ==========================================================================
 
 -- Closed Beta security baseline.
@@ -1635,7 +1636,7 @@ using (
 
 
 -- ==========================================================================
--- 9/10  20260724_staging_bringup_hardening.sql
+-- 9/11  20260724_staging_bringup_hardening.sql
 -- ==========================================================================
 
 -- Staging bring-up hardening.
@@ -1735,7 +1736,7 @@ drop policy if exists "report_recordings_delete_own_folder" on storage.objects;
 
 
 -- ==========================================================================
--- 10/10  20260911_document_versions.sql
+-- 10/11  20260911_document_versions.sql
 -- ==========================================================================
 
 -- Cloud-backed report version history.
@@ -1790,3 +1791,58 @@ using (public.is_document_owner(document_id, auth.uid()));
 -- the app uses.
 revoke all on public.document_versions from anon, authenticated;
 grant select, insert, delete on public.document_versions to authenticated;
+
+
+-- ==========================================================================
+-- 11/11  20260912_template_imitation_presets.sql
+-- ==========================================================================
+
+-- 模板臨摹 presets: which sections of a template or past report stay, are
+-- rewritten from new material, or are adapted to it.
+-- Run after 20260911_document_versions.sql.
+--
+-- One row per user and source, so the next report made from the same template
+-- starts with the choices the user made last time. Private to its owner.
+
+create table if not exists public.template_imitation_presets (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  source_kind text not null check (source_kind in ('template', 'document')),
+  source_id text not null check (char_length(source_id) between 1 and 200),
+  section_modes jsonb not null default '{}'::jsonb,
+  instructions text not null default '' check (char_length(instructions) <= 10000),
+  updated_at timestamptz not null default now(),
+  constraint template_imitation_presets_one_per_source unique (user_id, source_kind, source_id)
+);
+
+alter table public.template_imitation_presets enable row level security;
+
+drop policy if exists "template_imitation_presets_owner_select" on public.template_imitation_presets;
+create policy "template_imitation_presets_owner_select"
+on public.template_imitation_presets for select
+to authenticated
+using (auth.uid() = user_id);
+
+drop policy if exists "template_imitation_presets_owner_insert" on public.template_imitation_presets;
+create policy "template_imitation_presets_owner_insert"
+on public.template_imitation_presets for insert
+to authenticated
+with check (auth.uid() = user_id);
+
+drop policy if exists "template_imitation_presets_owner_update" on public.template_imitation_presets;
+create policy "template_imitation_presets_owner_update"
+on public.template_imitation_presets for update
+to authenticated
+using (auth.uid() = user_id)
+with check (auth.uid() = user_id);
+
+drop policy if exists "template_imitation_presets_owner_delete" on public.template_imitation_presets;
+create policy "template_imitation_presets_owner_delete"
+on public.template_imitation_presets for delete
+to authenticated
+using (auth.uid() = user_id);
+
+-- Supabase's default privileges grant anon and authenticated everything on new
+-- public tables, including TRUNCATE, which RLS does not cover.
+revoke all on public.template_imitation_presets from anon, authenticated;
+grant select, insert, update, delete on public.template_imitation_presets to authenticated;

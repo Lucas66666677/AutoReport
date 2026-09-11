@@ -7,7 +7,7 @@ Deployment is an owner action. This repository task does not deploy or modify pr
 Create an isolated staging project. Apply every file in `supabase/migrations` in filename order. Do not apply `supabase/schema_and_rls.sql` first: it is the canonical schema snapshot and is already mirrored by the initial bootstrap migration. The final Closed Beta hardening migration is:
 
 ~~~text
-supabase/migrations/20260911_document_versions.sql
+supabase/migrations/20260912_template_imitation_presets.sql
 ~~~
 
 Do not continue if the migration fails. Run the full permission matrix in docs/OWNER_ACTIONS.md before using a production project.
