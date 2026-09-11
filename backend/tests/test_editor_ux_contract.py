@@ -230,5 +230,20 @@ class EditorUxContractTests(unittest.TestCase):
         self.assertIn("已復原「", restore_body)
 
 
+    def test_word_format_cannot_corrupt_the_report(self):
+        """smartFormat glued sentences to headings, deleted English in parentheses and made numbers into lists."""
+        source = _text(APP)
+        self.assertNotIn(r"\s*([。，！？；：])\s*", source)
+        self.assertNotIn("function removeConsecutiveDuplicateContent", source)
+        self.assertIn("import { smartFormat } from './smartFormat'", source)
+        body = _function_body(source, "function handleSmartFormat(", 900)
+        self.assertIn("mode: 'replace-document'", body)
+        self.assertIn("格式已經整齊", body)
+
+    def test_phone_header_hides_unavailable_split(self):
+        """On a 375px phone 更多操作 was pushed past the right edge by a disabled Split button."""
+        self.assertIn("if (isEditorWorkspaceCompact && mode === 'split') return null", _text(APP))
+
+
 if __name__ == "__main__":
     unittest.main()
