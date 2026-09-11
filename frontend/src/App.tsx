@@ -86,8 +86,12 @@ import type { HocuspocusProvider, WebSocketStatus } from '@hocuspocus/provider'
 import type { Text as YText, Doc as YDoc } from 'yjs'
 import {
   createDocumentVersion,
+  mergeVersions,
   readDocumentVersions,
+  versionFromRow,
+  versionToRow,
   type DocumentVersion,
+  type DocumentVersionRow,
 } from './documentVersions'
 import {
   queueDocumentSave,
@@ -2569,6 +2573,14 @@ function BillingView({
   )
 }
 
+type IncomingTransfer = {
+  id: string
+  report_id: string
+  report_title: string
+  from_email: string | null
+  expires_at: string
+}
+
 function DashboardView({
   documents,
   onOpenDocument,
@@ -2577,6 +2589,8 @@ function DashboardView({
   onShareDocument,
   favoriteOnly = false,
   isLoading = false,
+  incomingTransfers = [],
+  onRespondToTransfer,
 }: {
   documents: Document[]
   onOpenDocument: (id: string) => void
@@ -2588,6 +2602,8 @@ function DashboardView({
   onDeleteDocument: (id: string) => void
   favoriteOnly?: boolean
   isLoading?: boolean
+  incomingTransfers?: IncomingTransfer[]
+  onRespondToTransfer?: (requestId: string, decision: 'accept' | 'decline') => void
 }) {
   const markdownInputRef = useRef<HTMLInputElement | null>(null)
   const fileDocuments = documents.filter(
@@ -2696,6 +2712,43 @@ function DashboardView({
             ))}
           </div>
         </section>
+
+        {incomingTransfers.length > 0 && (
+          <section className="mb-8 rounded-2xl border border-amber-200 bg-amber-50 p-5">
+            <h2 className="text-base font-semibold text-slate-950">有報告等你接收</h2>
+            <ul className="mt-3 space-y-3">
+              {incomingTransfers.map((transfer) => (
+                <li
+                  key={transfer.id}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-white px-4 py-3 shadow-sm"
+                >
+                  <div className="min-w-0">
+                    <p className="truncate text-sm font-semibold text-slate-950">{transfer.report_title}</p>
+                    <p className="text-xs text-slate-500">
+                      {transfer.from_email ?? '另一位使用者'} 想把擁有權轉給你・{formatDocumentTime(transfer.expires_at)} 前有效
+                    </p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onRespondToTransfer?.(transfer.id, 'decline')}
+                      className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50"
+                    >
+                      拒絕
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onRespondToTransfer?.(transfer.id, 'accept')}
+                      className="rounded-lg bg-slate-950 px-3 py-1.5 text-sm font-semibold text-white hover:bg-slate-800"
+                    >
+                      接受
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
 
         <section>
           <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
@@ -3137,14 +3190,76 @@ function TrashView({
   )
 }
 
+const TEMPLATE_UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+function newTemplateId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  return `user-template-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+}
+
+type CloudTemplateRow = {
+  id: string
+  title: string
+  description: string
+  category: string
+  content: string
+  author_name: string
+}
+
+// report_templates.id is a uuid; older local templates keep other ids and stay local.
+function templateToRow(template: ReportTemplate, userId: string) {
+  return {
+    id: template.id,
+    user_id: userId,
+    title: template.title,
+    description: template.description,
+    category: template.category,
+    content: template.content,
+    author_name: template.authorName || 'Anonymous',
+    source: 'user',
+    visibility: 'private',
+    is_public: false,
+    review_status: 'draft',
+  }
+}
+
+function templateFromRow(row: CloudTemplateRow): ReportTemplate {
+  return {
+    id: row.id,
+    title: row.title,
+    category: row.category,
+    description: row.description,
+    content: row.content,
+    authorName: row.author_name,
+    source: 'user',
+    visibility: 'private',
+    useCount: 0,
+    tags: ['我的模板'],
+  }
+}
+
+function prependStoredUserTemplate(template: ReportTemplate) {
+  try {
+    const saved = JSON.parse(window.localStorage.getItem(USER_TEMPLATES_STORAGE_KEY) ?? '[]') as unknown
+    const others = Array.isArray(saved)
+      ? saved.filter((item) => !(item && typeof item === 'object' && (item as { id?: unknown }).id === template.id))
+      : []
+    window.localStorage.setItem(USER_TEMPLATES_STORAGE_KEY, JSON.stringify([template, ...others]))
+  } catch {
+    // Storage blocked or full: a signed-in user still has the cloud copy.
+  }
+}
+
 function TemplatesView({
   onUseTemplate,
   onNotify,
   userName,
+  userId = null,
 }: {
   onUseTemplate: (template: ReportTemplate) => void
   onNotify: (message: string) => void
   userName: string
+  userId?: string | null
 }) {
   const [activeTab, setActiveTab] = useState<'recommended' | 'community' | 'mine'>('recommended')
   const [selectedCategory, setSelectedCategory] = useState('全部')
@@ -3192,6 +3307,30 @@ function TemplatesView({
     if (typeof window === 'undefined') return
     window.localStorage.setItem(USER_TEMPLATES_STORAGE_KEY, JSON.stringify(userTemplates))
   }, [userTemplates])
+
+  useEffect(() => {
+    if (!supabase || !userId) return
+    const client = supabase
+    let cancelled = false
+    void (async () => {
+      const { data, error } = await client
+        .from('report_templates')
+        .select('id, title, description, category, content, author_name')
+        .eq('user_id', userId)
+        .eq('source', 'user')
+        .order('created_at', { ascending: false })
+        .limit(200)
+      if (cancelled || error || !data) return
+      const cloudTemplates = (data as CloudTemplateRow[]).map(templateFromRow)
+      setUserTemplates((current) => {
+        const known = new Set(current.map((template) => template.id))
+        return [...current, ...cloudTemplates.filter((template) => !known.has(template.id))]
+      })
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [userId])
 
   const templateTypes = [
     {
@@ -3394,7 +3533,7 @@ function TemplatesView({
     }
 
     const nextTemplate: ReportTemplate = {
-      id: `user-template-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: newTemplateId(),
       title,
       category: templateDraft.category,
       description: templateDraft.description.trim() || '使用者上傳的 Markdown 模板。',
@@ -3407,6 +3546,14 @@ function TemplatesView({
     }
 
     setUserTemplates((current) => [nextTemplate, ...current])
+    if (supabase && userId && TEMPLATE_UUID_PATTERN.test(nextTemplate.id)) {
+      void supabase
+        .from('report_templates')
+        .insert([templateToRow(nextTemplate, userId)])
+        .then(({ error }) => {
+          if (error) onNotify('模板已加入我的模板，但雲端備份失敗')
+        })
+    }
     setActiveTab('mine')
     setSelectedCategory('全部')
     setIsUploadOpen(false)
@@ -3764,9 +3911,11 @@ function VersionHistoryView({
   onBackToEditor,
   onSaveVersion,
   onRestoreVersion,
+  cloudBacked = false,
 }: {
   document: Document | undefined
   versions: DocumentVersion[]
+  cloudBacked?: boolean
   onBackToEditor: () => void
   onSaveVersion: () => void
   onRestoreVersion: (version: DocumentVersion) => void
@@ -3779,7 +3928,7 @@ function VersionHistoryView({
             <p className="mb-2 text-sm font-medium text-zinc-500 dark:text-zinc-400">Version History</p>
             <h1 className="text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-50">版本歷史</h1>
             <p className="mt-3 max-w-2xl text-sm leading-6 text-zinc-500 dark:text-zinc-400">
-              為 {document?.title ?? '目前文件'} 儲存本地快照，方便在大量 AI 改寫前後回復。
+              為 {document?.title ?? '目前文件'} 儲存{cloudBacked ? '雲端' : '本地'}快照，方便在大量 AI 改寫前後回復。
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -3800,7 +3949,9 @@ function VersionHistoryView({
           <div className="rounded-2xl border border-dashed border-zinc-200 bg-white px-8 py-16 text-center shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
             <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-50">尚未儲存版本</h2>
             <p className="mt-2 text-sm text-zinc-500 dark:text-zinc-400">
-              點擊「儲存目前版本」後，快照會保留在這台瀏覽器。
+              {cloudBacked
+                ? '點擊「儲存目前版本」後，快照會同步到雲端，換裝置也看得到。'
+                : '點擊「儲存目前版本」後，快照會保留在這台瀏覽器。'}
             </p>
           </div>
         ) : (
@@ -4029,6 +4180,10 @@ function WorkspaceApp({
     return getInitialWorkspace()
   })
   const [documents, setDocuments] = useState<Document[]>(initialWorkspace.documents)
+  const [transferTarget, setTransferTarget] = useState<{ id: string; title: string } | null>(null)
+  const [transferEmail, setTransferEmail] = useState('')
+  const [transferSubmitting, setTransferSubmitting] = useState(false)
+  const [incomingTransfers, setIncomingTransfers] = useState<IncomingTransfer[]>([])
   const [documentVersions, setDocumentVersions] = useState<DocumentVersion[]>(() =>
     readDocumentVersions(getDocumentVersionsStorageKey(user?.id ?? null)),
   )
@@ -4166,6 +4321,30 @@ function WorkspaceApp({
         .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
     : []
 
+  useEffect(() => {
+    if (!supabase || !shouldUseSupabaseDocuments || !activeDocumentId || currentView !== 'history') return
+    const client = supabase
+    let cancelled = false
+    void (async () => {
+      const { data, error } = await client
+        .from('document_versions')
+        .select('id, document_id, title, content, note, created_at')
+        .eq('document_id', activeDocumentId)
+        .order('created_at', { ascending: false })
+        .limit(100)
+      if (cancelled) return
+      if (error) {
+        setBridgeToast('無法讀取雲端版本，先顯示這台瀏覽器的版本')
+        return
+      }
+      const cloudVersions = ((data ?? []) as DocumentVersionRow[]).map(versionFromRow)
+      setDocumentVersions((current) => mergeVersions(current, cloudVersions))
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [activeDocumentId, currentView, shouldUseSupabaseDocuments])
+
   const changeEditorViewMode = useCallback((nextMode: EditorViewMode) => {
     if (!canEditActiveDocument && nextMode !== 'preview') return
     if (isEditorWorkspaceCompact && nextMode === 'split') return
@@ -4276,6 +4455,25 @@ function WorkspaceApp({
       setAiQuotaLoading(false)
     }
   }, [getAuthHeaders, user])
+
+  const incomingTransfersUserId = user?.id
+  useEffect(() => {
+    if (!incomingTransfersUserId || currentView !== 'dashboard') return
+    let cancelled = false
+    void (async () => {
+      try {
+        const res = await fetch(`${API_BASE_URL}/api/reports/transfer/incoming`, { headers: await getAuthHeaders() })
+        if (!res.ok || cancelled) return
+        const items = (await res.json()) as IncomingTransfer[]
+        if (!cancelled) setIncomingTransfers(items)
+      } catch {
+        // Offline or the API is waking up; the dashboard asks again next time it opens.
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [currentView, getAuthHeaders, incomingTransfersUserId])
 
   const readDocumentCollaborators = useCallback(async (documentId: string): Promise<DocumentCollaborator[]> => {
     if (!supabase || !shouldUseSupabaseDocuments) return []
@@ -5510,7 +5708,11 @@ function WorkspaceApp({
 
     saveActiveDocumentVersion('Agent 修改前自動備份')
     syncEditorValue(nextMarkdown.endsWith('\n') ? nextMarkdown : `${nextMarkdown}\n`)
-    setBridgeToast('已套用 Agent 修改，原版本已備份在這台瀏覽器（更多操作 → 版本歷史）')
+    setBridgeToast(
+      shouldUseSupabaseDocuments
+        ? '已套用 Agent 修改，原版本已備份到雲端版本歷史（更多操作 → 版本歷史）'
+        : '已套用 Agent 修改，原版本已備份在這台瀏覽器（更多操作 → 版本歷史）',
+    )
   }
 
   function applyPendingAiChange() {
@@ -5547,7 +5749,11 @@ function WorkspaceApp({
     pendingAiSelectionRef.current = null
     setPendingAiChange(null)
     setAiSelectionMenu((current) => ({ ...current, visible: false }))
-    setBridgeToast('已套用 AI 修改，原版本已備份在這台瀏覽器（更多操作 → 版本歷史）')
+    setBridgeToast(
+      shouldUseSupabaseDocuments
+        ? '已套用 AI 修改，原版本已備份到雲端版本歷史（更多操作 → 版本歷史）'
+        : '已套用 AI 修改，原版本已備份在這台瀏覽器（更多操作 → 版本歷史）',
+    )
   }
 
   async function requestAiEdit(action: 'rewrite' | 'expand') {
@@ -6670,20 +6876,61 @@ function WorkspaceApp({
       return
     }
 
+    const latest = documentVersions
+      .filter((version) => version.documentId === activeDocument.id)
+      .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0]
+    if (latest?.content === markdown) {
+      setBridgeToast('目前內容與最新版本相同')
+      return
+    }
+
     const nextVersion = createDocumentVersion(activeDocument, markdown, note)
-    setDocumentVersions((currentVersions) => {
-      const versionsForDocument = currentVersions.filter((version) => version.documentId === activeDocument.id)
-      const duplicateLatest = versionsForDocument
-        .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())[0]
+    setDocumentVersions((currentVersions) => [nextVersion, ...currentVersions].slice(0, 120))
 
-      if (duplicateLatest?.content === markdown) {
-        setBridgeToast('目前內容與最新版本相同')
-        return currentVersions
-      }
-
-      return [nextVersion, ...currentVersions].slice(0, 120)
-    })
+    if (supabase && shouldUseSupabaseDocuments && user) {
+      // Plain insert without RETURNING (see documentInsert.ts): the local copy
+      // is already saved, so only a failure needs to be reported.
+      void supabase
+        .from('document_versions')
+        .insert([versionToRow(nextVersion, user.id)])
+        .then(({ error }) => {
+          if (error) setBridgeToast('版本已存在這台瀏覽器，但雲端備份失敗')
+        })
+      setBridgeToast('已儲存目前版本（同步到雲端）')
+      return
+    }
     setBridgeToast('已儲存目前版本')
+  }
+
+  async function saveActiveDocumentAsTemplate() {
+    if (!activeDocument || !markdown.trim()) {
+      setBridgeToast('目前報告內容是空的，無法存為範本')
+      return
+    }
+
+    const title = activeDocument.title.trim() || '未命名範本'
+    const template: ReportTemplate = {
+      id: newTemplateId(),
+      title,
+      category: '實驗報告',
+      description: `從報告「${title}」存成的範本。`,
+      content: markdown,
+      authorName: topbarUserName,
+      source: 'user',
+      visibility: 'private',
+      useCount: 0,
+      tags: ['我的模板'],
+    }
+    prependStoredUserTemplate(template)
+
+    if (supabase && user && TEMPLATE_UUID_PATTERN.test(template.id)) {
+      const { error } = await supabase.from('report_templates').insert([templateToRow(template, user.id)])
+      if (error) {
+        setBridgeToast('範本已存在這台瀏覽器，但雲端備份失敗')
+        return
+      }
+    }
+    setBridgeToast('已存為範本：模板中心 → 我的模板')
   }
 
   function restoreDocumentVersion(version: DocumentVersion) {
@@ -6701,6 +6948,72 @@ function WorkspaceApp({
     syncEditorValue(version.content)
     setCurrentView('editor')
     setBridgeToast(`已還原 ${formatDocumentTime(version.createdAt)} 的版本`)
+  }
+
+  async function submitOwnershipTransfer(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!transferTarget) return
+    if (!user) {
+      setBridgeToast('請先登入後再轉移擁有權')
+      return
+    }
+    const email = transferEmail.trim().toLowerCase()
+    if (!email.includes('@')) {
+      setBridgeToast('請輸入接收者的 Email')
+      return
+    }
+    if (!window.confirm(`確定把「${transferTarget.title}」的擁有權轉給 ${email}？對方接受後你將不再是擁有者。`)) return
+
+    setTransferSubmitting(true)
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/reports/${transferTarget.id}/transfer/request`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...(await getAuthHeaders()) },
+        body: JSON.stringify({ recipient_email: email }),
+      })
+      const body = (await res.json().catch(() => ({}))) as { message?: unknown; detail?: unknown }
+      if (!res.ok) {
+        setBridgeToast(typeof body.detail === 'string' ? body.detail : `轉移請求失敗（HTTP ${res.status}）`)
+        return
+      }
+      setTransferTarget(null)
+      setBridgeToast(typeof body.message === 'string' ? body.message : '已送出轉移請求')
+    } catch {
+      setBridgeToast('無法連線到伺服器，請稍後再試')
+    } finally {
+      setTransferSubmitting(false)
+    }
+  }
+
+  async function respondToTransfer(requestId: string, decision: 'accept' | 'decline') {
+    const transfer = incomingTransfers.find((item) => item.id === requestId)
+    if (!transfer) return
+    const question =
+      decision === 'accept'
+        ? `接受後「${transfer.report_title}」會成為你的報告，確定接受？`
+        : `拒絕「${transfer.report_title}」的轉移請求？`
+    if (!window.confirm(question)) return
+
+    try {
+      const res = await fetch(`${API_BASE_URL}/api/reports/transfer/${requestId}/${decision}`, {
+        method: 'POST',
+        headers: await getAuthHeaders(),
+      })
+      const body = (await res.json().catch(() => ({}))) as { detail?: unknown }
+      if (!res.ok) {
+        setBridgeToast(typeof body.detail === 'string' ? body.detail : `操作失敗（HTTP ${res.status}）`)
+        return
+      }
+      setIncomingTransfers((current) => current.filter((item) => item.id !== requestId))
+      if (decision === 'accept') {
+        await refreshSupabaseDocuments()
+        setBridgeToast(`已接收「${transfer.report_title}」，現在由你擁有`)
+      } else {
+        setBridgeToast('已拒絕轉移請求')
+      }
+    } catch {
+      setBridgeToast('無法連線到伺服器，請稍後再試')
+    }
   }
 
   async function syncWithGithub() {
@@ -7470,7 +7783,9 @@ function WorkspaceApp({
                     type="button"
                     onClick={() => {
                       setIsAdvancedMenuOpen(false)
-                      setBridgeToast('轉移筆記擁有權需要後端權限流程')
+                      if (!activeDocument) return
+                      setTransferEmail('')
+                      setTransferTarget({ id: activeDocument.id, title: activeDocument.title })
                     }}
                     disabled={!isActiveDocumentOwner}
                     className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
@@ -7492,7 +7807,7 @@ function WorkspaceApp({
                     type="button"
                     onClick={() => {
                       setIsAdvancedMenuOpen(false)
-                      setBridgeToast('已保留為範本入口，後續可接 templates 資料表')
+                      void saveActiveDocumentAsTemplate()
                     }}
                     className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
                   >
@@ -7659,6 +7974,8 @@ function WorkspaceApp({
 
       {currentView === 'dashboard' ? (
         <DashboardView
+          incomingTransfers={user ? incomingTransfers : []}
+          onRespondToTransfer={(requestId, decision) => void respondToTransfer(requestId, decision)}
           documents={documents}
           onOpenDocument={selectDocument}
           onCreateDocument={createNewDocument}
@@ -7741,6 +8058,7 @@ function WorkspaceApp({
         <VersionHistoryView
           document={activeDocument}
           versions={activeDocumentVersions}
+          cloudBacked={shouldUseSupabaseDocuments}
           onBackToEditor={() => setCurrentView('editor')}
           onSaveVersion={() => saveActiveDocumentVersion()}
           onRestoreVersion={restoreDocumentVersion}
@@ -7750,6 +8068,7 @@ function WorkspaceApp({
           onUseTemplate={createDocumentFromTemplate}
           onNotify={setBridgeToast}
           userName={topbarUserName}
+          userId={user?.id ?? null}
         />
       ) : (
       <>
@@ -8285,6 +8604,48 @@ function WorkspaceApp({
       </>
       )}
       </div>
+
+      {transferTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 px-4 backdrop-blur-sm">
+          <form
+            onSubmit={(event) => void submitOwnershipTransfer(event)}
+            className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl shadow-slate-300/70"
+          >
+            <h2 className="text-lg font-semibold text-slate-950">轉移筆記擁有權</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-500">
+              把「{transferTarget.title}」交給另一位已註冊的使用者。對方登入後在首頁接受才會生效，24 小時內有效；生效後你將不再是擁有者。
+            </p>
+            <label className="mt-5 block text-sm font-medium text-slate-700" htmlFor="transfer-recipient-email">
+              接收者 Email
+            </label>
+            <input
+              id="transfer-recipient-email"
+              type="email"
+              required
+              value={transferEmail}
+              onChange={(event) => setTransferEmail(event.target.value)}
+              placeholder="name@example.com"
+              className="mt-2 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-slate-400"
+            />
+            <div className="mt-6 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setTransferTarget(null)}
+                className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+              >
+                取消
+              </button>
+              <button
+                type="submit"
+                disabled={transferSubmitting}
+                className="rounded-xl bg-slate-950 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
+              >
+                {transferSubmitting ? '送出中…' : '送出轉移請求'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {isCreateModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 px-4 backdrop-blur-sm">

@@ -85,7 +85,7 @@ Test-FileExists (Join-Path $backend "requirements.txt") "backend requirements"
 Test-FileExists (Join-Path $root ".env.example") "env example"
 Test-FileExists (Join-Path $root "supabase\schema_and_rls.sql") "Supabase schema and RLS"
 Test-FileExists (Join-Path $root "supabase\migrations\20260626_initial_schema_and_rls.sql") "Supabase bootstrap migration"
-Test-FileExists (Join-Path $root "supabase\migrations\20260724_staging_bringup_hardening.sql") "Supabase final hardening migration"
+Test-FileExists (Join-Path $root "supabase\migrations\20260911_document_versions.sql") "Supabase final hardening migration"
 Test-FileExists (Join-Path $root "extension\manifest.json") "Chrome extension manifest"
 
 $envFiles = @(

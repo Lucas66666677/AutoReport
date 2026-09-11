@@ -41,7 +41,7 @@ Closed Beta 默认关闭：
 必须在目标 Supabase 环境按文件名顺序应用全部迁移，直到：
 
 ~~~text
-supabase/migrations/20260724_staging_bringup_hardening.sql
+supabase/migrations/20260911_document_versions.sql
 ~~~
 
 在未完成 staging 迁移验证前，不应邀请 Beta 用户。
