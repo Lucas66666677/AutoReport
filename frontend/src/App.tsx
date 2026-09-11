@@ -5969,6 +5969,10 @@ function WorkspaceApp({
 
   async function createDocumentFromTemplate(template: ReportTemplate) {
     if (databaseLoading) return
+    // The create dialog calls this directly for its template cards. Left open,
+    // it covers the editor the new document was just loaded into, so the click
+    // appears to do nothing and a second click creates a duplicate.
+    setIsCreateModalOpen(false)
 
     if (supabase && shouldUseSupabaseDocuments) {
       setDatabaseLoading(true)
