@@ -114,6 +114,7 @@ import { analyzeReportQuality } from './reportQuality'
 import { createPrivateReportImageUrl, REPORT_IMAGE_BUCKET } from './reportImageStorage'
 import { insertOwnedDocument } from './documentInsert'
 import { supabaseClient as supabase } from './supabaseClient'
+import { smartFormat } from './smartFormat'
 import { useExtensionBridge } from './useExtensionBridge'
 import { useSettings, type NotePreferences } from './useSettings'
 
@@ -534,7 +535,7 @@ type PendingAiChange = {
   title: string
   originalText: string
   proposedText: string
-  mode: 'replace-selection' | 'append-document'
+  mode: 'replace-selection' | 'append-document' | 'replace-document'
   selection: PendingAiSelection | null
 }
 
@@ -672,46 +673,6 @@ function normalizePromptLibrary(items: unknown): PromptLibraryItem[] {
           : new Date().toISOString(),
     }
   })
-}
-
-function smartFormat(text: string): string {
-  return removeConsecutiveDuplicateContent(text)
-    .replace(/\([A-Za-z\s]+\)/g, '')
-    .replace(/[（]\s*[A-Za-z\s]+[）]/g, '')
-    .replace(/\s*([。，！？；：])\s*/g, '$1')
-    .replace(/\s+([.,!?;:])/g, '$1')
-    .replace(/\*\*\s+(.*?)\s+\*\*/g, '**$1**')
-    .replace(/\n{3,}/g, '\n\n')
-    .replace(/^([*+-]|\d+\.)([^\s])/gm, '$1 $2')
-}
-
-function removeConsecutiveDuplicateContent(text: string): string {
-  const dedupedParagraphs = text
-    .split(/(\n{2,})/)
-    .filter((chunk, index, chunks) => {
-      if (/^\n+$/.test(chunk)) return true
-
-      const previousContent = [...chunks.slice(0, index)]
-        .reverse()
-        .find((item) => !/^\n+$/.test(item))
-
-      return chunk.trim() !== previousContent?.trim()
-    })
-    .join('')
-
-  return dedupedParagraphs
-    .split('\n')
-    .map((line) => {
-      const sentences = line.match(/[^。！？.!?]+[。！？.!?]?/g)
-      if (!sentences) return line
-
-      return sentences
-        .filter((sentence, index, list) => {
-          return index === 0 || sentence.trim() !== list[index - 1].trim()
-        })
-        .join('')
-    })
-    .join('\n')
 }
 
 function convertTsvToMarkdownTable(text: string): string {
@@ -5786,6 +5747,8 @@ function WorkspaceApp({
         ? `${markdown}\n\n${pendingAiChange.proposedText}\n`
         : `${pendingAiChange.proposedText}\n`
       syncEditorValue(nextMarkdown)
+    } else if (pendingAiChange.mode === 'replace-document') {
+      syncEditorValue(pendingAiChange.proposedText)
     } else if (pendingAiChange.selection) {
       const selection = pendingAiChange.selection
       const ytext = ytextRef.current
@@ -5811,10 +5774,11 @@ function WorkspaceApp({
     pendingAiSelectionRef.current = null
     setPendingAiChange(null)
     setAiSelectionMenu((current) => ({ ...current, visible: false }))
+    const appliedLabel = pendingAiChange.mode === 'replace-document' ? '已整理格式' : '已套用 AI 修改'
     setBridgeToast(
       shouldUseSupabaseDocuments
-        ? '已套用 AI 修改，原版本已備份到雲端版本歷史（更多操作 → 版本歷史）'
-        : '已套用 AI 修改，原版本已備份在這台瀏覽器（更多操作 → 版本歷史）',
+        ? `${appliedLabel}，原版本已備份到雲端版本歷史（更多操作 → 版本歷史）`
+        : `${appliedLabel}，原版本已備份在這台瀏覽器（更多操作 → 版本歷史）`,
     )
   }
 
@@ -6027,8 +5991,19 @@ function WorkspaceApp({
       return
     }
 
-    syncEditorValue(smartFormat(markdown))
-    editorRef.current?.focus()
+    const formatted = smartFormat(markdown)
+    if (formatted.trim() === markdown.trim()) {
+      setBridgeToast('格式已經整齊，沒有需要修改的地方')
+      return
+    }
+    // Shown for confirmation like an AI edit; applying backs the report up first.
+    setPendingAiChange({
+      title: '確認整理為 Word 格式',
+      originalText: markdown,
+      proposedText: formatted,
+      mode: 'replace-document',
+      selection: null,
+    })
   }
 
   async function generateOutline() {
@@ -7650,6 +7625,9 @@ function WorkspaceApp({
                 ['split', 'Split', PanelLeftOpen, 'Ctrl + Alt + B'],
                 ['preview', 'Preview', Eye, 'Ctrl + Alt + V'],
               ] as const).map(([mode, label, Icon, shortcut]) => {
+                // Split is unavailable on a phone-width editor; rendering it anyway
+                // pushed 更多操作 past the right edge of a 375px screen.
+                if (isEditorWorkspaceCompact && mode === 'split') return null
                 const isUnavailable =
                   (!canEditActiveDocument && mode !== 'preview') ||
                   (isEditorWorkspaceCompact && mode === 'split')
@@ -9268,7 +9246,9 @@ function WorkspaceApp({
                 </pre>
               </section>
               <section className="p-5">
-                <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">AI 建議</h3>
+                <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  {pendingAiChange.mode === 'replace-document' ? '整理後' : 'AI 建議'}
+                </h3>
                 <div className="prose prose-slate max-h-[52vh] max-w-none overflow-auto rounded-2xl border border-slate-200 bg-white p-4 text-sm">
                   <MarkdownRenderer markdown={pendingAiChange.proposedText} />
                 </div>
