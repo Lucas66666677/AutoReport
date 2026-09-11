@@ -17,6 +17,7 @@ import {
   Beaker,
   Bold,
   BookMarked,
+  Sparkles,
   BriefcaseBusiness,
   ChevronDown,
   CheckSquare,
@@ -93,6 +94,12 @@ import {
   type DocumentVersion,
   type DocumentVersionRow,
 } from './documentVersions'
+import TemplateImitationDialog, {
+  type ImitationProviderChoice,
+  type ImitationRequestBody,
+  type ImitationSource,
+} from './TemplateImitationDialog'
+import type { ImitationPreset, ImitationResult } from './templateImitation'
 import {
   queueDocumentSave,
   readDocumentSaveOutbox,
@@ -2544,6 +2551,14 @@ function BillingView({
   )
 }
 
+const IMITATION_PRESETS_STORAGE_KEY = 'autoLabReport_imitationPresets'
+const API_PROVIDER_NAMES: Record<string, string> = {
+  openai: 'ChatGPT（OpenAI）',
+  anthropic: 'Claude（Anthropic）',
+  gemini: 'Gemini（Google）',
+  deepseek: 'DeepSeek',
+}
+
 type IncomingTransfer = {
   id: string
   report_id: string
@@ -3250,9 +3265,11 @@ function TemplatesView({
   onNotify,
   userName,
   userId = null,
+  onImitateTemplate,
 }: {
   onUseTemplate: (template: ReportTemplate) => void
   onNotify: (message: string) => void
+  onImitateTemplate?: (template: ReportTemplate) => void
   userName: string
   userId?: string | null
 }) {
@@ -3564,7 +3581,8 @@ function TemplatesView({
             <p className="text-sm font-semibold uppercase tracking-[0.18em] text-slate-400">Template Center</p>
             <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-950">模板中心</h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-500">
-              從常見文件類型開始，也可以上傳自己的 Markdown 模板。公開模板會保留作者署名，適合之後做成社群模板庫。
+              從常見文件類型開始，也可以上傳自己的 Markdown 模板。按模板上的「AI 臨摹」，貼上這次的新資料，
+              AI 會照同樣的格式寫出新報告，你選擇保留的段落原封不動。
             </p>
           </div>
           <button
@@ -3698,13 +3716,25 @@ function TemplatesView({
                     <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400">Creator</p>
                     <p className="truncate text-sm font-semibold text-slate-700">{template.authorName ?? 'AutoLabReport'}</p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => onUseTemplate(template)}
-                    className="rounded-2xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
-                  >
-                    套用
-                  </button>
+                  <div className="flex shrink-0 gap-2">
+                    {onImitateTemplate && (
+                      <button
+                        type="button"
+                        onClick={() => onImitateTemplate(template)}
+                        title="照這個模板的格式，讓 AI 依你的新資料寫出新報告"
+                        className="rounded-2xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
+                      >
+                        AI 臨摹
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => onUseTemplate(template)}
+                      className="rounded-2xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800"
+                    >
+                      套用
+                    </button>
+                  </div>
                 </div>
               </article>
             ))}
@@ -4175,6 +4205,11 @@ function WorkspaceApp({
     return getInitialWorkspace()
   })
   const [documents, setDocuments] = useState<Document[]>(initialWorkspace.documents)
+  const [imitation, setImitation] = useState<{
+    source: ImitationSource
+    preset: ImitationPreset | null
+    instructions: string
+  } | null>(null)
   const [transferTarget, setTransferTarget] = useState<{ id: string; title: string } | null>(null)
   const [transferEmail, setTransferEmail] = useState('')
   const [transferSubmitting, setTransferSubmitting] = useState(false)
@@ -7118,6 +7153,97 @@ function WorkspaceApp({
     return () => window.removeEventListener('popstate', onPopState)
   }, [])
 
+  async function openImitation(source: ImitationSource) {
+    if (!source.markdown.trim()) {
+      setBridgeToast('這份內容是空的，沒有可以臨摹的格式')
+      return
+    }
+    let preset: ImitationPreset | null = null
+    let instructions = ''
+    try {
+      if (supabase && user) {
+        const { data } = await supabase
+          .from('template_imitation_presets')
+          .select('section_modes, instructions')
+          .eq('source_kind', source.kind)
+          .eq('source_id', source.id)
+          .maybeSingle()
+        if (data) {
+          preset = (data.section_modes ?? null) as ImitationPreset | null
+          instructions = typeof data.instructions === 'string' ? data.instructions : ''
+        }
+      } else {
+        const stored = JSON.parse(window.localStorage.getItem(IMITATION_PRESETS_STORAGE_KEY) ?? '{}') as Record<
+          string,
+          { modes?: ImitationPreset; instructions?: string }
+        >
+        const entry = stored[`${source.kind}:${source.id}`]
+        if (entry) {
+          preset = entry.modes ?? null
+          instructions = entry.instructions ?? ''
+        }
+      }
+    } catch {
+      // No saved choice (or storage blocked): start from the defaults.
+    }
+    setImitation({ source, preset, instructions })
+  }
+
+  function saveImitationPreset(source: ImitationSource, modes: ImitationPreset, instructions: string) {
+    if (supabase && user) {
+      void supabase
+        .from('template_imitation_presets')
+        .upsert(
+          [
+            {
+              user_id: user.id,
+              source_kind: source.kind,
+              source_id: source.id,
+              section_modes: modes,
+              instructions,
+              updated_at: new Date().toISOString(),
+            },
+          ],
+          { onConflict: 'user_id,source_kind,source_id' },
+        )
+        .then(({ error }) => {
+          if (error) setBridgeToast('段落設定沒有存到雲端，下次需要重新選擇')
+        })
+      return
+    }
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(IMITATION_PRESETS_STORAGE_KEY) ?? '{}') as Record<string, unknown>
+      stored[`${source.kind}:${source.id}`] = { modes, instructions }
+      window.localStorage.setItem(IMITATION_PRESETS_STORAGE_KEY, JSON.stringify(stored))
+    } catch {
+      // Storage blocked: the choice is simply not remembered.
+    }
+  }
+
+  async function generateImitation(request: ImitationRequestBody): Promise<ImitationResult> {
+    const res = await fetch(`${API_BASE_URL}/api/templates/imitate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(await getAuthHeaders()) },
+      body: JSON.stringify(request),
+    })
+    const data = (await res.json().catch(() => ({}))) as Partial<ImitationResult> & { detail?: unknown }
+    if (!res.ok) {
+      throw new Error(typeof data.detail === 'string' ? data.detail : `生成失敗（HTTP ${res.status}）`)
+    }
+    if (typeof data.remaining_quota === 'number') {
+      setAiQuota((current) => (current ? { ...current, remaining: data.remaining_quota ?? current.remaining } : current))
+      void refreshAiQuota()
+    }
+    return data as ImitationResult
+  }
+
+  async function createImitatedDocument(title: string, content: string) {
+    const template = { id: 'template-imitation', title, category: '實驗報告', description: '', content } as ReportTemplate
+    await createDocumentFromTemplate(template)
+    setImitation(null)
+    setBridgeToast(`已建立「${title}」，原本的內容保持不變`)
+  }
+
   async function syncWithGithub() {
     if (!ENABLE_GITHUB_SYNC) {
       setBridgeToast('GitHub 同步不在本次 Closed Beta 範圍內')
@@ -7408,6 +7534,14 @@ function WorkspaceApp({
     if (isAiConnected) return { ok: true, title: 'AI 已連接', detail: 'API 或插件目前可用，不消耗內建額度。' }
     return { ok: false, title: '尚未設定 AI', detail: '請到 AI 設定選擇 API Provider 並安全儲存 API Key。' }
   })()
+  const usesOwnApiKey = aiSettings.preferredProvider === 'user_api_key' && aiSettings.userApiProvider !== 'none'
+  const imitationProvider: ImitationProviderChoice = usesOwnApiKey
+    ? { provider: 'user_api_key', apiProvider: aiSettings.userApiProvider, model: aiSettings.defaultModel || undefined }
+    : { provider: 'built_in' }
+  const imitationProviderLabel = usesOwnApiKey
+    ? `${API_PROVIDER_NAMES[aiSettings.userApiProvider] ?? aiSettings.userApiProvider}・自備 API Key${aiSettings.defaultModel ? `・${aiSettings.defaultModel}` : ''}`
+    : `內建 AI・每次生成消耗 1 次額度${aiQuota ? `（今日剩餘 ${aiQuota.remaining} 次）` : ''}`
+
   const assistTasks = [
     {
       title: '生成報告',
@@ -7923,6 +8057,19 @@ function WorkspaceApp({
                     type="button"
                     onClick={() => {
                       setIsAdvancedMenuOpen(false)
+                      if (activeDocument) {
+                        void openImitation({ kind: 'document', id: activeDocument.id, title: activeDocument.title, markdown })
+                      }
+                    }}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
+                  >
+                    <Sparkles className="h-4 w-4" strokeWidth={2} />
+                    AI 臨摹成新報告
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAdvancedMenuOpen(false)
                       setCurrentView('templates')
                     }}
                     className="flex w-full items-center gap-3 px-4 py-3 text-left font-medium transition-colors hover:bg-slate-50 hover:text-slate-950"
@@ -8174,6 +8321,9 @@ function WorkspaceApp({
           onNotify={setBridgeToast}
           userName={topbarUserName}
           userId={user?.id ?? null}
+          onImitateTemplate={(template) =>
+            void openImitation({ kind: 'template', id: template.id, title: template.title, markdown: template.content })
+          }
         />
       ) : (
       <>
@@ -8709,6 +8859,25 @@ function WorkspaceApp({
       </>
       )}
       </div>
+
+      {imitation && (
+        <TemplateImitationDialog
+          source={imitation.source}
+          initialPreset={imitation.preset}
+          initialInstructions={imitation.instructions}
+          provider={imitationProvider}
+          providerLabel={imitationProviderLabel}
+          onGenerate={generateImitation}
+          onCreate={createImitatedDocument}
+          onSavePreset={(modes, instructions) => saveImitationPreset(imitation.source, modes, instructions)}
+          onOpenAiSettings={() => {
+            setImitation(null)
+            setCurrentView('settings')
+          }}
+          onClose={() => setImitation(null)}
+          renderPreview={(preview) => <MarkdownRenderer markdown={preview} />}
+        />
+      )}
 
       {transferTarget && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/20 px-4 backdrop-blur-sm">
