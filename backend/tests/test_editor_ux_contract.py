@@ -302,7 +302,7 @@ class EditorUxContractTests(unittest.TestCase):
     def test_export_embeds_images_so_they_survive_word(self):
         """Pandoc cannot fetch supabase-image:// (the image vanished) and blocked hosts became error pages."""
         source = _text(APP)
-        self.assertIn("embedImagesForExport(exportMarkdown)", source)
+        self.assertIn("embedImagesForExport(withDiagrams)", source)
         self.assertIn("JSON.stringify({ markdown: exportReady })", source)
         self.assertIn("createSignedUrl(storagePath, 600)", source)
         helpers = _text(SRC / "exportImages.ts")
@@ -330,6 +330,19 @@ class EditorUxContractTests(unittest.TestCase):
         self.assertIn("/api/fetch-image", body)
         self.assertIn("data_url", body)
         self.assertIn("fetchPastedImageFile(url)", source)
+
+
+    def test_mermaid_diagrams_reach_word_as_pictures(self):
+        """Pandoc does not know Mermaid, so a diagram arrived as a block of its own source."""
+        source = _text(APP)
+        self.assertIn("renderMermaidForExport(exportMarkdown)", source)
+        self.assertIn("embedImagesForExport(withDiagrams)", source)
+        body = _function_body(source, "async function renderMermaidForExport(", 1200)
+        self.assertIn("mermaid.render(", body)
+        self.assertIn("svgToPngDataUrl(svg)", body)
+        helpers = _text(SRC / "mermaidExport.ts")
+        self.assertIn("export function collectMermaidCharts", helpers)
+        self.assertIn("export function replaceMermaidCharts", helpers)
 
 
 if __name__ == "__main__":
