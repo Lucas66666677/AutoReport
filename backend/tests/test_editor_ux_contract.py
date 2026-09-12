@@ -283,5 +283,54 @@ class EditorUxContractTests(unittest.TestCase):
         self.assertIn("searchEverything(query, documents, templates)", search)
 
 
+    def test_user_templates_and_versions_can_be_removed(self):
+        """我的模板 had no delete at all, and 版本歷史 only offered 還原."""
+        source = _text(APP)
+        self.assertIn("void deleteUserTemplate(template)", source)
+        self.assertIn(".from('report_templates').delete()", source)
+        self.assertIn("onDeleteVersion={(version) => void deleteDocumentVersion(version)}", source)
+        self.assertIn(".from('document_versions').delete()", source)
+        for body, label in (
+            (_function_body(source, "async function deleteUserTemplate(", 400), "template"),
+            (_function_body(source, "async function deleteDocumentVersion(", 400), "version"),
+        ):
+            with self.subTest(delete=label):
+                self.assertIn("window.confirm(", body)
+                self.assertIn("此操作無法復原", body)
+
+
+    def test_export_embeds_images_so_they_survive_word(self):
+        """Pandoc cannot fetch supabase-image:// (the image vanished) and blocked hosts became error pages."""
+        source = _text(APP)
+        self.assertIn("embedImagesForExport(exportMarkdown)", source)
+        self.assertIn("JSON.stringify({ markdown: exportReady })", source)
+        self.assertIn("createSignedUrl(storagePath, 600)", source)
+        helpers = _text(SRC / "exportImages.ts")
+        self.assertIn("export function collectMarkdownImageUrls", helpers)
+        self.assertIn("export function replaceMarkdownImageUrls", helpers)
+
+
+    def test_images_copied_from_a_web_page_can_be_pasted(self):
+        """Only a clipboard image *file* worked; an <img> fragment or an image address did not."""
+        source = _text(APP)
+        self.assertIn("collectHtmlImageSources(pastedHtml)", source)
+        self.assertIn("collectImageUrlsFromText(pastedText)", source)
+        body = _function_body(source, "async function importImagesFromUrls(", 1200)
+        self.assertIn("uploadPastedImage(await fetchPastedImageFile(url))", body)
+        self.assertIn("無法下載", body)
+        helpers = _text(SRC / "pastedImages.ts")
+        self.assertIn("export function collectHtmlImageSources", helpers)
+        self.assertIn("export function collectImageUrlsFromText", helpers)
+
+
+    def test_a_pasted_image_falls_back_to_the_server_when_cors_blocks_it(self):
+        """A cross-origin image download is blocked in the browser, which is the common case."""
+        source = _text(APP)
+        body = _function_body(source, "async function fetchPastedImageFile(", 900)
+        self.assertIn("/api/fetch-image", body)
+        self.assertIn("data_url", body)
+        self.assertIn("fetchPastedImageFile(url)", source)
+
+
 if __name__ == "__main__":
     unittest.main()

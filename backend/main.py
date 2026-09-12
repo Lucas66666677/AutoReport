@@ -4,11 +4,13 @@ from decimal import Decimal, InvalidOperation
 import hashlib
 import hmac
 import io
+import ipaddress
 import json
 import logging
 import os
 import re
 import secrets
+import socket
 import tempfile
 import urllib.error
 import urllib.request
@@ -150,6 +152,14 @@ gemini_client = (
 )
 
 PYTHON_BLOCK_RE = re.compile(r"```python\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
+
+
+class ImageFetchRequest(BaseModel):
+    url: str = Field(max_length=4096)
+
+
+class ImageFetchResponse(BaseModel):
+    data_url: str
 
 
 class RenderRequest(BaseModel):
@@ -423,9 +433,138 @@ def render_markdown(text: str) -> str:
     return text
 
 
-def _process_markdown_for_file_export(text: str, _assets_dir: Path) -> str:
+IMAGE_FETCH_TIMEOUT_SECONDS = 10
+IMAGE_FETCH_MAX_BYTES = 10 * 1024 * 1024
+IMAGE_FETCH_MAX_REDIRECTS = 3
+IMAGE_FETCH_MAX_PER_EXPORT = 30
+# Some hosts reject the default urllib agent outright; that rejection is what used
+# to be embedded in the .docx instead of the picture.
+IMAGE_FETCH_USER_AGENT = (
+    "Mozilla/5.0 (compatible; AutoLabReport/1.0; +https://autolabreport.lucirel.com)"
+)
+EXPORT_IMAGE_UNAVAILABLE = "*（圖片無法載入）*"
+_MARKDOWN_IMAGE_PATTERN = re.compile(r"!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
+_HTML_IMAGE_PATTERN = re.compile(r"<img\b[^>]*?\ssrc\s*=\s*[\"\']([^\"\']+)[\"\'][^>]*>", re.IGNORECASE)
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Follow redirects by hand so every hop is re-checked against the host rules."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ARG002
+        return None
+
+
+def _assert_public_http_url(url: str) -> str:
+    """Reject anything that is not a public http(s) address (no localhost, no LAN)."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("only http(s) images can be fetched")
+    host = parsed.hostname
+    if not host:
+        raise ValueError("image URL has no host")
+    try:
+        addresses = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80))
+    except OSError as exc:
+        raise ValueError("image host could not be resolved") from exc
+    for info in addresses:
+        address = ipaddress.ip_address(info[4][0])
+        if not address.is_global or address.is_multicast:
+            raise ValueError("image host is not a public address")
+    return url
+
+
+def _fetch_remote_image(url: str) -> tuple[bytes, str] | None:
+    """Download an image, or return None if it cannot be fetched safely."""
+    try:
+        target = _assert_public_http_url(url.strip())
+    except ValueError:
+        return None
+
+    opener = urllib.request.build_opener(_NoRedirectHandler)
+    for _ in range(IMAGE_FETCH_MAX_REDIRECTS + 1):
+        request = urllib.request.Request(
+            target,
+            headers={"User-Agent": IMAGE_FETCH_USER_AGENT, "Accept": "image/*"},
+            method="GET",
+        )
+        try:
+            with opener.open(request, timeout=IMAGE_FETCH_TIMEOUT_SECONDS) as response:
+                content_type = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                if not content_type.startswith("image/"):
+                    return None
+                payload = response.read(IMAGE_FETCH_MAX_BYTES + 1)
+                if not payload or len(payload) > IMAGE_FETCH_MAX_BYTES:
+                    return None
+                return payload, content_type
+        except urllib.error.HTTPError as exc:
+            location = exc.headers.get("Location") if exc.headers else None
+            if exc.code not in {301, 302, 303, 307, 308} or not location:
+                return None
+            try:
+                target = _assert_public_http_url(urllib.parse.urljoin(target, location))
+            except ValueError:
+                return None
+        except (urllib.error.URLError, OSError, ValueError):
+            return None
+    return None
+
+
+def _image_file_extension(content_type: str) -> str:
+    subtype = content_type.split("/")[-1].split("+")[0]
+    if subtype == "jpeg":
+        return "jpg"
+    return re.sub(r"[^a-z0-9]", "", subtype) or "png"
+
+
+def _localise_export_images(text: str, assets_dir: Path) -> str:
+    """Replace every remote image with a file on disk; Pandoc embeds those reliably."""
+    resolved: dict[str, str] = {}
+    fetched = 0
+
+    def resolve(url: str) -> str | None:
+        nonlocal fetched
+        if url in resolved:
+            return resolved[url] or None
+        if fetched >= IMAGE_FETCH_MAX_PER_EXPORT:
+            return None
+        fetched += 1
+        image = _fetch_remote_image(url)
+        if image is None:
+            resolved[url] = ""
+            return None
+        payload, content_type = image
+        path = assets_dir / f"export-image-{len(resolved)}.{_image_file_extension(content_type)}"
+        path.write_bytes(payload)
+        resolved[url] = str(path).replace("\\", "/")
+        return resolved[url]
+
+    def replace_markdown(match: re.Match[str]) -> str:
+        url = match.group(1).strip()
+        if not url.lower().startswith(("http://", "https://")):
+            return match.group(0)
+        local = resolve(url)
+        if local is None:
+            return EXPORT_IMAGE_UNAVAILABLE
+        return match.group(0).replace(match.group(1), f"<{local}>", 1)
+
+    def replace_html(match: re.Match[str]) -> str:
+        url = match.group(1).strip()
+        if not url.lower().startswith(("http://", "https://")):
+            return match.group(0)
+        local = resolve(url)
+        if local is None:
+            return EXPORT_IMAGE_UNAVAILABLE
+        return match.group(0).replace(match.group(1), local, 1)
+
+    localised = _MARKDOWN_IMAGE_PATTERN.sub(replace_markdown, text)
+    return _HTML_IMAGE_PATTERN.sub(replace_html, localised)
+
+
+def _process_markdown_for_file_export(text: str, assets_dir: Path) -> str:
     # Export keeps code visible; no dynamic-code executor exists in this process.
-    return text
+    # Pandoc fetches image URLs itself and embeds the refusal page when a host
+    # blocks it, so download them here instead and hand Pandoc local files.
+    return _localise_export_images(text, assets_dir)
 
 
 def export_markdown_to_docx(text: str) -> bytes:
@@ -2606,6 +2745,7 @@ def _build_imitation_prompt(body: TemplateImitationRequest) -> str:
             "4. mode=replace：依「新資料」重寫整段；mode=rewrite：保留仍然適用的句子，只改成符合新資料。",
             "5. 所有數字、單位、名稱只能來自「新資料」或「補充說明」；缺少的資訊寫「（待補：說明缺什麼）」，不要自行編造數據。",
             "6. 使用與範本相同的語言（通常是繁體中文）。",
+            "7. 公式用範本原本的寫法：範本沒有 LaTeX（$ 或 \\\\frac）時，公式也要寫成純文字，例如「時間常數 = L / R」。",
             "",
             f"新報告標題：{body.title.strip() or '（沿用範本）'}",
             "",
@@ -2981,6 +3121,17 @@ async def stripe_webhook(request: Request, stripe_signature: str | None = Header
         logger.info("Unhandled Stripe webhook event: %s", event_type)
 
     return {"received": True}
+
+
+@app.post("/api/fetch-image", response_model=ImageFetchResponse)
+def fetch_image(body: ImageFetchRequest):
+    """Download an image the browser is not allowed to fetch (CORS), for pasting."""
+    image = _fetch_remote_image(body.url)
+    if image is None:
+        raise HTTPException(status_code=422, detail="無法下載這張圖片，請改用複製圖片本身或另存後上傳。")
+    payload, content_type = image
+    encoded = base64.b64encode(payload).decode("ascii")
+    return ImageFetchResponse(data_url=f"data:{content_type};base64,{encoded}")
 
 
 @app.post("/api/export")
