@@ -9,7 +9,7 @@ These are owner／staging gates; no known P0 code defect is open in the local re
 | Item | Owner | Exit criterion |
 | --- | --- | --- |
 | Apply all Supabase migrations to a clean staging project | Project owner | Migration completes; required tables, functions, triggers, RLS and buckets exist |
-| Validate permission matrix with three real accounts | Project owner | Owner, invited viewer, invited editor and anonymous access match PRODUCT_SPEC |
+| Validate permission matrix with three real accounts | Project owner | Automated: `npm run test:rls:matrix` asserts all 21 cells of the PRODUCT_SPEC matrix against the real bringup.sql in PGlite, on every commit. A one-off real-account run is still worth doing, because GoTrue, Storage and PostgREST are stubbed there |
 | Configure Email／Google Auth and redirects | Project owner | Login and logout work from the final Vercel domain |
 | Configure Render／Vercel secrets and CORS | Project owner | Backend readiness is 200 and frontend calls only HTTPS production endpoints |
 | Configure one built-in AI provider | Project owner | Authenticated outline and rewrite complete; quota decrements once |
@@ -43,6 +43,13 @@ If any P0 exit criterion fails, the release returns to NOT READY.
 - Optional sandboxed code execution as a separate isolated service; never restore in-process execution.
 
 ## Completed hardening
+
+- The owner/viewer/editor/anonymous permission matrix runs in CI. frontend/scripts/rls-matrix.mjs
+  applies the whole of supabase/bringup.sql inside PGlite -- real PostgreSQL, real policies --
+  seeds four actors and five documents, and asserts every cell of PRODUCT_SPEC lines 60-66,
+  including that a legacy public edit link stays read-only and that a client cannot reassign
+  user_id. The stubs deliberately reproduce Supabase's default table privileges: without them
+  every access fails with "permission denied" and each deny-case passes for the wrong reason.
 
 - Mermaid diagrams render in the editor again. @monaco-editor/react was loading
   Monaco's AMD loader from the jsDelivr CDN; mermaid's UMD dependencies called its
