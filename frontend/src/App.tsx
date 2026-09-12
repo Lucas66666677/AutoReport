@@ -160,7 +160,12 @@ const DOCUMENT_VERSIONS_STORAGE_KEY = 'autoLabReport_documentVersions'
 function getDocumentVersionsStorageKey(userId: string | null): string {
   return `${DOCUMENT_VERSIONS_STORAGE_KEY}:${userId ?? 'guest-v2'}`
 }
-const MarkdownEditor = lazy(() => import('@monaco-editor/react'))
+const MarkdownEditor = lazy(async () => {
+  // Point the loader at the local ESM build before the editor mounts, so Monaco's
+  // AMD loader is never added to the page. See monacoSetup for what that broke.
+  await import('./monacoSetup')
+  return import('@monaco-editor/react')
+})
 const LazyGoogleDrivePicker = lazy(() => import('./GoogleDrivePicker'))
 const LazyMarkdownRenderer = lazy(() => import('./MarkdownRenderer'))
 const LazyPublicReport = lazy(() => import('./PublicReport'))

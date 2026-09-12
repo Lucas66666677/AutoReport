@@ -28,7 +28,6 @@ If any P0 exit criterion fails, the release returns to NOT READY.
 | Error monitoring | Implemented for frontend and backend against Sentry's envelope endpoint, with no new dependency; completely inert until a DSN is set | Create the Sentry project, then set SENTRY_DSN and VITE_SENTRY_DSN (see docs/DEPLOYMENT.md) |
 | Bundle size | Initial entry fell from 1.24 MB to about 402 kB; Monaco／Markdown／PDF remain large but lazy-loaded | Track real-user loading and continue splitting only where browser validation proves execution order is safe |
 | Public report and collaborator E2E | The guest journey, Word download and PDF download now run in Chromium via frontend/e2e; the signed-in half is written but skips without credentials | Supply E2E_SUPABASE_URL, E2E_SUPABASE_ANON_KEY, E2E_EMAIL and E2E_PASSWORD, then npm run test:e2e |
-| Mermaid diagrams do not render in the editor | @monaco-editor/react loads Monaco's AMD loader from the jsDelivr CDN, and a Vite-optimised mermaid chunk calls its define(), which throws "Can only have one anonymous define call per script file". Confirmed from the browser stack; the call reaches that loader even with window.define set to undefined, so no runtime workaround exists. This also silently disables the Mermaid-to-picture Word export | Configure @monaco-editor/react with the locally installed ESM monaco build so no AMD loader is added to the page, and review the bundle-size impact |
 | Autosave network-failure browser E2E | Unit coverage exists but network interception was unavailable | Add a controlled offline／online browser scenario |
 
 ## P2 — after Closed Beta
@@ -44,6 +43,13 @@ If any P0 exit criterion fails, the release returns to NOT READY.
 - Optional sandboxed code execution as a separate isolated service; never restore in-process execution.
 
 ## Completed hardening
+
+- Mermaid diagrams render in the editor again. @monaco-editor/react was loading
+  Monaco's AMD loader from the jsDelivr CDN; mermaid's UMD dependencies called its
+  define() and it rejected the anonymous module, which also silently disabled the
+  Mermaid-to-picture Word export. The editor now loads the locally installed ESM
+  build, so no AMD loader reaches the page and the CDN is no longer a runtime
+  dependency. Initial bundle entry is unchanged; Monaco stays in a lazy chunk.
 
 - A maintained Word reference document (A4, 2.5 cm margins, CJK body and heading
   faces, bordered tables) is committed and passed to Pandoc, with a fallback when the
