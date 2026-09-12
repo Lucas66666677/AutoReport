@@ -7,7 +7,8 @@ The Closed Beta baseline and current gaps are tracked in docs/product/REQUIREMEN
 1. Run every migration in ephemeral Supabase CI.
 2. Add authenticated browser E2E for CRUD, RLS, collaborator roles and private Storage.
 3. Add browser offline／online autosave tests.
-4. Add normal-browser PDF artifact regression and visual diff.
+4. Add a visual diff to the PDF artifact regression (the artifact itself is now
+   captured and inspected by frontend/e2e plus scripts/inspect-pdf.py).
 5. Run the permanent-delete Storage cleanup against real multi-account staging data.
 6. Add monitoring, release identifiers and incident playbook.
 

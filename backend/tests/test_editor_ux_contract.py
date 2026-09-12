@@ -345,5 +345,6 @@ class EditorUxContractTests(unittest.TestCase):
         self.assertIn("export function replaceMermaidCharts", helpers)
 
 
+
 if __name__ == "__main__":
     unittest.main()

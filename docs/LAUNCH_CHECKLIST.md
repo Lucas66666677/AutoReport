@@ -46,4 +46,16 @@ npm run audit:prod
 npm run check:deploy
 ~~~
 
+瀏覽器旅程（會自行啟動前後端，需要本機 Pandoc）：
+
+~~~powershell
+cd frontend
+npm run test:e2e:install   # 只有第一次需要，下載 Chromium
+npm run test:e2e
+python ..\scripts\inspect-pdf.py ..\.playwright-output\artifacts\report.pdf --expect-image
+~~~
+
+登入後的流程需要測試帳號，未提供 E2E_SUPABASE_URL／E2E_SUPABASE_ANON_KEY／E2E_EMAIL／
+E2E_PASSWORD 時會自動跳過。
+
 These commands are not a substitute for Supabase and browser acceptance.
