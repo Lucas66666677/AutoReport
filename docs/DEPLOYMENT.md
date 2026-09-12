@@ -22,6 +22,8 @@ Required:
 VITE_API_URL=https://your-render-backend.example
 VITE_SUPABASE_URL=https://your-project.supabase.co
 VITE_SUPABASE_ANON_KEY=your-public-anon-key
+VITE_SENTRY_DSN=
+VITE_RELEASE=
 ~~~
 
 Closed Beta defaults:
@@ -54,6 +56,9 @@ ENCRYPTION_KEY=stable-fernet-key
 FRONTEND_URL=https://your-vercel-domain.example
 BACKEND_URL=https://your-render-backend.example
 CORS_ALLOWED_ORIGINS=https://your-vercel-domain.example,https://your-staging-domain.example
+SENTRY_DSN=
+SENTRY_ENVIRONMENT=production
+RELEASE_SHA=
 ~~~
 
 AI: configure at least one of GROQ_API_KEY or GEMINI_API_KEY and its permitted model. Keep FREE_DAILY_AI_QUOTA conservative for the canary.
@@ -77,6 +82,14 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 ~~~
 
 Changing ENCRYPTION_KEY later makes existing encrypted user API keys unreadable.
+
+### Error monitoring
+
+`SENTRY_DSN` (backend) and `VITE_SENTRY_DSN` (frontend) are read at startup and
+at build time. Leave either empty and that side reports nothing -- no requests are
+made and no dependency is loaded. With a DSN set, unhandled request failures and
+render crashes are posted to Sentry's envelope endpoint; `RELEASE_SHA` and
+`VITE_RELEASE` tag the events so an incident can be tied to a deployed build.
 
 ## 4. Auth
 

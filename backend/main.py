@@ -33,6 +33,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from error_reporting import report_exception
+
 load_dotenv(Path(__file__).with_name(".env"))
 
 app = FastAPI(title="AutoLabReport API", version="0.4.0")
@@ -73,6 +75,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def report_unhandled_errors(request: Request, call_next):
+    """A 500 used to exist only in the Render log, where nobody was watching."""
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        report_exception(exc, {"path": request.url.path, "method": request.method})
+        raise
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -567,6 +579,17 @@ def _process_markdown_for_file_export(text: str, assets_dir: Path) -> str:
     return _localise_export_images(text, assets_dir)
 
 
+REFERENCE_DOCX = Path(__file__).resolve().parent / "assets" / "reference.docx"
+
+
+def _docx_export_args() -> list[str]:
+    """A4 pages, CJK fonts and bordered tables all come from the reference document."""
+    if REFERENCE_DOCX.is_file():
+        return ["--reference-doc", str(REFERENCE_DOCX)]
+    logger.warning("Word reference document missing; exporting with Pandoc defaults.")
+    return []
+
+
 def export_markdown_to_docx(text: str) -> bytes:
     try:
         with tempfile.TemporaryDirectory() as tmp:
@@ -585,6 +608,7 @@ def export_markdown_to_docx(text: str) -> bytes:
                     format="md",
                     outputfile=str(docx_file),
                     encoding="utf-8",
+                    extra_args=_docx_export_args(),
                 )
             except OSError as exc:
                 logger.error("Pandoc unavailable. error_type=%s", type(exc).__name__)
@@ -610,6 +634,7 @@ def export_markdown_to_docx(text: str) -> bytes:
         raise
     except Exception as exc:
         logger.error("Word export failed. error_type=%s", type(exc).__name__)
+        report_exception(exc, {"stage": "export_markdown_to_docx"})
         raise HTTPException(
             status_code=500,
             detail="Word 匯出失敗，請稍後重試。",
@@ -3142,6 +3167,7 @@ def export_docx(body: RenderRequest):
         raise
     except Exception as exc:
         logger.error("/api/export failed. error_type=%s", type(exc).__name__)
+        report_exception(exc, {"endpoint": "/api/export"})
         raise HTTPException(
             status_code=500,
             detail="Word 匯出失敗，請確認 Pandoc 已安裝後重試。",

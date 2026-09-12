@@ -24,3 +24,10 @@ Thumbs.db
 **/.env.*
 !.env.example
 !**/.env.example
+
+# Playwright browser-journey output
+.playwright-output/
+frontend/test-results/
+frontend/playwright-report/
+frontend/e2e/.playwright/
+frontend/e2e/.artifacts/

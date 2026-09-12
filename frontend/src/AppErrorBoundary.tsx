@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { reportError } from './errorReporting'
 
 type AppErrorBoundaryProps = {
   children: ReactNode
@@ -23,6 +24,11 @@ export default class AppErrorBoundary extends Component<
       name: error.name,
       message: error.message,
       componentStack: info.componentStack,
+    })
+    // The console is only visible to whoever is standing at the broken screen.
+    reportError(error, {
+      source: 'AppErrorBoundary',
+      componentStack: info.componentStack?.slice(0, 2000),
     })
   }
 

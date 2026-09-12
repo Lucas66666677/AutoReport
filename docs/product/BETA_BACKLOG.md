@@ -23,12 +23,12 @@ If any P0 exit criterion fails, the release returns to NOT READY.
 | Item | Why | Suggested action |
 | --- | --- | --- |
 | Complete workflow screenshots at 390／768／1024／1440 | Editor overflow passed all widths and 390 px was visually checked; the full auth／dashboard／export journey was not captured at every width | Run the entire journey at the listed widths in Chrome DevTools before invitations |
-| Capture and inspect browser PDF artifact | In-app browser invoked export but did not expose the downloaded file | Download in Chrome／Edge and render every page |
-| Storage cleanup on permanent document delete | Service-role cleanup endpoint is implemented and owner-checked | Run a real multi-account staging delete and confirm both buckets are empty for every uploader prefix |
+| Storage cleanup on permanent document delete | Every uploader prefix, nested folders, both buckets, batching and refusal-before-deletion are pinned in backend/tests/test_permanent_delete_storage.py | Run scripts/verify-storage-cleanup.py once against staging with two real accounts |
 | Clean database reset automation | Local Supabase CLI is unavailable | Add CI with supabase db reset against an ephemeral project |
-| Error monitoring | Runtime errors are not centrally visible | Add Sentry or equivalent with release tags and PII review |
+| Error monitoring | Implemented for frontend and backend against Sentry's envelope endpoint, with no new dependency; completely inert until a DSN is set | Create the Sentry project, then set SENTRY_DSN and VITE_SENTRY_DSN (see docs/DEPLOYMENT.md) |
 | Bundle size | Initial entry fell from 1.24 MB to about 402 kB; Monaco／Markdown／PDF remain large but lazy-loaded | Track real-user loading and continue splitting only where browser validation proves execution order is safe |
-| Public report and collaborator E2E | Code and RLS exist but staging accounts were unavailable | Add browser tests against isolated staging |
+| Public report and collaborator E2E | The guest journey, Word download and PDF download now run in Chromium via frontend/e2e; the signed-in half is written but skips without credentials | Supply E2E_SUPABASE_URL, E2E_SUPABASE_ANON_KEY, E2E_EMAIL and E2E_PASSWORD, then npm run test:e2e |
+| Mermaid diagrams do not render in the editor | @monaco-editor/react loads Monaco's AMD loader from the jsDelivr CDN, and a Vite-optimised mermaid chunk calls its define(), which throws "Can only have one anonymous define call per script file". Confirmed from the browser stack; the call reaches that loader even with window.define set to undefined, so no runtime workaround exists. This also silently disables the Mermaid-to-picture Word export | Configure @monaco-editor/react with the locally installed ESM monaco build so no AMD loader is added to the page, and review the bundle-size impact |
 | Autosave network-failure browser E2E | Unit coverage exists but network interception was unavailable | Add a controlled offline／online browser scenario |
 
 ## P2 — after Closed Beta
@@ -44,6 +44,14 @@ If any P0 exit criterion fails, the release returns to NOT READY.
 - Optional sandboxed code execution as a separate isolated service; never restore in-process execution.
 
 ## Completed hardening
+
+- A maintained Word reference document (A4, 2.5 cm margins, CJK body and heading
+  faces, bordered tables) is committed and passed to Pandoc, with a fallback when the
+  asset is missing. Rebuild it with backend/tools/build_reference_docx.py.
+- The browser journey runs in Chromium: guest entry, KaTeX formulas, tables, and both
+  the Word and PDF downloads, against the real backend rather than a mock.
+- The exported PDF is inspected page by page by scripts/inspect-pdf.py, which knows
+  that 匯出 PDF（圖片版）carries an image and no text layer.
 
 - Mermaid diagrams are rendered in the browser and sent to Word as a picture;
   a diagram that fails to render still falls back to its source.
