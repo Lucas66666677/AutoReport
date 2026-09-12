@@ -122,7 +122,7 @@ and `scripts/deploy-check.ps1`. Edit these lists and the code together.
 deployment health gate: /api/health
 spa fallback: /index.html
 readiness required: supabase, encryption, pandoc
-readiness optional: built_in_ai
+readiness optional: built_in_ai, error_monitoring
 required backend env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ENCRYPTION_KEY, FRONTEND_URL, BACKEND_URL, CORS_ALLOWED_ORIGINS
 required frontend env: VITE_API_URL, VITE_SUPABASE_URL, VITE_SUPABASE_ANON_KEY
 ~~~

@@ -302,6 +302,41 @@ class RequiredProductionConfigurationIsDocumentedTests(unittest.TestCase):
             list(main.READINESS_OPTIONAL_CHECKS),
         )
 
+    def test_readiness_reports_monitoring_without_revealing_the_dsn(self):
+        """Setting SENTRY_DSN on the host is otherwise invisible until something breaks.
+
+        The value must never appear in the payload: readiness is a public endpoint, and
+        a DSN lets anyone post events into the project.
+        """
+        import json
+        import os
+
+        dsn = "https://publickey123@o999.ingest.us.sentry.io/456789"
+        with readiness_environment():
+            with patch.dict(os.environ, {"SENTRY_DSN": dsn}):
+                payload = main.readiness()
+
+        self.assertTrue(payload["checks"]["error_monitoring"])
+        serialised = json.dumps(payload)
+        self.assertNotIn("publickey123", serialised)
+        self.assertNotIn("ingest.us.sentry.io", serialised)
+        self.assertNotIn(dsn, serialised)
+
+    def test_monitoring_never_blocks_readiness(self):
+        """Reporting is optional; a service with no DSN is still ready to serve."""
+        import os
+
+        with readiness_environment():
+            environment = dict(os.environ)
+            environment.pop("SENTRY_DSN", None)
+            with patch.dict(os.environ, environment, clear=True):
+                payload = main.readiness()
+
+        self.assertEqual(payload["status"], "ready")
+        self.assertFalse(payload["checks"]["error_monitoring"])
+        self.assertIn("error_monitoring", main.READINESS_OPTIONAL_CHECKS)
+        self.assertNotIn("error_monitoring", main.READINESS_REQUIRED_CHECKS)
+
     def test_readiness_required_checks_are_the_ones_the_endpoint_enforces(self):
         enforced = []
         for name in ("supabase", "encryption", "pandoc"):
