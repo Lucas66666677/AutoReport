@@ -83,6 +83,7 @@ test('a guest can write a report and see formulas, tables and diagrams rendered'
   await expect(page.locator('.katex').first()).toBeVisible()
   await expect(page.getByText('10.2 μs')).toBeVisible()
   await expect(page.getByText('25 °C')).toBeVisible()
+  await expect(page.locator('.markdown-mermaid svg')).toBeVisible({ timeout: 30_000 })
   await expect(page.locator('body')).not.toContainText('$\\tau')
 })
 
@@ -136,6 +137,7 @@ test('PDF export downloads a real .pdf', async ({ page }) => {
   // html2pdf photographs the preview, so the preview has to have rendered first.
   await page.getByRole('button', { name: 'Preview 模式' }).click()
   await expect(page.locator('.katex').first()).toBeVisible()
+  await expect(page.locator('.markdown-mermaid svg')).toBeVisible({ timeout: 30_000 })
 
   await openMoreActions(page)
   const downloadPromise = page.waitForEvent('download', { timeout: 150_000 })
@@ -149,15 +151,13 @@ test('PDF export downloads a real .pdf', async ({ page }) => {
   expect(await firstBytes(saved, 5)).toBe('%PDF-')
 })
 
-// Known open defect, root cause identified from the browser stack: @monaco-editor/react
-// loads Monaco's AMD loader from the jsDelivr CDN, and a Vite-optimised mermaid chunk
-// calls its define(), which throws "Can only have one anonymous define call per script
-// file". The call reaches that loader even with window.define set to undefined, so no
-// runtime hiding works. The fix is to configure @monaco-editor/react with the local ESM
-// monaco build so no AMD loader is installed -- its own change, needing a bundle review.
-// Marked expected-to-fail: Playwright reports it as an error if it ever starts passing.
+// Monaco used to publish an AMD loader on the page; mermaid's UMD dependencies called
+// into it and it rejected their anonymous define(), so no diagram ever rendered and the
+// Mermaid-to-picture Word export silently fell back to source. The editor now loads the
+// local ESM build (src/monacoSetup.ts), so no loader is installed. This test is what
+// proved the fix: it was marked expected-to-fail, and Playwright raised an error the
+// moment it started passing.
 test('a Mermaid diagram renders in the preview', async ({ page }) => {
-  test.fail()
   await openBlankReport(page)
   await writeReport(page, REPORT)
   await page.getByRole('button', { name: 'Preview 模式' }).click()
