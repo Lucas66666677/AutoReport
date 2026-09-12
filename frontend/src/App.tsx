@@ -94,6 +94,8 @@ import {
   type DocumentVersion,
   type DocumentVersionRow,
 } from './documentVersions'
+import { collectHtmlImageSources, collectImageUrlsFromText, imageMarkdown } from './pastedImages'
+import { collectMarkdownImageUrls, isEmbeddableImageUrl, replaceMarkdownImageUrls } from './exportImages'
 import GlobalSearch from './GlobalSearch'
 import TemplateImitationDialog, {
   type ImitationProviderChoice,
@@ -119,7 +121,9 @@ import {
 } from './editorViewMode'
 import { resolveApiBaseUrl } from './apiConfig'
 import { analyzeReportQuality } from './reportQuality'
-import { createPrivateReportImageUrl, REPORT_IMAGE_BUCKET } from './reportImageStorage'
+import { createPrivateReportImageUrl, REPORT_IMAGE_BUCKET,
+  parsePrivateReportImagePath,
+} from './reportImageStorage'
 import { insertOwnedDocument } from './documentInsert'
 import { supabaseClient as supabase } from './supabaseClient'
 import { smartFormat } from './smartFormat'
@@ -3546,6 +3550,20 @@ function TemplatesView({
     })
   }
 
+  async function deleteUserTemplate(template: ReportTemplate) {
+    if (!window.confirm(`刪除模板「${template.title}」？此操作無法復原。`)) return
+
+    setUserTemplates((current) => current.filter((item) => item.id !== template.id))
+    if (supabase && userId && TEMPLATE_UUID_PATTERN.test(template.id)) {
+      const { error } = await supabase.from('report_templates').delete().eq('id', template.id).eq('user_id', userId)
+      if (error) {
+        onNotify('模板已從這台瀏覽器移除，但雲端刪除失敗')
+        return
+      }
+    }
+    onNotify('已刪除模板')
+  }
+
   function submitTemplateUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
 
@@ -3729,6 +3747,16 @@ function TemplatesView({
                     <p className="truncate text-sm font-semibold text-slate-700">{template.authorName ?? 'AutoLabReport'}</p>
                   </div>
                   <div className="flex shrink-0 gap-2">
+                    {template.source === 'user' && (
+                      <button
+                        type="button"
+                        onClick={() => void deleteUserTemplate(template)}
+                        title="刪除這個模板"
+                        className="rounded-2xl border border-slate-200 bg-white px-3 py-2.5 text-sm font-semibold text-red-600 shadow-sm transition hover:bg-red-50"
+                      >
+                        刪除
+                      </button>
+                    )}
                     {onImitateTemplate && (
                       <button
                         type="button"
@@ -3948,6 +3976,7 @@ function VersionHistoryView({
   onBackToEditor,
   onSaveVersion,
   onRestoreVersion,
+  onDeleteVersion,
   cloudBacked = false,
 }: {
   document: Document | undefined
@@ -3956,6 +3985,7 @@ function VersionHistoryView({
   onBackToEditor: () => void
   onSaveVersion: () => void
   onRestoreVersion: (version: DocumentVersion) => void
+  onDeleteVersion: (version: DocumentVersion) => void
 }) {
   return (
     <main className={`min-h-0 flex-1 overflow-auto bg-zinc-50 transition-colors duration-300 dark:bg-zinc-950 ${SCROLLBAR_HIDE}`}>
@@ -4010,9 +4040,19 @@ function VersionHistoryView({
                       {version.content.replace(/[#*_`>|-]/g, ' ').replace(/\s+/g, ' ').trim() || '空白版本'}
                     </p>
                   </div>
-                  <button type="button" onClick={() => onRestoreVersion(version)} className={SUBTLE_BUTTON}>
-                    還原
-                  </button>
+                  <div className="flex shrink-0 gap-2">
+                    <button type="button" onClick={() => onRestoreVersion(version)} className={SUBTLE_BUTTON}>
+                      還原
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onDeleteVersion(version)}
+                      title="刪除這個版本"
+                      className="rounded-lg border border-zinc-200 px-3 py-2 text-sm font-semibold text-red-600 transition hover:bg-red-50 dark:border-zinc-800 dark:hover:bg-red-950/40"
+                    >
+                      刪除
+                    </button>
+                  </div>
                 </div>
               </article>
             ))}
@@ -5976,6 +6016,55 @@ function WorkspaceApp({
     return createPrivateReportImageUrl(path)
   }
 
+  // An image copied from a web page arrives as an <img> fragment or as its
+  // address, not as a file. Download it and upload it like a pasted file so it
+  // survives in the report (and in the Word export); keep the URL if the site
+  // blocks the download.
+  // The browser may not download an image from another site (CORS), which is
+  // exactly the case when someone copies a picture from a web page, so fall back
+  // to the server, which fetches it with no such restriction.
+  async function fetchPastedImageFile(url: string): Promise<File> {
+    try {
+      const response = await fetch(url)
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const blob = await response.blob()
+      if (!blob.type.startsWith('image/')) throw new Error('not an image')
+      return new File([blob], 'pasted-image', { type: blob.type })
+    } catch {
+      const proxied = await fetch(`${API_BASE_URL}/api/fetch-image`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      })
+      if (!proxied.ok) throw new Error(`fetch-image HTTP ${proxied.status}`)
+      const payload = (await proxied.json()) as { data_url?: string }
+      if (!payload.data_url) throw new Error('fetch-image returned no image')
+      const blob = await (await fetch(payload.data_url)).blob()
+      return new File([blob], 'pasted-image', { type: blob.type || 'image/png' })
+    }
+  }
+
+  async function importImagesFromUrls(urls: string[]) {
+    setBridgeToast(urls.length > 1 ? `正在處理 ${urls.length} 張圖片...` : '正在處理圖片...')
+    let keptRemote = 0
+    const markdown: string[] = []
+    for (const url of urls.slice(0, 8)) {
+      try {
+        markdown.push(imageMarkdown(await uploadPastedImage(await fetchPastedImageFile(url))))
+      } catch {
+        keptRemote += 1
+        markdown.push(imageMarkdown(url))
+      }
+    }
+    if (markdown.length === 0) return
+    insertAtCursor(markdown.join('\n\n'))
+    if (keptRemote > 0) {
+      setBridgeToast(`有 ${keptRemote} 張圖片無法下載，先用原始網址貼上（匯出時可能看不到）`)
+    } else {
+      setBridgeToast(supabase && user ? '圖片已上傳並貼上' : '圖片已貼上為 Markdown')
+    }
+  }
+
   function handleEditorPaste(event: ClipboardEvent) {
     if (!canEditActiveDocumentRef.current) return
 
@@ -6013,6 +6102,14 @@ function WorkspaceApp({
       return
     }
 
+    const htmlImageSources = collectHtmlImageSources(pastedHtml)
+    if (htmlImageSources.length > 0) {
+      event.preventDefault()
+      event.stopPropagation()
+      void importImagesFromUrls(htmlImageSources)
+      return
+    }
+
     const htmlImages = convertHtmlImagesToMarkdown(pastedHtml)
     if (htmlImages) {
       event.preventDefault()
@@ -6022,6 +6119,15 @@ function WorkspaceApp({
     }
 
     const pastedText = event.clipboardData?.getData('text/plain') ?? ''
+
+    const textImageUrls = collectImageUrlsFromText(pastedText)
+    if (textImageUrls.length > 0) {
+      event.preventDefault()
+      event.stopPropagation()
+      void importImagesFromUrls(textImageUrls)
+      return
+    }
+
     if (!pastedText.includes('\t') || !/\r?\n/.test(pastedText)) return
 
     const table = convertTsvToMarkdownTable(pastedText)
@@ -6747,6 +6853,43 @@ function WorkspaceApp({
     window.location.href = 'mailto:?subject=AutoLabReport%20%E5%8F%8D%E9%A5%8B'
   }
 
+  // Pandoc fetches image URLs itself, so it never sees the app's private
+  // supabase-image:// images (they disappeared from the .docx) and a host that
+  // blocks the request ends up embedded as an error page. Resolve everything to
+  // data: URIs first; those come back as real images.
+  async function embedImagesForExport(source: string): Promise<{ markdown: string; failed: number }> {
+    const urls = collectMarkdownImageUrls(source).filter(isEmbeddableImageUrl)
+    if (urls.length === 0) return { markdown: source, failed: 0 }
+
+    const replacements: Record<string, string> = {}
+    let failed = 0
+    await Promise.all(
+      urls.map(async (url) => {
+        try {
+          const storagePath = parsePrivateReportImagePath(url)
+          let fetchUrl = url
+          if (storagePath) {
+            if (!supabase) throw new Error('storage unavailable')
+            const { data, error } = await supabase.storage
+              .from(REPORT_IMAGE_BUCKET)
+              .createSignedUrl(storagePath, 600)
+            if (error || !data?.signedUrl) throw error ?? new Error('no signed url')
+            fetchUrl = data.signedUrl
+          }
+          const response = await fetch(fetchUrl)
+          if (!response.ok) throw new Error(`HTTP ${response.status}`)
+          const blob = await response.blob()
+          replacements[url] = await readFileAsDataUrl(
+            new File([blob], 'report-image', { type: blob.type || 'image/png' }),
+          )
+        } catch {
+          failed += 1
+        }
+      }),
+    )
+    return { markdown: replaceMarkdownImageUrls(source, replacements), failed }
+  }
+
   async function downloadExportFile(endpoint: string, filename: string, status: SyncStatus) {
     setExporting(true)
     setSyncStatus(status)
@@ -6755,10 +6898,14 @@ function WorkspaceApp({
         figures: notePreferences.autoNumberFigures,
         tables: notePreferences.autoNumberTables,
       })
+      const { markdown: exportReady, failed: unembeddedImages } = await embedImagesForExport(exportMarkdown)
+      if (unembeddedImages > 0) {
+        setBridgeToast(`有 ${unembeddedImages} 張外部圖片無法內嵌，匯出的檔案裡可能看不到`)
+      }
       const res = await fetch(`${API_BASE_URL}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ markdown: exportMarkdown }),
+        body: JSON.stringify({ markdown: exportReady }),
       })
       if (!res.ok) {
         let detail = `HTTP ${res.status}`
@@ -7004,6 +7151,20 @@ function WorkspaceApp({
       return
     }
     setBridgeToast('已儲存目前版本')
+  }
+
+  async function deleteDocumentVersion(version: DocumentVersion) {
+    if (!window.confirm(`刪除 ${formatDocumentTime(version.createdAt)} 的版本？此操作無法復原。`)) return
+
+    setDocumentVersions((current) => current.filter((item) => item.id !== version.id))
+    if (supabase && shouldUseSupabaseDocuments) {
+      const { error } = await supabase.from('document_versions').delete().eq('id', version.id)
+      if (error) {
+        setBridgeToast('版本已從這台瀏覽器移除，但雲端刪除失敗')
+        return
+      }
+    }
+    setBridgeToast('已刪除這個版本')
   }
 
   async function saveActiveDocumentAsTemplate() {
@@ -8331,6 +8492,7 @@ function WorkspaceApp({
           onBackToEditor={() => setCurrentView('editor')}
           onSaveVersion={() => saveActiveDocumentVersion()}
           onRestoreVersion={restoreDocumentVersion}
+          onDeleteVersion={(version) => void deleteDocumentVersion(version)}
         />
       ) : currentView === 'templates' ? (
         <TemplatesView

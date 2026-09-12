@@ -68,6 +68,12 @@ class TemplateImitationTests(unittest.TestCase):
         self.assertEqual(response.missing_section_ids, [])
         self.assertEqual(response.unverified_numbers, [])
 
+    def test_the_prompt_asks_for_the_templates_own_formula_notation(self):
+        """A real run wrote LaTeX the Markdown preview shows raw."""
+        engine = FakeEngine(json.dumps({"sections": {"s2": "x", "s4": "y", "s5": "z"}}))
+        _run(_request(), engine)
+        self.assertIn("公式用範本原本的寫法", engine.prompts[0])
+
     def test_the_prompt_asks_only_for_the_sections_that_change(self):
         engine = FakeEngine(json.dumps({"sections": {"s2": "x", "s4": "y", "s5": "z"}}))
         _run(_request(), engine)
