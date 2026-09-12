@@ -103,6 +103,12 @@ class ReportExceptionTests(unittest.TestCase):
             with patch.object(error_reporting.urllib.request, "urlopen", side_effect=OSError("no network")):
                 error_reporting._post_envelope("https://example.invalid/envelope/", "{}")
 
+    def test_a_failure_inside_the_reporter_never_reaches_the_caller(self):
+        """The middleware reports then re-raises; a throwing reporter would mask the bug."""
+        with patch.dict("os.environ", {"SENTRY_DSN": DSN}):
+            with patch.object(error_reporting, "_report_exception_unguarded", side_effect=RuntimeError("reporter broke")):
+                self.assertFalse(error_reporting.report_exception(ValueError("the real failure")))
+
 
 if __name__ == "__main__":
     unittest.main()
