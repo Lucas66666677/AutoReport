@@ -12,7 +12,8 @@
     "test:e2e": "playwright test",
     "test:e2e:install": "playwright install chromium",
     "test:staging:rls": "node --env-file=../.env.staging.local scripts/supabase-rls-staging.mjs",
-    "typecheck": "tsc -b"
+    "typecheck": "tsc -b",
+    "test:rls:matrix": "node scripts/rls-matrix.mjs"
   },
   "dependencies": {
     "@hocuspocus/provider": "^4.3.0",
@@ -36,6 +37,7 @@
     "yjs": "^13.6.31"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.63.0",
     "@tailwindcss/typography": "^0.5.19",

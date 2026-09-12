@@ -37,6 +37,11 @@ jobs:
         working-directory: frontend
       - run: npm test
         working-directory: frontend
+      # The owner/viewer/editor/anonymous matrix from docs/product/PRODUCT_SPEC.md,
+      # asserted against the real supabase/bringup.sql inside PGlite. No Supabase
+      # project is involved, so it runs on every commit.
+      - run: npm run test:rls:matrix
+        working-directory: frontend
       # Not real endpoints: they only prove the production build refuses to
       # inline a blank, loopback or template value. Deploys supply the real ones.
       # The Supabase reachability probe is gated on VERCEL_ENV=production, which
