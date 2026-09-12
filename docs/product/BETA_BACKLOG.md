@@ -24,7 +24,6 @@ If any P0 exit criterion fails, the release returns to NOT READY.
 | --- | --- | --- |
 | Complete workflow screenshots at 390／768／1024／1440 | Editor overflow passed all widths and 390 px was visually checked; the full auth／dashboard／export journey was not captured at every width | Run the entire journey at the listed widths in Chrome DevTools before invitations |
 | Capture and inspect browser PDF artifact | In-app browser invoked export but did not expose the downloaded file | Download in Chrome／Edge and render every page |
-| Mermaid in DOCX | Pandoc output currently preserves Mermaid source | Pre-render Mermaid to an image for DOCX or document the limitation to students |
 | Storage cleanup on permanent document delete | Service-role cleanup endpoint is implemented and owner-checked | Run a real multi-account staging delete and confirm both buckets are empty for every uploader prefix |
 | Clean database reset automation | Local Supabase CLI is unavailable | Add CI with supabase db reset against an ephemeral project |
 | Error monitoring | Runtime errors are not centrally visible | Add Sentry or equivalent with release tags and PII review |
@@ -45,6 +44,14 @@ If any P0 exit criterion fails, the release returns to NOT READY.
 - Optional sandboxed code execution as a separate isolated service; never restore in-process execution.
 
 ## Completed hardening
+
+- Mermaid diagrams are rendered in the browser and sent to Word as a picture;
+  a diagram that fails to render still falls back to its source.
+- Report images survive the Word export: the app embeds its own private images
+  and the server downloads remote ones, instead of Pandoc fetching URLs itself
+  and embedding a refusal page when a host blocked it.
+- An image copied from a web page can be pasted; the server downloads it when
+  the browser is not allowed to.
 
 - Removed server-side Python execution from render and export paths.
 - Replaced self-managed AI quota writes with service-role RPCs.

@@ -13,10 +13,9 @@ The Closed Beta baseline and current gaps are tracked in docs/product/REQUIREMEN
 
 ## Export improvements
 
-1. Render Mermaid to a deterministic image for Word.
-2. Add a maintained Word reference document with A4 page size and academic styles.
-3. Add page-break fixtures for wide tables and multiple images.
-4. Add citation formatting options.
+1. Add a maintained Word reference document with A4 page size and academic styles.
+2. Add page-break fixtures for wide tables and multiple images.
+3. Add citation formatting options.
 
 ## Optional product expansions
 

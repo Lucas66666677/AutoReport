@@ -96,6 +96,13 @@ import {
 } from './documentVersions'
 import { collectHtmlImageSources, collectImageUrlsFromText, imageMarkdown } from './pastedImages'
 import { collectMarkdownImageUrls, isEmbeddableImageUrl, replaceMarkdownImageUrls } from './exportImages'
+import {
+  collectMermaidCharts,
+  mermaidRenderId,
+  parseSvgSize,
+  replaceMermaidCharts,
+  svgToDataUrl,
+} from './mermaidExport'
 import GlobalSearch from './GlobalSearch'
 import TemplateImitationDialog, {
   type ImitationProviderChoice,
@@ -6857,6 +6864,53 @@ function WorkspaceApp({
   // supabase-image:// images (they disappeared from the .docx) and a host that
   // blocks the request ends up embedded as an error page. Resolve everything to
   // data: URIs first; those come back as real images.
+  // Pandoc cannot draw a Mermaid diagram, so Word received the diagram's source
+  // as a code block. The browser can already render it, so hand Word a picture.
+  function svgToPngDataUrl(svg: string): Promise<string> {
+    const { width, height } = parseSvgSize(svg)
+    return new Promise((resolve, reject) => {
+      const image = new Image()
+      image.onload = () => {
+        const canvas = document.createElement('canvas')
+        canvas.width = Math.round(width * 2)
+        canvas.height = Math.round(height * 2)
+        const context = canvas.getContext('2d')
+        if (!context) {
+          reject(new Error('canvas unavailable'))
+          return
+        }
+        context.fillStyle = '#ffffff'
+        context.fillRect(0, 0, canvas.width, canvas.height)
+        context.drawImage(image, 0, 0, canvas.width, canvas.height)
+        resolve(canvas.toDataURL('image/png'))
+      }
+      image.onerror = () => reject(new Error('diagram could not be rasterised'))
+      image.src = svgToDataUrl(svg)
+    })
+  }
+
+  async function renderMermaidForExport(source: string): Promise<string> {
+    const charts = collectMermaidCharts(source)
+    if (charts.length === 0) return source
+
+    const replacements: Record<string, string> = {}
+    try {
+      const { default: mermaid } = await import('mermaid')
+      mermaid.initialize({ startOnLoad: false, theme: 'default', securityLevel: 'strict' })
+      for (const chart of charts) {
+        try {
+          const { svg } = await mermaid.render(mermaidRenderId(), chart)
+          replacements[chart] = await svgToPngDataUrl(svg)
+        } catch {
+          // Leave this diagram as source rather than losing it.
+        }
+      }
+    } catch {
+      return source
+    }
+    return replaceMermaidCharts(source, replacements)
+  }
+
   async function embedImagesForExport(source: string): Promise<{ markdown: string; failed: number }> {
     const urls = collectMarkdownImageUrls(source).filter(isEmbeddableImageUrl)
     if (urls.length === 0) return { markdown: source, failed: 0 }
@@ -6898,7 +6952,8 @@ function WorkspaceApp({
         figures: notePreferences.autoNumberFigures,
         tables: notePreferences.autoNumberTables,
       })
-      const { markdown: exportReady, failed: unembeddedImages } = await embedImagesForExport(exportMarkdown)
+      const withDiagrams = await renderMermaidForExport(exportMarkdown)
+      const { markdown: exportReady, failed: unembeddedImages } = await embedImagesForExport(withDiagrams)
       if (unembeddedImages > 0) {
         setBridgeToast(`有 ${unembeddedImages} 張外部圖片無法內嵌，匯出的檔案裡可能看不到`)
       }

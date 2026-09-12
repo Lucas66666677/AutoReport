@@ -440,7 +440,7 @@ IMAGE_FETCH_MAX_PER_EXPORT = 30
 # Some hosts reject the default urllib agent outright; that rejection is what used
 # to be embedded in the .docx instead of the picture.
 IMAGE_FETCH_USER_AGENT = (
-    "Mozilla/5.0 (compatible; AutoLabReport/1.0; +https://autolabreport.lucirel.com)"
+    f"Mozilla/5.0 (compatible; AutoLabReport/1.0; +{PRODUCTION_ORIGIN})"
 )
 EXPORT_IMAGE_UNAVAILABLE = "*（圖片無法載入）*"
 _MARKDOWN_IMAGE_PATTERN = re.compile(r"!\[[^\]]*\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
