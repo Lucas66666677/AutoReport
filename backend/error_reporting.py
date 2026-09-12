@@ -109,7 +109,7 @@ def _post_envelope(url: str, body: str) -> None:
         logger.debug("Could not deliver error report.")
 
 
-def report_exception(error: BaseException, context: dict[str, Any] | None = None) -> bool:
+def _report_exception_unguarded(error: BaseException, context: dict[str, Any] | None = None) -> bool:
     """Report in the background. Returns whether a report was actually sent."""
     dsn = parse_sentry_dsn(os.getenv("SENTRY_DSN"))
     if dsn is None:
@@ -129,6 +129,21 @@ def report_exception(error: BaseException, context: dict[str, Any] | None = None
     )
     thread.start()
     return True
+
+
+def report_exception(error: BaseException, context: dict[str, Any] | None = None) -> bool:
+    """Never raises: a failed report must not replace the error being reported.
+
+    The middleware and the export paths call this from inside an `except` block and
+    then re-raise. If reporting threw there -- a malformed envelope, no thread
+    available -- it would mask the original failure, which is the exact opposite of
+    what this module exists to do.
+    """
+    try:
+        return _report_exception_unguarded(error, context)
+    except Exception:
+        logger.debug("Error reporting failed; keeping the original exception.")
+        return False
 
 
 def error_reporting_configured() -> bool:
