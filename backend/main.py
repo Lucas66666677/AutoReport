@@ -33,7 +33,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from error_reporting import report_exception
+from error_reporting import error_reporting_configured, report_exception
 
 load_dotenv(Path(__file__).with_name(".env"))
 
@@ -2096,7 +2096,7 @@ def health():
 # backend/tests/test_release_preflight.py fails closed when code and
 # deployment guidance drift apart.
 READINESS_REQUIRED_CHECKS = ("supabase", "encryption", "pandoc")
-READINESS_OPTIONAL_CHECKS = ("built_in_ai",)
+READINESS_OPTIONAL_CHECKS = ("built_in_ai", "error_monitoring")
 
 
 def _encryption_ready() -> bool:
@@ -2128,6 +2128,8 @@ def readiness():
         "encryption": _encryption_ready(),
         "pandoc": _pandoc_ready(),
         "built_in_ai": groq_client is not None or gemini_client is not None,
+        # Whether a DSN is configured, never the DSN itself.
+        "error_monitoring": error_reporting_configured(),
     }
 
     # Names only: the response says which required configuration is absent and
