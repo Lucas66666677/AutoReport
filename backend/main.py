@@ -42,7 +42,7 @@ app = FastAPI(title="AutoLabReport API", version="0.4.0")
 # The deployed frontend origin is part of the *default* list, not only of the
 # CORS_ALLOWED_ORIGINS override. The default was localhost-only, and the live
 # Render service does not set the variable, so every browser call from
-# https://auto-report-one.vercel.app to this API was answered with
+# https://autolabreport.lucirel.com to this API was answered with
 # "400 Disallowed CORS origin" -- the deployed frontend could not reach the
 # deployed backend at all. Allowing exactly the one origin this product is
 # served from is what a correct CORS_ALLOWED_ORIGINS already does, not a
@@ -50,7 +50,7 @@ app = FastAPI(title="AutoLabReport API", version="0.4.0")
 # CORS_ALLOWED_ORIGINS still replaces this list entirely.
 #
 # Same origin the browser extension is scoped to in extension/manifest.json.
-PRODUCTION_ORIGIN = "https://auto-report-one.vercel.app"
+PRODUCTION_ORIGIN = "https://autolabreport.lucirel.com"
 DEFAULT_ALLOWED_ORIGINS = (
     PRODUCTION_ORIGIN,
     "http://localhost:5173",

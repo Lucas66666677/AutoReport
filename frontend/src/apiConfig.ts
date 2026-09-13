@@ -19,7 +19,7 @@ export const LOCAL_DEV_API_BASE_URL = 'http://localhost:8000'
  * all: the catch-all rewrite in frontend/vercel.json answers them 200 with the
  * app shell, so `res.ok` is true and the HTML only fails later, as a parse error.
  */
-export const PUBLIC_SITE_ORIGIN = 'https://auto-report-one.vercel.app'
+export const PUBLIC_SITE_ORIGIN = 'https://autolabreport.lucirel.com'
 
 export type ApiBaseUrlEnv = {
   VITE_API_URL?: string
