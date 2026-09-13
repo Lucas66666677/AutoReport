@@ -103,6 +103,7 @@ import {
   replaceMermaidCharts,
   svgToDataUrl,
 } from './mermaidExport'
+import { buildSupportMailto, currentSupportContext } from './supportContact'
 import GlobalSearch from './GlobalSearch'
 import TemplateImitationDialog, {
   type ImitationProviderChoice,
@@ -1126,7 +1127,9 @@ function DocumentSidebar({
     },
     {
       id: 'about',
-      label: '關於',
+      // Named for what it does. A student whose export just failed does not look
+      // under 關於, and there is no About page for it to open.
+      label: '回報問題',
       icon: Info,
       isActive: false,
       onClick: onOpenFeedback,
@@ -6862,7 +6865,8 @@ function WorkspaceApp({
   }
 
   function openFeedback() {
-    window.location.href = 'mailto:?subject=AutoLabReport%20%E5%8F%8D%E9%A5%8B'
+    // Previously this had no recipient at all, so the report went nowhere.
+    window.location.href = buildSupportMailto(currentSupportContext(displayedEditorViewMode))
   }
 
   // Pandoc fetches image URLs itself, so it never sees the app's private

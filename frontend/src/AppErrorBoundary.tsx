@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { reportError } from './errorReporting'
+import { SUPPORT_EMAIL, buildSupportMailto } from './supportContact'
 
 type AppErrorBoundaryProps = {
   children: ReactNode
@@ -46,7 +47,14 @@ export default class AppErrorBoundary extends Component<
           </p>
           <h1 className="mt-4 text-2xl font-semibold tracking-tight">畫面載入失敗</h1>
           <p className="mt-3 text-sm leading-6 text-slate-500">
-            草稿仍保留在這台瀏覽器。請重新載入；若問題持續，請聯絡 Beta 支援窗口。
+            草稿仍保留在這台瀏覽器。請重新載入；若問題持續，請來信{' '}
+            <a
+              className="font-medium text-slate-900 underline underline-offset-2"
+              href={buildSupportMailto({ activity: 'error boundary' })}
+            >
+              {SUPPORT_EMAIL}
+            </a>
+            。
           </p>
           <button
             type="button"
