@@ -3,7 +3,7 @@ const DEFAULT_SETTINGS = {
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://127.0.0.1:4174",
-    "https://auto-report-one.vercel.app",
+    "https://autolabreport.lucirel.com",
   ],
   preferredAiHost: "auto",
   autoReturn: false,

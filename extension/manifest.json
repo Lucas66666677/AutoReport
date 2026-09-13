@@ -18,7 +18,7 @@
     "*://copilot.microsoft.com/*",
     "http://localhost/*",
     "http://127.0.0.1/*",
-    "https://auto-report-one.vercel.app/*"
+    "https://autolabreport.lucirel.com/*"
   ],
   "action": {
     "default_title": "AutoLabReport Bridge",
@@ -57,7 +57,7 @@
       "matches": [
         "http://localhost/*",
         "http://127.0.0.1/*",
-        "https://auto-report-one.vercel.app/*"
+        "https://autolabreport.lucirel.com/*"
       ],
       "js": ["content.js"],
       "run_at": "document_idle"

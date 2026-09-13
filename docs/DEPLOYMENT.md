@@ -199,7 +199,7 @@ Every production build now publishes Vercel's own `VERCEL_GIT_COMMIT_SHA` in two
 places:
 
 ```bash
-curl -fsS https://auto-report-one.vercel.app/version.json
+curl -fsS https://autolabreport.lucirel.com/version.json
 ```
 
 ```json
@@ -207,7 +207,7 @@ curl -fsS https://auto-report-one.vercel.app/version.json
 ```
 
 ```bash
-curl -sS https://auto-report-one.vercel.app/ | grep build-revision
+curl -sS https://autolabreport.lucirel.com/ | grep build-revision
 ```
 
 ```html
@@ -230,7 +230,7 @@ app shell. A check that reads only the status code calls that a success.
 That is why the document names its own artifact. The check that works:
 
 ```bash
-curl -fsS https://auto-report-one.vercel.app/version.json \
+curl -fsS https://autolabreport.lucirel.com/version.json \
   | jq -er 'select(.artifact == "autolabreport-frontend") | .revision'
 ```
 
@@ -303,7 +303,7 @@ is a promotion, not a rebuild.
 
 1. **Record what is live now**, before touching anything:
    ```bash
-   curl -fsS https://auto-report-one.vercel.app/version.json
+   curl -fsS https://autolabreport.lucirel.com/version.json
    ```
    Without this the bad revision is unrecoverable once the alias moves — that is
    the state this repository was in until now, and it is why the previous

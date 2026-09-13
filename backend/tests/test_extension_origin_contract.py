@@ -253,7 +253,7 @@ class ManifestGrantsNoHostBeyondTheContractTests(unittest.TestCase):
         for host, pattern in (
             ("*", "*://*/*"),
             ("*.vercel.app", "*://*.vercel.app/*"),
-            ("auto-report-one.vercel.app", "https://auto-report-one.vercel.app/*"),
+            ("autolabreport.lucirel.com", "https://autolabreport.lucirel.com/*"),
         ):
             with self.subTest(pattern=pattern):
                 self.assertEqual(parsed(pattern).group("host"), host)
