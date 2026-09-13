@@ -1360,7 +1360,7 @@ function DocumentSidebar({
   }
 
   return (
-    <aside className="flex w-72 shrink-0 flex-col border-r border-slate-200/80 bg-slate-50 text-slate-700">
+    <aside className="flex h-full min-h-0 w-72 shrink-0 flex-col overflow-hidden border-r border-slate-200/80 bg-slate-50 text-slate-700">
       <div className="flex items-center justify-between px-5 py-5">
         <BrandLockup size="compact" surface="light" />
         <div className="flex items-center gap-1">
@@ -1386,6 +1386,9 @@ function DocumentSidebar({
         </button>
       </div>
 
+      {/* Nav and recents share one scroll region; as a fixed sibling the nav
+          squeezed the recents list to 24px and pushed the column past the window. */}
+      <div className={`min-h-0 flex-1 overflow-y-auto ${SCROLLBAR_HIDE}`}>
       <nav className="space-y-6 px-3 pb-3">
         <section className="space-y-1">
           {renderNavItem({
@@ -1476,7 +1479,7 @@ function DocumentSidebar({
         </section>
       </nav>
 
-      <div className={`min-h-0 flex-1 overflow-auto px-3 py-3 ${SCROLLBAR_HIDE}`}>
+      <div className="px-3 py-3">
         {isProjectTreeOpen && (
           <>
             <div className="mb-3 flex items-center justify-between px-2">
@@ -1513,6 +1516,7 @@ function DocumentSidebar({
             </section>
           </>
         )}
+      </div>
       </div>
 
       <div className="border-t border-slate-200/80 p-3">
@@ -7847,7 +7851,7 @@ function WorkspaceApp({
   ]
 
   return (
-    <div className="flex h-full min-h-screen bg-slate-50 font-sans text-slate-800">
+    <div className="flex h-screen overflow-hidden bg-slate-50 font-sans text-slate-800">
       <input
         ref={editorImportInputRef}
         type="file"
