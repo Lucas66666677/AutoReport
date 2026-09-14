@@ -163,3 +163,50 @@ test('a Mermaid diagram renders in the preview', async ({ page }) => {
   await page.getByRole('button', { name: 'Preview 模式' }).click()
   await expect(page.locator('.markdown-mermaid svg')).toBeVisible({ timeout: 30_000 })
 })
+
+// Monaco owns the paste event. Since 0.55 it replaced its hidden textarea with a
+// NativeEditContext and now intercepts `paste` with a CAPTURE listener on `document`
+// that stops propagation, so nothing below that point -- not the editor's own DOM
+// node, where this app's listener used to sit, not even the element the paste
+// targeted -- ever sees it. Every conversion the editor does on paste (images,
+// HTML tables, TSV) quietly stopped running, and for an image that means nothing at
+// all appears.
+//
+// The unit tests kept passing throughout: they cover the converters, and the
+// converters were never broken. Only the wiring was. That is what this pins.
+test('pasting an image into the editor inserts image markdown', async ({ page }) => {
+  await openBlankReport(page)
+  await page.waitForFunction(() => window.monaco?.editor?.getModels?.().length === 1)
+
+  const inserted = await page.evaluate(async () => {
+    const model = window.monaco.editor.getModels()[0]
+    model.setValue('')
+
+    // Monaco's input surface: a NativeEditContext div since 0.55, a hidden textarea
+    // before it. Accept either so a version bump fails loudly here rather than
+    // silently skipping the assertion.
+    const target = document
+      .querySelector('.monaco-editor')
+      ?.querySelector<HTMLElement>('.native-edit-context, textarea.inputarea')
+    if (!target) throw new Error('no Monaco input surface found')
+    target.focus()
+
+    const png = Uint8Array.from(
+      atob(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+      ),
+      (character) => character.charCodeAt(0),
+    )
+    const data = new DataTransfer()
+    data.items.add(new File([png], 'screenshot.png', { type: 'image/png' }))
+    target.dispatchEvent(
+      new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }),
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 2_000))
+    return model.getValue()
+  })
+
+  // A guest has no cloud storage, so the upload falls back to an inline data URL.
+  expect(inserted).toMatch(/^!\[pasted-image\]\(data:image\/png;base64,/)
+})

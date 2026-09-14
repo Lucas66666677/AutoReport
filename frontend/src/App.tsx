@@ -6157,6 +6157,33 @@ function WorkspaceApp({
     insertAtCursor(table)
   }
 
+  // Monaco 0.55 replaced the hidden textarea with a NativeEditContext, and it now
+  // intercepts `paste` with a CAPTURE listener on `document` that calls
+  // stopPropagation. Nothing below that point ever sees the event -- not the
+  // editor's own DOM node, not the element the paste actually targeted, and no
+  // bubble phase at all. This listener used to sit on the editor node, so since
+  // that upgrade every paste we convert (images, HTML tables, TSV) fell straight
+  // through to Monaco's plain-text handling, which for an image means nothing at
+  // all is inserted.
+  //
+  // `window` is the one place still upstream: its capture phase runs before
+  // `document`'s, so handleEditorPaste sees the event first, and the
+  // preventDefault/stopPropagation it already does for the cases it handles
+  // suppresses Monaco's own paste. Pastes it does not handle are left alone and
+  // reach Monaco untouched.
+  function listenForEditorPaste(editorDomNode: HTMLElement | null): () => void {
+    const onPaste = (event: ClipboardEvent) => {
+      // A window-wide listener hears every paste on the page, so ignore the ones
+      // aimed at the title field, the search box, or any other input.
+      const target = event.target
+      if (!editorDomNode || !(target instanceof Node) || !editorDomNode.contains(target)) return
+      handleEditorPaste(event)
+    }
+
+    window.addEventListener('paste', onPaste, true)
+    return () => window.removeEventListener('paste', onPaste, true)
+  }
+
   function handleSmartFormat() {
     if (!canEditActiveDocument) {
       setBridgeToast('此文件目前為唯讀模式，無法修改內容')
@@ -8703,9 +8730,7 @@ function WorkspaceApp({
                     })
 
                     editorPasteCleanupRef.current?.()
-                    const editorDomNode = ed.getDomNode()
-                    editorDomNode?.addEventListener('paste', handleEditorPaste)
-                    editorPasteCleanupRef.current = () => editorDomNode?.removeEventListener('paste', handleEditorPaste)
+                    editorPasteCleanupRef.current = listenForEditorPaste(ed.getDomNode())
                     updateLocalCursorAwareness(ed)
                     updateEditorStats(ed)
                   }}
