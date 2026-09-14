@@ -210,3 +210,66 @@ test('pasting an image into the editor inserts image markdown', async ({ page })
   // A guest has no cloud storage, so the upload falls back to an inline data URL.
   expect(inserted).toMatch(/^!\[pasted-image\]\(data:image\/png;base64,/)
 })
+
+// A student pasting an answer from Gemini or ChatGPT got the table and lost the
+// report. The paste handler extracted the first thing it recognised -- a table, or an
+// image, and AI sites put icons in their markup -- inserted that, and discarded
+// everything around it. Measured: 147 characters of answer became 62 of table.
+//
+// It only surfaced when the paste listener started being reached again: these
+// branches had been unreachable while Monaco swallowed the event, so they ran against
+// real AI clipboard payloads for the first time in a long while.
+//
+// A converter may now claim a paste only when it accounts for essentially all of it.
+test('pasting an AI answer keeps the whole answer, not just its table', async ({ page }) => {
+  await openBlankReport(page)
+  await page.waitForFunction(() => window.monaco?.editor?.getModels?.().length === 1)
+
+  const pasted = await page.evaluate(async () => {
+    const model = window.monaco.editor.getModels()[0]
+    model.setValue('')
+
+    const target = document
+      .querySelector('.monaco-editor')
+      ?.querySelector<HTMLElement>('.native-edit-context, textarea.inputarea')
+    if (!target) throw new Error('no Monaco input surface found')
+    target.focus()
+
+    // Both flavours an AI chat puts on the clipboard: rich HTML, and a plain-text
+    // twin that is already good Markdown. The HTML carries an icon as well as a
+    // table, because each used to be enough on its own to discard the answer.
+    const plain = [
+      '## RC 電路分析',
+      '',
+      '時間常數決定電容充放電的速率。',
+      '',
+      '| t (ms) | V (V) |',
+      '| --- | --- |',
+      '| 0.0 | 5.00 |',
+      '',
+      '希望這些對你的報告有幫助。',
+    ].join('\n')
+
+    const html =
+      '<div><img src="https://cdn.example.test/logo.png" width="16">' +
+      '<h2>RC 電路分析</h2><p>時間常數決定電容充放電的速率。</p>' +
+      '<table><thead><tr><th>t (ms)</th><th>V (V)</th></tr></thead>' +
+      '<tbody><tr><td>0.0</td><td>5.00</td></tr></tbody></table>' +
+      '<p>希望這些對你的報告有幫助。</p></div>'
+
+    const data = new DataTransfer()
+    data.setData('text/html', html)
+    data.setData('text/plain', plain)
+    target.dispatchEvent(
+      new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }),
+    )
+
+    await new Promise((resolve) => setTimeout(resolve, 2_000))
+    return model.getValue()
+  })
+
+  expect(pasted).toContain('RC 電路分析')
+  expect(pasted).toContain('時間常數決定電容充放電的速率。')
+  expect(pasted).toContain('| t (ms) | V (V) |')
+  expect(pasted).toContain('希望這些對你的報告有幫助。')
+})
