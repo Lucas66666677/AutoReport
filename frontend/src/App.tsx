@@ -96,6 +96,7 @@ import {
 } from './documentVersions'
 import { collectHtmlImageSources, collectImageUrlsFromText, imageMarkdown } from './pastedImages'
 import { shrinkPastedImage } from './pastedImageSize'
+import { isEssentiallyImagesOnly, isEssentiallyOneTable } from './pasteScope'
 import { collectMarkdownImageUrls, isEmbeddableImageUrl, replaceMarkdownImageUrls } from './exportImages'
 import {
   collectMermaidCharts,
@@ -6129,28 +6130,40 @@ function WorkspaceApp({
     }
 
     const pastedHtml = event.clipboardData?.getData('text/html') ?? ''
-    const htmlTable = convertHtmlTableToMarkdown(pastedHtml)
-    if (htmlTable) {
-      event.preventDefault()
-      event.stopPropagation()
-      insertAtCursor(htmlTable)
-      return
+
+    // A converter may claim the paste only when it accounts for essentially all of it.
+    // Copying a table from a page is one thing; copying an AI answer that happens to
+    // contain a table is another, and claiming the second discards the answer around
+    // it. ChatGPT and Gemini also put a plain-text twin on the clipboard that is
+    // already good Markdown, so falling through is not a loss -- it is the better
+    // result. See pasteScope.ts.
+    if (isEssentiallyOneTable(pastedHtml)) {
+      const htmlTable = convertHtmlTableToMarkdown(pastedHtml)
+      if (htmlTable) {
+        event.preventDefault()
+        event.stopPropagation()
+        insertAtCursor(htmlTable)
+        return
+      }
     }
 
-    const htmlImageSources = collectHtmlImageSources(pastedHtml)
-    if (htmlImageSources.length > 0) {
-      event.preventDefault()
-      event.stopPropagation()
-      void importImagesFromUrls(htmlImageSources)
-      return
-    }
+    // Likewise for images: a copied picture, not an answer with an icon in its markup.
+    if (isEssentiallyImagesOnly(pastedHtml)) {
+      const htmlImageSources = collectHtmlImageSources(pastedHtml)
+      if (htmlImageSources.length > 0) {
+        event.preventDefault()
+        event.stopPropagation()
+        void importImagesFromUrls(htmlImageSources)
+        return
+      }
 
-    const htmlImages = convertHtmlImagesToMarkdown(pastedHtml)
-    if (htmlImages) {
-      event.preventDefault()
-      event.stopPropagation()
-      insertAtCursor(htmlImages)
-      return
+      const htmlImages = convertHtmlImagesToMarkdown(pastedHtml)
+      if (htmlImages) {
+        event.preventDefault()
+        event.stopPropagation()
+        insertAtCursor(htmlImages)
+        return
+      }
     }
 
     const pastedText = event.clipboardData?.getData('text/plain') ?? ''
