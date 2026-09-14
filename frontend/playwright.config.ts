@@ -1,4 +1,6 @@
 import { defineConfig, devices } from '@playwright/test'
+import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 // The browser journey nobody was running: RELEASE_READINESS records the guest flow
 // and the PDF as manual steps, so a regression in either was only ever found by hand.
@@ -7,7 +9,22 @@ import { defineConfig, devices } from '@playwright/test'
 
 const PORT = Number(process.env.E2E_PORT ?? 5174)
 const API_PORT = Number(process.env.E2E_API_PORT ?? 8012)
-const PYTHON = process.env.E2E_PYTHON ?? 'python'
+// These tests start the REAL backend, so they need a Python that has the backend's
+// dependencies installed. A local checkout puts them in backend/.venv (.gitignore
+// already names that path); CI installs requirements.txt onto the system Python and
+// creates no venv, so the plain `python` fallback is what runs there. Without this,
+// a local run started the system Python, uvicorn was missing, the API never came up,
+// and only the export tests failed -- which reads like a broken export rather than a
+// missing environment.
+const VENV_PYTHON = fileURLToPath(
+  new URL(
+    process.platform === 'win32'
+      ? '../backend/.venv/Scripts/python.exe'
+      : '../backend/.venv/bin/python',
+    import.meta.url,
+  ),
+)
+const PYTHON = process.env.E2E_PYTHON ?? (existsSync(VENV_PYTHON) ? VENV_PYTHON : 'python')
 
 export default defineConfig({
   testDir: './e2e',
@@ -27,7 +44,8 @@ export default defineConfig({
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: [
     {
-      command: `${PYTHON} -m uvicorn main:app --host 127.0.0.1 --port ${API_PORT}`,
+      // Quoted: the venv path is absolute and a home directory may contain spaces.
+      command: `"${PYTHON}" -m uvicorn main:app --host 127.0.0.1 --port ${API_PORT}`,
       cwd: '../backend',
       url: `http://127.0.0.1:${API_PORT}/api/health`,
       reuseExistingServer: !process.env.CI,

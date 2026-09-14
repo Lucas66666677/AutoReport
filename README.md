@@ -87,6 +87,7 @@ npm run typecheck
 npm run lint
 npm test -- --run
 npm run build
+npx playwright test
 
 cd D:\AutoLabReport\backend
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
@@ -97,6 +98,8 @@ npm run check:local
 npm run audit:prod
 git diff --check
 ~~~
+
+`npx playwright test` 会自己带起前端与**真实后端**（Word／PDF 导出要用到 Pandoc，不是 mock），因此依赖上面那步建好的 `backend\.venv`；找不到时会退回系统 `python`，CI 正是这样跑的。本机若没建 venv，只有导出相关的用例会超时失败，看起来像导出坏了，其实是环境没装。
 
 `check:local` 會執行各服務的靜態檢查、測試與正式建置，不要求本機已填入部署密鑰或正在運行後端。`check:deploy` 另會嚴格檢查目標環境變數與後端 health／readiness，應在 staging 或 production preflight 使用。
 
