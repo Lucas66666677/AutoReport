@@ -95,6 +95,7 @@ import {
   type DocumentVersionRow,
 } from './documentVersions'
 import { collectHtmlImageSources, collectImageUrlsFromText, imageMarkdown } from './pastedImages'
+import { shrinkPastedImage } from './pastedImageSize'
 import { collectMarkdownImageUrls, isEmbeddableImageUrl, replaceMarkdownImageUrls } from './exportImages'
 import {
   collectMermaidCharts,
@@ -6065,16 +6066,26 @@ function WorkspaceApp({
 
   async function importImagesFromUrls(urls: string[]) {
     setBridgeToast(urls.length > 1 ? `正在處理 ${urls.length} 張圖片...` : '正在處理圖片...')
-    let keptRemote = 0
-    const markdown: string[] = []
-    for (const url of urls.slice(0, 8)) {
-      try {
-        markdown.push(imageMarkdown(await uploadPastedImage(await fetchPastedImageFile(url))))
-      } catch {
-        keptRemote += 1
-        markdown.push(imageMarkdown(url))
-      }
-    }
+
+    // Copying an AI answer brings its figures along, so this runs with several images
+    // far more often than one. It used to await each image in turn -- download, then
+    // upload, then the next -- which measured 10.8 s for five images: 2.2 s each,
+    // spent almost entirely waiting. They do not depend on each other, so they go
+    // together. Promise.all keeps the results in the order they were pasted, and
+    // storage paths carry a random UUID, so concurrent uploads cannot collide.
+    const results = await Promise.all(
+      urls.slice(0, 8).map(async (url) => {
+        try {
+          const file = await shrinkPastedImage(await fetchPastedImageFile(url))
+          return { markdown: imageMarkdown(await uploadPastedImage(file)), keptRemote: false }
+        } catch {
+          return { markdown: imageMarkdown(url), keptRemote: true }
+        }
+      }),
+    )
+
+    const markdown = results.map((result) => result.markdown)
+    const keptRemote = results.filter((result) => result.keptRemote).length
     if (markdown.length === 0) return
     insertAtCursor(markdown.join('\n\n'))
     if (keptRemote > 0) {
@@ -6094,21 +6105,26 @@ function WorkspaceApp({
       event.preventDefault()
       event.stopPropagation()
       setBridgeToast(supabase && user ? '正在上傳圖片...' : '正在處理圖片...')
-      void uploadPastedImage(imageFile)
-        .then((imageUrl) => {
-          if (!imageUrl) return
-          insertAtCursor(`![pasted-image](${imageUrl})`)
-          setBridgeToast(supabase && user ? '圖片已上傳並貼上' : '圖片已貼上為 Markdown')
-        })
-        .catch(async () => {
-          try {
-            const dataUrl = await readFileAsDataUrl(imageFile)
-            insertAtCursor(`![pasted-image](${dataUrl})`)
-            setBridgeToast('雲端上傳失敗，已改用本地 base64 貼上')
-          } catch {
-            setBridgeToast('圖片貼上失敗')
-          }
-        })
+      // Shrink before anything else touches it: a full-resolution screenshot is what
+      // makes this slow, whether it is being uploaded or inlined as base64.
+      void shrinkPastedImage(imageFile)
+        .then((file) =>
+          uploadPastedImage(file)
+            .then((imageUrl) => {
+              if (!imageUrl) return
+              insertAtCursor(`![pasted-image](${imageUrl})`)
+              setBridgeToast(supabase && user ? '圖片已上傳並貼上' : '圖片已貼上為 Markdown')
+            })
+            .catch(async () => {
+              try {
+                const dataUrl = await readFileAsDataUrl(file)
+                insertAtCursor(`![pasted-image](${dataUrl})`)
+                setBridgeToast('雲端上傳失敗，已改用本地 base64 貼上')
+              } catch {
+                setBridgeToast('圖片貼上失敗')
+              }
+            }),
+        )
       return
     }
 
