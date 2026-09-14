@@ -315,9 +315,17 @@ class EditorUxContractTests(unittest.TestCase):
         source = _text(APP)
         self.assertIn("collectHtmlImageSources(pastedHtml)", source)
         self.assertIn("collectImageUrlsFromText(pastedText)", source)
-        body = _function_body(source, "async function importImagesFromUrls(", 1200)
-        self.assertIn("uploadPastedImage(await fetchPastedImageFile(url))", body)
+        body = _function_body(source, "async function importImagesFromUrls(", 2200)
+        # Every address is downloaded and then stored. Asserted as two separate calls
+        # rather than one nested expression: they were written nested, and pinning that
+        # spelling failed the build for a change that kept both calls and only moved
+        # them a line apart.
+        self.assertIn("fetchPastedImageFile(url)", body)
+        self.assertIn("uploadPastedImage(", body)
         self.assertIn("無法下載", body)
+        # The images are fetched together. Serially they measured 2.2 s each, so a
+        # pasted AI answer carrying five figures blocked the editor for 10.8 s.
+        self.assertIn("Promise.all(", body)
         helpers = _text(SRC / "pastedImages.ts")
         self.assertIn("export function collectHtmlImageSources", helpers)
         self.assertIn("export function collectImageUrlsFromText", helpers)
