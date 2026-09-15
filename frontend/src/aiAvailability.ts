@@ -32,9 +32,11 @@ export type AiAvailabilityInput = {
   quotaRemaining: number | null
 }
 
+// Built-in AI and an own API key both need an account, but AI as a whole does not:
+// a guest can carry the prompt to their own ChatGPT, Claude or Gemini (aiHandoff.ts).
 export const SIGN_IN_BLOCK: AiBlock = {
-  title: 'AI 功能需要登入後使用',
-  detail: '內建 AI 每天有免費額度，額度記在帳號上；自備 API Key 也加密存在帳號裡，所以兩者都要先登入。',
+  title: '內建 AI 需要登入後使用',
+  detail: '每日額度記在帳號上，自備 API Key 也加密存在帳號裡。不想登入，也可以在任務中改用你自己的 ChatGPT、Claude、Gemini 等 AI。',
   action: 'sign-in',
 }
 

@@ -294,22 +294,23 @@ test('a guest is told AI needs sign-in before starting, and no doomed request is
   // AI Agent: the reason is in the header, visible on open, and the run button is off.
   await page.getByRole('button', { name: 'AI Agent', exact: true }).click()
   const agent = page.locator('aside').filter({ has: page.getByRole('heading', { name: 'AI Agent' }) })
-  await expect(agent.locator('header').getByRole('status')).toContainText('AI 功能需要登入後使用')
+  await expect(agent.locator('header').getByRole('status')).toContainText('內建 AI 需要登入後使用')
   await expect(agent.locator('header').getByRole('button', { name: '登入' })).toBeVisible()
-  await expect(agent.getByText('無法執行：AI 功能需要登入後使用')).toBeVisible()
+  await expect(agent.getByText('無法執行：內建 AI 需要登入後使用')).toBeVisible()
   await page.getByRole('button', { name: '關閉 AI Agent' }).click()
 
   // AI Assist: no green light for a guest.
   await page.getByRole('button', { name: 'AI Assist', exact: true }).click()
   const assist = page.locator('aside').filter({ has: page.getByRole('heading', { name: 'AI Assist' }) })
-  await expect(assist).toContainText('AI 功能需要登入後使用')
+  await expect(assist).toContainText('內建 AI 需要登入後使用')
   await expect(assist.locator('.bg-emerald-500')).toHaveCount(0)
 
-  // An AI-backed task says why it cannot start, and its choices are not dead buttons.
-  await assist.getByRole('button', { name: /^生成報告/ }).click()
+  // A task that calls built-in AI straight away says why it cannot start, and its
+  // choices are not dead buttons.
+  await assist.getByRole('button', { name: /^整理內容/ }).click()
   await expect(assist.getByRole('button', { name: '開始處理' })).toBeDisabled()
-  await expect(assist.getByRole('status')).toContainText('AI 功能需要登入後使用')
-  await expect(assist.getByRole('button', { name: '實驗數據' })).toHaveCount(0)
+  await expect(assist.getByRole('status')).toContainText('內建 AI 需要登入後使用')
+  await expect(assist.getByRole('button', { name: '正式結報' })).toHaveCount(0)
 
   // A task that runs in the browser still works for a guest.
   await assist.getByRole('button', { name: '← 返回任務' }).click()
@@ -317,4 +318,109 @@ test('a guest is told AI needs sign-in before starting, and no doomed request is
   await expect(assist.getByRole('button', { name: '開始處理' })).toBeEnabled()
 
   expect(aiRequests).toEqual([])
+})
+
+// Use your own AI: the student carries the prompt to ChatGPT, Claude, Gemini and the
+// rest -- web or desktop -- and the answer back. It needs no account, so it is how a
+// guest uses AI at all, and an outside answer must meet the same rules as built-in AI:
+// the Agent's answer goes through the server's parser and numeric guard, and a rewrite
+// that changes a number is refused.
+
+const HANDOFF_REPORT = '# RC 電路實驗\n\n## 數據\n\n| 電壓 | 電流 |\n|---|---|\n| 12 V | 3 mA |\n'
+
+test('a guest can run the Agent through their own AI, and a data-changing answer is withheld', async ({ page }) => {
+  await page.context().grantPermissions(['clipboard-read', 'clipboard-write'])
+  await openBlankReport(page)
+  await writeReport(page, HANDOFF_REPORT)
+
+  await page.getByRole('button', { name: 'AI Agent', exact: true }).click()
+  const agent = page.locator('aside').filter({ has: page.getByRole('heading', { name: 'AI Agent' }) })
+  const panel = agent.getByRole('region', { name: '用你自己的 AI' })
+
+  await panel.getByRole('button', { name: 'ChatGPT', exact: true }).click()
+
+  // The site opens as a real link in a new tab, never with the report in its URL.
+  const open = panel.getByRole('link', { name: '打開 ChatGPT ↗' })
+  await expect(open).toHaveAttribute('href', 'https://chatgpt.com/')
+  await expect(open).toHaveAttribute('target', '_blank')
+
+  // The copied prompt is the server's Agent prompt, carrying the report.
+  await panel.getByRole('button', { name: '複製 prompt' }).click()
+  await expect(panel.getByRole('button', { name: '已複製 ✓' })).toBeVisible()
+  const copied = await page.evaluate(() => navigator.clipboard.readText())
+  expect(copied).toContain('12 V')
+  expect(copied).toContain('JSON')
+
+  // What copying a ChatGPT answer really gives you: chatter around a fenced block.
+  const answer =
+    '好的！以下是審閱結果：\n\n```json\n' +
+    JSON.stringify({ findings: ['缺少實驗目的與結論'], checklist: [{ label: '結論', status: 'fail', note: '沒有結論' }] }) +
+    '\n```\n\n希望有幫助！'
+  await panel.getByLabel('AI 的回答').fill(answer)
+  await panel.getByRole('button', { name: '使用這個回答' }).click()
+  await expect(agent).toContainText('缺少實驗目的與結論')
+
+  // An answer that changes the data keeps its review but loses its edit.
+  await panel.getByRole('button', { name: 'Claude', exact: true }).click()
+  await panel
+    .getByLabel('AI 的回答')
+    .fill(JSON.stringify({ findings: ['單位不一致'], proposed_markdown: HANDOFF_REPORT.replace('12 V', '15 V') }))
+  await panel.getByRole('button', { name: '使用這個回答' }).click()
+  await expect(agent).toContainText('AI 建議的修改更動了原文的數字或單位')
+})
+
+test('a guest can generate an outline through their own AI', async ({ page }) => {
+  await openBlankReport(page)
+
+  await page.getByRole('button', { name: 'AI Assist', exact: true }).click()
+  const assist = page.locator('aside').filter({ has: page.getByRole('heading', { name: 'AI Assist' }) })
+  await assist.getByRole('button', { name: /^生成報告/ }).click()
+  // Starting only opens the brief form, so a guest may.
+  await assist.getByRole('button', { name: '開始處理' }).click()
+
+  const form = page.locator('div.fixed.inset-0.z-50').filter({ hasText: '生成報告大綱' })
+  await expect(form.getByRole('button', { name: '產生大綱' })).toBeDisabled()
+  await form.getByPlaceholder('例如：RC 電路暫態響應').fill('RC 電路暫態響應')
+
+  const panel = form.getByRole('region', { name: '用你自己的 AI' })
+  await panel.getByRole('button', { name: 'Gemini', exact: true }).click()
+  await panel.getByRole('button', { name: '查看' }).click()
+  await expect(panel.getByLabel('要複製的 prompt')).toHaveValue(/RC 電路暫態響應/)
+
+  // Asked for Markdown, chat sites wrap the whole answer in a fence; it must not land as a code block.
+  await panel.getByLabel('AI 的回答').fill('```markdown\n# RC 電路暫態響應\n\n## 實驗目的\n\n## 實驗數據\n```')
+  await panel.getByRole('button', { name: '使用這個回答' }).click()
+
+  const review = page.locator('div.fixed').filter({ hasText: '確認 AI 報告大綱' }).last()
+  await expect(review).toContainText('實驗目的')
+  await expect(review).not.toContainText('```')
+})
+
+test('a rewrite from the student\'s own AI that changes a number is refused', async ({ page }) => {
+  await openBlankReport(page)
+  await writeReport(page, '# RC\n\n電壓為 12 V，電流 3 mA，這段需要整理。\n')
+
+  // Select the sentence to tidy, as a student would before opening AI Assist.
+  await page.evaluate(() => {
+    const editor = window.monaco.editor.getEditors()[0]
+    const model = editor.getModel()!
+    editor.focus()
+    editor.setSelection({ startLineNumber: 3, startColumn: 1, endLineNumber: 3, endColumn: model.getLineMaxColumn(3) })
+  })
+
+  await page.getByRole('button', { name: 'AI Assist', exact: true }).click()
+  const assist = page.locator('aside').filter({ has: page.getByRole('heading', { name: 'AI Assist' }) })
+  await assist.getByRole('button', { name: /^整理內容/ }).click()
+
+  const panel = assist.getByRole('region', { name: '用你自己的 AI' })
+  await panel.getByRole('button', { name: 'DeepSeek', exact: true }).click()
+
+  await panel.getByLabel('AI 的回答').fill('實驗量得電壓為 15 V、電流為 3 mA。')
+  await panel.getByRole('button', { name: '使用這個回答' }).click()
+  await expect(panel.getByRole('alert')).toContainText('改動了原文的數字或單位')
+  await expect(page.getByText('確認 AI 重寫')).toHaveCount(0)
+
+  await panel.getByLabel('AI 的回答').fill('實驗量得電壓為 12 V、電流為 3 mA。')
+  await panel.getByRole('button', { name: '使用這個回答' }).click()
+  await expect(page.getByText('確認 AI 重寫')).toBeVisible()
 })

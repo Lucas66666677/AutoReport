@@ -2290,21 +2290,7 @@ def run_agent(body: AgentRunRequest, authorization: str | None = Header(default=
             response = _fallback_agent_response(body)
             model = response.model
 
-        if response.proposed_markdown:
-            is_valid, differences = validate_numeric_integrity(
-                body.document_markdown, response.proposed_markdown
-            )
-            if not is_valid:
-                # Withhold only the edit; the rest of the review is still useful.
-                logger.warning(
-                    "Agent proposal withheld by numeric-integrity guard. missing=%s added=%s",
-                    differences["missing"],
-                    differences["added"],
-                )
-                response.proposed_markdown = None
-                response.patch_summary = None
-                response.findings = [AGENT_EDIT_WITHHELD_NOTE, *response.findings][:12]
-
+        response = _withhold_unsafe_agent_edit(body.document_markdown, response)
         response.remaining_quota = quota["remaining"] if quota else None
         response.model = model
         return response
@@ -2318,6 +2304,113 @@ def run_agent(body: AgentRunRequest, authorization: str | None = Header(default=
         raise
     finally:
         decrypted_user_api_key = None
+
+
+def _withhold_unsafe_agent_edit(
+    source_markdown: str, response: AgentRunResponse
+) -> AgentRunResponse:
+    """Withhold only an edit that changes the report's numbers; the rest of the review is still useful.
+
+    Shared by built-in AI and by answers pasted back from outside, so no route into the
+    editor can skip it.
+    """
+    if not response.proposed_markdown:
+        return response
+
+    is_valid, differences = validate_numeric_integrity(source_markdown, response.proposed_markdown)
+    if is_valid:
+        return response
+
+    logger.warning(
+        "Agent proposal withheld by numeric-integrity guard. missing=%s added=%s",
+        differences["missing"],
+        differences["added"],
+    )
+    response.proposed_markdown = None
+    response.patch_summary = None
+    response.findings = [AGENT_EDIT_WITHHELD_NOTE, *response.findings][:12]
+    return response
+
+
+# An Agent answer can come from an AI this server never calls: the student pastes the
+# prompt into ChatGPT, Claude, Gemini, DeepSeek or Kimi -- on the web or in a desktop
+# app -- and pastes the answer back. These routes are the two ends of that trip. The prompt is the one built-in AI sends, and the answer goes
+# through the same parsing and the same numeric-integrity guard, so an outside AI
+# cannot quietly change the data. Neither route calls a model, spends quota, or needs
+# an account -- which is what lets a guest use their own AI at all.
+
+AGENT_IMPORT_UNPARSEABLE_NOTE = (
+    "貼回來的內容不是 Agent 需要的格式，請確認複製的是 AI 的完整回答；這次先改用規則版檢查。"
+)
+
+
+class AgentPromptRequest(BaseModel):
+    mode: AgentMode
+    goal: str = Field(default="", max_length=10_000)
+    document_markdown: str = Field(max_length=500_000)
+    selected_text: str | None = Field(default=None, max_length=200_000)
+
+
+class AgentPromptResponse(BaseModel):
+    prompt: str
+
+
+class AgentImportRequest(AgentPromptRequest):
+    reply: str = Field(max_length=500_000)
+
+
+class AiIntegrityRequest(BaseModel):
+    source: str = Field(max_length=200_000)
+    candidate: str = Field(max_length=300_000)
+
+
+class AiIntegrityResponse(BaseModel):
+    ok: bool
+    missing: int
+    added: int
+
+
+def _agent_body_from(body: AgentPromptRequest) -> AgentRunRequest:
+    if not body.document_markdown.strip():
+        raise HTTPException(status_code=400, detail="請先提供目前文件內容")
+    return AgentRunRequest(
+        provider="built_in",
+        mode=body.mode,
+        goal=body.goal,
+        document_markdown=body.document_markdown,
+        selected_text=body.selected_text,
+    )
+
+
+@app.post("/api/agent/prompt", response_model=AgentPromptResponse)
+def build_agent_prompt(body: AgentPromptRequest):
+    return AgentPromptResponse(prompt=_build_agent_prompt(_agent_body_from(body)))
+
+
+@app.post("/api/agent/import", response_model=AgentRunResponse)
+def import_agent_reply(body: AgentImportRequest):
+    agent_body = _agent_body_from(body)
+    reply = body.reply.strip()
+    if not reply:
+        raise HTTPException(status_code=400, detail="請先貼上 AI 的回答")
+
+    try:
+        response = _parse_agent_json(reply, body.mode)
+    except HTTPException:
+        response = _fallback_agent_response(agent_body)
+        response.findings = [AGENT_IMPORT_UNPARSEABLE_NOTE, *response.findings][:12]
+
+    response = _withhold_unsafe_agent_edit(agent_body.document_markdown, response)
+    response.model = None
+    response.remaining_quota = None
+    return response
+
+
+@app.post("/api/ai/integrity", response_model=AiIntegrityResponse)
+def check_ai_integrity(body: AiIntegrityRequest):
+    """The guard /api/ai/run applies, for an answer that came back from outside."""
+    is_valid, differences = validate_numeric_integrity(body.source, body.candidate)
+    return AiIntegrityResponse(ok=is_valid, missing=differences["missing"], added=differences["added"])
 
 
 @app.post("/api/templates/publish", response_model=TemplatePublishResponse)
