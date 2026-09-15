@@ -97,6 +97,7 @@ import {
 import { collectHtmlImageSources, collectImageUrlsFromText, imageMarkdown } from './pastedImages'
 import { shrinkPastedImage } from './pastedImageSize'
 import { isEssentiallyImagesOnly, isEssentiallyOneTable } from './pasteScope'
+import { agentBlock, assistBlock, type AiBlock } from './aiAvailability'
 import { collectMarkdownImageUrls, isEmbeddableImageUrl, replaceMarkdownImageUrls } from './exportImages'
 import {
   collectMermaidCharts,
@@ -4256,6 +4257,26 @@ function LandingPage({
   )
 }
 
+// Says why an AI action cannot run, where the student is looking, with the one fix they
+// can make on the spot. A greyed-out button on its own read as "the AI is broken".
+function AiBlockNotice({ block, onSignIn }: { block: AiBlock; onSignIn: () => void }) {
+  return (
+    <div role="status" className="mt-3 rounded-2xl bg-amber-50 px-4 py-3 text-left ring-1 ring-amber-200">
+      <p className="text-sm font-semibold text-amber-900">{block.title}</p>
+      <p className="mt-1 text-xs leading-5 text-amber-800">{block.detail}</p>
+      {block.action === 'sign-in' && (
+        <button
+          type="button"
+          onClick={onSignIn}
+          className="mt-3 inline-flex h-11 items-center rounded-xl bg-slate-950 px-5 text-sm font-semibold text-white transition hover:bg-slate-800"
+        >
+          登入
+        </button>
+      )}
+    </div>
+  )
+}
+
 function WorkspaceApp({
   user,
   onSignOut,
@@ -7813,13 +7834,25 @@ function WorkspaceApp({
   const isAiConnected =
     aiSettings.preferredProvider === 'extension' ||
     (aiSettings.preferredProvider === 'user_api_key' && aiSettings.userApiProvider !== 'none')
+  // One decision for every AI entry point, taken before the student starts instead of
+  // after the server refuses. See aiAvailability.ts for what students ran into.
+  const aiAvailabilityInput = {
+    signedIn: Boolean(user),
+    preferredProvider: aiSettings.preferredProvider,
+    extensionEnabled: ENABLE_BROWSER_EXTENSION,
+    userApiProvider: aiSettings.userApiProvider,
+    quotaRemaining: aiQuota ? aiQuota.remaining : null,
+  }
+  const assistBlocked = assistBlock(aiAvailabilityInput)
+  const agentBlocked = agentBlock({ ...aiAvailabilityInput, reportIsEmpty: isEditorEmpty })
+
   // The badge used to label the default built-in provider a free demo, while
   // runAiTask sends it to /api/ai/run and spends the daily quota.
   const aiStatus: { ok: boolean; title: string; detail: string } = (() => {
+    // A guest got a green 「內建 AI」 here for requests the server refuses without an
+    // account, and a disabled extension read as 「AI 已連接」.
+    if (assistBlocked) return { ok: false, title: assistBlocked.title, detail: assistBlocked.detail }
     if (aiSettings.preferredProvider === 'built_in') {
-      if (aiQuota && aiQuota.remaining <= 0) {
-        return { ok: false, title: '今日內建 AI 額度已用完', detail: '明天會重置；也可以到 AI 設定改用自備 API Key。' }
-      }
       return {
         ok: true,
         title: '內建 AI',
@@ -7838,45 +7871,72 @@ function WorkspaceApp({
   const imitationProviderLabel = usesOwnApiKey
     ? `${API_PROVIDER_NAMES[aiSettings.userApiProvider] ?? aiSettings.userApiProvider}・自備 API Key${aiSettings.defaultModel ? `・${aiSettings.defaultModel}` : ''}`
     : `內建 AI・每次生成消耗 1 次額度${aiQuota ? `（今日剩餘 ${aiQuota.remaining} 次）` : ''}`
-  const imitationBlockedReason = !usesOwnApiKey && !user
-    ? '內建 AI 需要登入後使用；也可以在 AI 設定改用自己的 API Key。'
+  // Both routes need an account -- an own key is stored encrypted against it -- so a
+  // guest must not be sent off to switch to their own key; the server refuses that too.
+  const imitationBlockedReason = !user
+    ? '內建 AI 與自備 API Key 都需要登入後使用。'
     : !usesOwnApiKey && aiQuota && aiQuota.remaining <= 0
       ? '今日內建 AI 額度已用完（每天台灣時間早上 8 點重置）。可以到 AI 設定改用自己的 ChatGPT、Claude、Gemini 或 DeepSeek API Key 繼續。'
       : null
 
+  // `usesAi` tasks go through the server and share assistBlocked; the other two run in
+  // the browser and work for anyone. `needsEditableContent` mirrors what each task
+  // refuses without, so 開始處理 can say why rather than just greying out.
+  //
+  // `options` used to be rendered as buttons with no click handler: they looked like
+  // choices and did nothing when pressed, which is its own kind of "no reaction". They
+  // are shown as what each task covers until they are wired to change the result.
   const assistTasks = [
     {
       title: '生成報告',
       description: '只有原始資料也可以開始，幫你整理成可寫的報告骨架。',
-      question: '你現在有什麼？',
+      listLabel: '可以從這些開始',
       options: ['實驗數據', '老師要求', '已寫草稿', '不知道，幫我開始'],
+      usesAi: true,
+      needsEditableContent: false,
       onClick: () => setIsOutlineModalOpen(true),
     },
     {
       title: '整理內容',
       description: '把貼上的 ChatGPT 或 Gemini 內容整理成清楚段落。',
-      question: '要整理成哪種格式？',
+      listLabel: '適合整理成',
       options: ['正式結報', '課堂作業', '條列重整', '保留原文語氣'],
+      usesAi: true,
+      needsEditableContent: true,
       onClick: () => requestAiEdit('rewrite'),
     },
     {
       title: '檢查問題',
       description: '交作業前檢查公式、缺漏、數據與段落完整度。',
-      question: '要檢查哪些地方？',
+      listLabel: '會檢查',
       options: ['數據缺漏', '公式單位', '段落完整度', '引用與格式'],
+      usesAi: false,
+      needsEditableContent: false,
       onClick: () => setCurrentView('quality'),
     },
     {
       title: '改為 Word 格式',
       description: '讓表格、標題與段落更適合複製或匯出到 Word。',
-      question: '要優先修正什麼？',
+      listLabel: '會整理',
       options: ['標題層級', '表格格式', '段落間距', '全部整理'],
+      usesAi: false,
+      needsEditableContent: true,
       onClick: handleSmartFormat,
     },
   ]
   // The callbacks in this render-time configuration only access refs after a user event.
   // eslint-disable-next-line react-hooks/refs
   const activeAssistTaskConfig = assistTasks.find((task) => task.title === activeAssistTask) ?? null
+  // Why 開始處理 cannot run, in the order the student would have to fix things.
+  const assistStartBlock: AiBlock | null = (() => {
+    if (!activeAssistTaskConfig) return null
+    if (activeAssistTaskConfig.usesAi && assistBlocked) return assistBlocked
+    if (!activeAssistTaskConfig.needsEditableContent) return null
+    if (isEditorEmpty) return { title: '報告目前是空的', detail: '先寫一些內容或貼上資料，再回來處理。' }
+    if (!canEditActiveDocument) return { title: '此文件目前為唯讀模式', detail: '只有可編輯的文件才能套用修改。' }
+    if (aiTaskLoading) return { title: 'AI 正在處理上一個任務', detail: '完成後就可以開始下一個。' }
+    return null
+  })()
   const activeAgentModeConfig = AGENT_MODE_CONFIG.find((config) => config.mode === agentMode) ?? AGENT_MODE_CONFIG[0]
   const agentCanApply = Boolean(agentResult?.proposed_markdown?.trim()) && canEditActiveDocument
   const editorToolbarGroups = [
@@ -8886,6 +8946,15 @@ function WorkspaceApp({
                     </p>
                   </div>
                 </div>
+                {assistBlocked?.action === 'sign-in' && (
+                  <button
+                    type="button"
+                    onClick={onSignOut}
+                    className="mt-3 inline-flex h-11 w-full items-center justify-center rounded-xl bg-slate-950 text-sm font-semibold text-white transition hover:bg-slate-800"
+                  >
+                    登入
+                  </button>
+                )}
               </div>
 
               <div className="min-h-0 flex-1 overflow-auto px-5 py-5">
@@ -8901,18 +8970,17 @@ function WorkspaceApp({
                     <h3 className="text-base font-semibold text-slate-950">{activeAssistTaskConfig.title}</h3>
                     <p className="mt-2 text-sm leading-6 text-slate-500">{activeAssistTaskConfig.description}</p>
                     <div className="mt-6">
-                      <p className="mb-3 text-sm font-semibold text-slate-700">{activeAssistTaskConfig.question}</p>
-                      <div className="grid gap-2">
+                      <p className="mb-3 text-sm font-semibold text-slate-700">{activeAssistTaskConfig.listLabel}</p>
+                      <ul className="grid gap-2">
                         {activeAssistTaskConfig.options.map((option) => (
-                          <button
+                          <li
                             key={option}
-                            type="button"
-                            className="rounded-xl border border-slate-200 bg-white px-4 py-3 text-left text-sm font-semibold text-slate-700 shadow-sm transition hover:border-slate-300 hover:bg-slate-50"
+                            className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-700"
                           >
                             {option}
-                          </button>
+                          </li>
                         ))}
-                      </div>
+                      </ul>
                     </div>
                     <button
                       type="button"
@@ -8921,14 +8989,12 @@ function WorkspaceApp({
                         setActiveAssistTask(null)
                         activeAssistTaskConfig.onClick()
                       }}
-                      disabled={
-                        (activeAssistTaskConfig.title === '整理內容' || activeAssistTaskConfig.title === '改為 Word 格式') &&
-                        (isEditorEmpty || !canEditActiveDocument || Boolean(aiTaskLoading))
-                      }
+                      disabled={Boolean(assistStartBlock)}
                       className="mt-6 w-full rounded-xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
                     >
                       開始處理
                     </button>
+                    {assistStartBlock && <AiBlockNotice block={assistStartBlock} onSignIn={onSignOut} />}
                     {activeAssistTaskConfig.title === '整理內容' && (
                       <p className="mt-2 text-xs leading-5 text-slate-500">會處理你在編輯器中選取的文字，請先選取再按「開始處理」。</p>
                     )}
@@ -8990,11 +9056,17 @@ function WorkspaceApp({
                   ×
                 </button>
               </div>
-              <div className="mt-4 rounded-2xl bg-slate-50 p-3 text-xs leading-5 text-slate-500 ring-1 ring-slate-200">
-                {aiSettings.preferredProvider === 'extension'
-                  ? 'Agent 需要讀取全文，會改用內建 AI；插件模式仍保留給 Assist。'
-                  : '會使用目前 AI 設定；若後端沒有 API Key，會先使用規則版 Agent。'}
-              </div>
+              {/* Shown in the header, not beside the run button: six mode cards and the goal
+                  field push that button below the fold, so a reason there goes unseen. */}
+              {agentBlocked ? (
+                <AiBlockNotice block={agentBlocked} onSignIn={onSignOut} />
+              ) : (
+                <div className="mt-4 rounded-2xl bg-slate-50 p-3 text-xs leading-5 text-slate-500 ring-1 ring-slate-200">
+                  {aiSettings.preferredProvider === 'extension'
+                    ? 'Agent 需要讀取全文，會改用內建 AI；插件模式仍保留給 Assist。'
+                    : '會使用目前 AI 設定；若後端沒有 API Key，會先使用規則版 Agent。'}
+                </div>
+              )}
             </header>
 
             <div className={`min-h-0 flex-1 overflow-auto px-5 py-5 ${SCROLLBAR_HIDE}`}>
@@ -9048,11 +9120,16 @@ function WorkspaceApp({
                 <button
                   type="button"
                   onClick={() => void runAgentTask(agentMode)}
-                  disabled={agentLoading || isEditorEmpty}
+                  disabled={agentLoading || Boolean(agentBlocked)}
                   className="mt-4 flex h-12 w-full items-center justify-center rounded-2xl bg-slate-950 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   {agentLoading ? 'Agent 處理中...' : activeAgentModeConfig.actionLabel}
                 </button>
+                {agentBlocked && (
+                  <p className="mt-2 text-center text-xs font-medium text-amber-800">
+                    無法執行：{agentBlocked.title}
+                  </p>
+                )}
               </section>
 
               {agentResult && (

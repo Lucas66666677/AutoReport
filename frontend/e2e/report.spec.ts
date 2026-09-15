@@ -273,3 +273,48 @@ test('pasting an AI answer keeps the whole answer, not just its table', async ({
   expect(pasted).toContain('| t (ms) | V (V) |')
   expect(pasted).toContain('希望這些對你的報告有幫助。')
 })
+
+// Students reported the AI features as "doing nothing". Every AI request needs an
+// account, and on production a guest was told so only after the fact: AI Assist showed a
+// green 「內建 AI」 status, its option chips were buttons with no click handler, the
+// Agent's run button was silently disabled on an empty report, and with content a click
+// waited up to 20 s for the server to answer 401 in a toast that faded.
+//
+// A guest must now see the reason before starting, with a way to sign in, and the page
+// must not send a request it already knows will be refused. Tasks that run in the
+// browser stay available to guests.
+test('a guest is told AI needs sign-in before starting, and no doomed request is sent', async ({ page }) => {
+  const aiRequests: string[] = []
+  page.on('request', (request) => {
+    if (request.url().includes('/api/ai/') || request.url().includes('/api/agent/')) aiRequests.push(request.url())
+  })
+
+  await openBlankReport(page)
+
+  // AI Agent: the reason is in the header, visible on open, and the run button is off.
+  await page.getByRole('button', { name: 'AI Agent', exact: true }).click()
+  const agent = page.locator('aside').filter({ has: page.getByRole('heading', { name: 'AI Agent' }) })
+  await expect(agent.locator('header').getByRole('status')).toContainText('AI 功能需要登入後使用')
+  await expect(agent.locator('header').getByRole('button', { name: '登入' })).toBeVisible()
+  await expect(agent.getByText('無法執行：AI 功能需要登入後使用')).toBeVisible()
+  await page.getByRole('button', { name: '關閉 AI Agent' }).click()
+
+  // AI Assist: no green light for a guest.
+  await page.getByRole('button', { name: 'AI Assist', exact: true }).click()
+  const assist = page.locator('aside').filter({ has: page.getByRole('heading', { name: 'AI Assist' }) })
+  await expect(assist).toContainText('AI 功能需要登入後使用')
+  await expect(assist.locator('.bg-emerald-500')).toHaveCount(0)
+
+  // An AI-backed task says why it cannot start, and its choices are not dead buttons.
+  await assist.getByRole('button', { name: /^生成報告/ }).click()
+  await expect(assist.getByRole('button', { name: '開始處理' })).toBeDisabled()
+  await expect(assist.getByRole('status')).toContainText('AI 功能需要登入後使用')
+  await expect(assist.getByRole('button', { name: '實驗數據' })).toHaveCount(0)
+
+  // A task that runs in the browser still works for a guest.
+  await assist.getByRole('button', { name: '← 返回任務' }).click()
+  await assist.getByRole('button', { name: /^檢查問題/ }).click()
+  await expect(assist.getByRole('button', { name: '開始處理' })).toBeEnabled()
+
+  expect(aiRequests).toEqual([])
+})
