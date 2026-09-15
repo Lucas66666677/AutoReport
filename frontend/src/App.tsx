@@ -98,6 +98,13 @@ import { collectHtmlImageSources, collectImageUrlsFromText, imageMarkdown } from
 import { shrinkPastedImage } from './pastedImageSize'
 import { isEssentiallyImagesOnly, isEssentiallyOneTable } from './pasteScope'
 import { agentBlock, assistBlock, type AiBlock } from './aiAvailability'
+import {
+  HANDOFF_DESTINATIONS,
+  copyText,
+  describeIntegrityFailure,
+  unwrapWholeAnswerFence,
+  type HandoffDestination,
+} from './aiHandoff'
 import { collectMarkdownImageUrls, isEmbeddableImageUrl, replaceMarkdownImageUrls } from './exportImages'
 import {
   collectMermaidCharts,
@@ -4257,6 +4264,220 @@ function LandingPage({
   )
 }
 
+/** A FastAPI error's `detail`, when it is a sentence; validation errors are lists. */
+async function readApiErrorDetail(response: Response, fallback: string): Promise<string> {
+  try {
+    const payload = (await response.json()) as { detail?: unknown }
+    if (typeof payload.detail === 'string' && payload.detail.trim()) return payload.detail
+  } catch {
+    // Not JSON: the fallback says enough.
+  }
+  return `${fallback}（HTTP ${response.status}）`
+}
+
+/** What an Agent answer is checked against: the request exactly as the prompt was built from it. */
+type AgentHandoffContext = {
+  mode: AgentMode
+  goal: string
+  document_markdown: string
+  selected_text: string
+}
+
+type AiHandoffPanelProps<Context> = {
+  /** Why the student cannot start yet, shown instead of the choices. */
+  unavailableReason?: string | null
+  /** Builds the prompt. The context comes back unchanged with the answer. */
+  onPrepare: () => Promise<{ prompt: string; context: Context }>
+  /** Applies the answer. Throw an Error whose message the student should read. */
+  onUseReply: (reply: string, context: Context) => Promise<void>
+}
+
+// Carries a prompt to the student's own AI and the answer back -- see aiHandoff.ts.
+//
+// Every step is its own click on purpose. Opening a site after an await is what popup
+// blockers stop, and a clipboard write after one loses the user gesture in Safari; as a
+// plain link and a plain button, neither can fail silently. The prompt stays viewable,
+// so a browser that refuses the clipboard still leaves the student a way through.
+function AiHandoffPanel<Context>({ unavailableReason, onPrepare, onUseReply }: AiHandoffPanelProps<Context>) {
+  const [destination, setDestination] = useState<HandoffDestination | null>(null)
+  const [prepared, setPrepared] = useState<{ prompt: string; context: Context } | null>(null)
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+  const [showPrompt, setShowPrompt] = useState(false)
+  const [reply, setReply] = useState('')
+  const [busy, setBusy] = useState<'prepare' | 'apply' | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  function reset() {
+    setDestination(null)
+    setPrepared(null)
+    setCopyState('idle')
+    setShowPrompt(false)
+    setReply('')
+    setError(null)
+  }
+
+  async function choose(next: HandoffDestination) {
+    reset()
+    setDestination(next)
+    setBusy('prepare')
+    try {
+      setPrepared(await onPrepare())
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '無法準備 prompt')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  async function copyPrompt() {
+    if (!prepared) return
+    if (await copyText(prepared.prompt)) {
+      setCopyState('copied')
+    } else {
+      setCopyState('failed')
+      setShowPrompt(true)
+    }
+  }
+
+  async function applyReply() {
+    if (!prepared || !reply.trim()) return
+    setBusy('apply')
+    setError(null)
+    try {
+      await onUseReply(reply, prepared.context)
+      reset()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '無法使用這個回答')
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <section aria-label="用你自己的 AI" className="mt-5 rounded-2xl border border-slate-200 bg-white p-4 text-left">
+      <h3 className="text-sm font-semibold text-slate-900">用你自己的 AI</h3>
+      <p className="mt-1 text-xs leading-5 text-slate-500">
+        ChatGPT、Claude、Gemini 等網頁版或桌面版都可以；不用登入，也不耗每日額度。
+      </p>
+
+      {!destination ? (
+        unavailableReason ? (
+          <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 ring-1 ring-amber-200">
+            {unavailableReason}
+          </p>
+        ) : (
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            {HANDOFF_DESTINATIONS.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => void choose(option)}
+                className={`h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 transition hover:border-slate-300 hover:bg-slate-50 ${
+                  option.url === null ? 'col-span-2' : ''
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        )
+      ) : (
+        <div className="mt-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-sm font-semibold text-slate-900">{destination.label}</p>
+            <button
+              type="button"
+              onClick={reset}
+              className="h-11 px-2 text-sm font-semibold text-slate-500 transition hover:text-slate-900"
+            >
+              換一個
+            </button>
+          </div>
+
+          {busy === 'prepare' && <p className="mt-2 text-xs text-slate-500">正在準備 prompt…</p>}
+
+          {prepared && (
+            <ol className="mt-2 space-y-4">
+              <li>
+                <p className="text-xs font-semibold text-slate-700">1. 複製 prompt</p>
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void copyPrompt()}
+                    className="h-11 flex-1 rounded-xl bg-slate-950 px-3 text-sm font-semibold text-white transition hover:bg-slate-800"
+                  >
+                    {copyState === 'copied' ? '已複製 ✓' : '複製 prompt'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowPrompt((current) => !current)}
+                    className="h-11 rounded-xl border border-slate-200 px-3 text-sm font-semibold text-slate-600 transition hover:bg-slate-50"
+                  >
+                    {showPrompt ? '收起' : '查看'}
+                  </button>
+                </div>
+                {copyState === 'failed' && (
+                  <p className="mt-2 text-xs leading-5 text-amber-800">
+                    瀏覽器不允許自動複製，請點下方文字框、全選後手動複製。
+                  </p>
+                )}
+                {showPrompt && (
+                  <textarea
+                    readOnly
+                    aria-label="要複製的 prompt"
+                    value={prepared.prompt}
+                    onFocus={(event) => event.currentTarget.select()}
+                    className="mt-2 h-28 w-full resize-none rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs leading-5 text-slate-700 outline-none"
+                  />
+                )}
+              </li>
+              <li>
+                <p className="text-xs font-semibold text-slate-700">
+                  2. {destination.url ? `打開 ${destination.label}，貼上後送出` : '切換到你的 AI 桌面版或其他 AI，貼上後送出'}
+                </p>
+                {destination.url && (
+                  <a
+                    href={destination.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-2 flex h-11 items-center justify-center rounded-xl border border-slate-200 text-sm font-semibold text-slate-800 transition hover:bg-slate-50"
+                  >
+                    打開 {destination.label} ↗
+                  </a>
+                )}
+              </li>
+              <li>
+                <p className="text-xs font-semibold text-slate-700">3. 把 AI 的回答整段複製回來，貼在這裡</p>
+                <textarea
+                  aria-label="AI 的回答"
+                  value={reply}
+                  onChange={(event) => setReply(event.target.value)}
+                  placeholder="貼上 AI 的回答"
+                  className="mt-2 h-32 w-full resize-none rounded-xl border border-slate-200 bg-white p-3 text-sm leading-6 text-slate-900 outline-none focus:border-slate-400 focus:ring-4 focus:ring-slate-100"
+                />
+                <button
+                  type="button"
+                  onClick={() => void applyReply()}
+                  disabled={!reply.trim() || busy === 'apply'}
+                  className="mt-2 h-11 w-full rounded-xl bg-slate-950 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {busy === 'apply' ? '檢查中…' : '使用這個回答'}
+                </button>
+              </li>
+            </ol>
+          )}
+
+          {error && (
+            <p role="alert" className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-800 ring-1 ring-rose-200">
+              {error}
+            </p>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
 // Says why an AI action cannot run, where the student is looking, with the one fix they
 // can make on the spot. A greyed-out button on its own read as "the AI is broken".
 function AiBlockNotice({ block, onSignIn }: { block: AiBlock; onSignIn: () => void }) {
@@ -6255,6 +6476,39 @@ function WorkspaceApp({
     })
   }
 
+  // What an outline is generated from -- the brief when there is one, else the report --
+  // shared by built-in AI and the student's own AI so the two cannot drift apart.
+  function buildOutlineSource() {
+    const structuredBrief = [
+      outlineBrief.experimentName && `實驗名稱：${outlineBrief.experimentName}`,
+      outlineBrief.purpose && `實驗目的：${outlineBrief.purpose}`,
+      outlineBrief.requirements && `老師要求：${outlineBrief.requirements}`,
+      outlineBrief.rawData && `原始資料（只能原樣保留數字與單位）：\n${outlineBrief.rawData}`,
+      outlineBrief.formatRequirements && `格式要求：${outlineBrief.formatRequirements}`,
+      outlineExampleText && `參考章節結構：\n${outlineExampleText}`,
+    ].filter(Boolean).join('\n\n')
+    return structuredBrief || markdown || '# 實驗報告\n## 實驗目的\n## 實驗原理\n## 實驗步驟\n## 結果與討論'
+  }
+
+  function proposeOutline(outlineMarkdown: string) {
+    setPendingAiChange({
+      title: '確認 AI 報告大綱',
+      originalText: markdown,
+      proposedText: outlineMarkdown,
+      mode: 'append-document',
+      selection: null,
+    })
+    setIsOutlineModalOpen(false)
+    setOutlineExampleText('')
+    setOutlineBrief({
+      experimentName: '',
+      purpose: '',
+      requirements: '',
+      rawData: '',
+      formatRequirements: '',
+    })
+  }
+
   async function generateOutline() {
     if (!canEditActiveDocument) {
       setBridgeToast('此文件目前為唯讀模式，無法插入大綱')
@@ -6263,45 +6517,100 @@ function WorkspaceApp({
 
     setOutlineLoading(true)
     try {
-      const structuredBrief = [
-        outlineBrief.experimentName && `實驗名稱：${outlineBrief.experimentName}`,
-        outlineBrief.purpose && `實驗目的：${outlineBrief.purpose}`,
-        outlineBrief.requirements && `老師要求：${outlineBrief.requirements}`,
-        outlineBrief.rawData && `原始資料（只能原樣保留數字與單位）：\n${outlineBrief.rawData}`,
-        outlineBrief.formatRequirements && `格式要求：${outlineBrief.formatRequirements}`,
-        outlineExampleText && `參考章節結構：\n${outlineExampleText}`,
-      ].filter(Boolean).join('\n\n')
       const outlineMarkdown = await runAiTask({
         action: 'outline',
-        text: structuredBrief || markdown || '# 實驗報告\n## 實驗目的\n## 實驗原理\n## 實驗步驟\n## 結果與討論',
+        text: buildOutlineSource(),
         documentId: activeDocumentId,
         insertMode: 'insert-at-cursor',
       })
       if (!outlineMarkdown) {
         return
       }
-      setPendingAiChange({
-        title: '確認 AI 報告大綱',
-        originalText: markdown,
-        proposedText: outlineMarkdown,
-        mode: 'append-document',
-        selection: null,
-      })
-      setIsOutlineModalOpen(false)
-      setOutlineExampleText('')
-      setOutlineBrief({
-        experimentName: '',
-        purpose: '',
-        requirements: '',
-        rawData: '',
-        formatRequirements: '',
-      })
+      proposeOutline(outlineMarkdown)
     } catch (err) {
       const message = err instanceof Error ? err.message : '產生大綱失敗'
       setBridgeToast(`產生大綱失敗：${message}`)
     } finally {
       setOutlineLoading(false)
     }
+  }
+
+  // --- The student's own AI (aiHandoff.ts). Each prompt is the one built-in AI would
+  // send, and each answer comes back through the review step built-in AI uses. ---
+
+  async function prepareOutlineHandoff() {
+    const source = buildOutlineSource().trim()
+    const prompt = fillPromptTemplate(getPromptTemplateForAction(aiSettings, 'outline'), source, 'outline')
+    return { prompt, context: null }
+  }
+
+  // Built-in outlines skip the numeric guard (/api/ai/run exempts 'outline'), so this does too.
+  async function applyOutlineHandoffReply(reply: string) {
+    if (!canEditActiveDocumentRef.current) throw new Error('此文件目前為唯讀模式，無法插入大綱')
+    proposeOutline(unwrapWholeAnswerFence(reply))
+  }
+
+  async function prepareRewriteHandoff() {
+    const selection = activeAiSelectionRef.current
+    if (!selection?.text.trim()) {
+      throw new Error('請先關閉面板，在編輯器選取要整理的文字，再回來選 AI。')
+    }
+    const prompt = fillPromptTemplate(getPromptTemplateForAction(aiSettings, 'rewrite'), selection.text.trim(), 'rewrite')
+    return { prompt, context: selection }
+  }
+
+  // /api/ai/run refuses a rewrite that changes numbers, so an outside answer is checked the same way.
+  async function applyRewriteHandoffReply(reply: string, selection: PendingAiSelection) {
+    if (!canEditActiveDocumentRef.current) throw new Error('此文件目前為唯讀模式，無法修改內容')
+    const proposed = unwrapWholeAnswerFence(reply)
+    const res = await fetch(`${API_BASE_URL}/api/ai/integrity`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source: selection.text, candidate: proposed }),
+    })
+    if (!res.ok) throw new Error(await readApiErrorDetail(res, '暫時無法檢查數字是否被改動，請稍後再試'))
+    const check = (await res.json()) as { ok: boolean; missing: number; added: number }
+    if (!check.ok) throw new Error(describeIntegrityFailure(check.missing, check.added))
+
+    pendingAiSelectionRef.current = selection
+    setPendingAiChange({
+      title: '確認 AI 重寫',
+      originalText: selection.text,
+      proposedText: proposed,
+      mode: 'replace-selection',
+      selection,
+    })
+    setIsAssistDrawerOpen(false)
+    setActiveAssistTask(null)
+  }
+
+  async function prepareAgentHandoff() {
+    const context: AgentHandoffContext = {
+      mode: agentMode,
+      goal: agentGoal,
+      document_markdown: markdown,
+      selected_text: getSelectedEditorText(),
+    }
+    const res = await fetch(`${API_BASE_URL}/api/agent/prompt`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(context),
+    })
+    if (!res.ok) throw new Error(await readApiErrorDetail(res, '無法準備 prompt'))
+    const { prompt } = (await res.json()) as { prompt: string }
+    return { prompt, context }
+  }
+
+  // The server parses the answer and applies the numeric guard exactly as for built-in AI.
+  async function applyAgentHandoffReply(reply: string, context: AgentHandoffContext) {
+    const res = await fetch(`${API_BASE_URL}/api/agent/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...context, reply }),
+    })
+    if (!res.ok) throw new Error(await readApiErrorDetail(res, '無法讀取 AI 的回答'))
+    setAgentResult((await res.json()) as AgentResult)
+    setBridgeToast('已讀取 AI 的回答，結果在下方')
   }
 
   function loadDocument(document: Document) {
@@ -7892,7 +8201,9 @@ function WorkspaceApp({
       description: '只有原始資料也可以開始，幫你整理成可寫的報告骨架。',
       listLabel: '可以從這些開始',
       options: ['實驗數據', '老師要求', '已寫草稿', '不知道，幫我開始'],
-      usesAi: true,
+      // Starting only opens the brief form, which offers the student's own AI as well as
+      // built-in AI; the form gates its built-in button itself.
+      usesAi: false,
       needsEditableContent: false,
       onClick: () => setIsOutlineModalOpen(true),
     },
@@ -8996,7 +9307,14 @@ function WorkspaceApp({
                     </button>
                     {assistStartBlock && <AiBlockNotice block={assistStartBlock} onSignIn={onSignOut} />}
                     {activeAssistTaskConfig.title === '整理內容' && (
-                      <p className="mt-2 text-xs leading-5 text-slate-500">會處理你在編輯器中選取的文字，請先選取再按「開始處理」。</p>
+                      <>
+                        <p className="mt-2 text-xs leading-5 text-slate-500">會處理你在編輯器中選取的文字，請先選取再按「開始處理」。</p>
+                        <AiHandoffPanel
+                          unavailableReason={canEditActiveDocument ? null : '此文件目前為唯讀模式，無法修改內容。'}
+                          onPrepare={prepareRewriteHandoff}
+                          onUseReply={applyRewriteHandoffReply}
+                        />
+                      </>
                     )}
                   </div>
                 ) : (
@@ -9130,6 +9448,12 @@ function WorkspaceApp({
                     無法執行：{agentBlocked.title}
                   </p>
                 )}
+
+                <AiHandoffPanel
+                  unavailableReason={isEditorEmpty ? '報告目前是空的，先寫一些內容或貼上資料，再選 AI。' : null}
+                  onPrepare={prepareAgentHandoff}
+                  onUseReply={applyAgentHandoffReply}
+                />
               </section>
 
               {agentResult && (
@@ -9494,7 +9818,8 @@ function WorkspaceApp({
               </label>
             </div>
 
-            <div className="flex items-center justify-end gap-2">
+            {assistBlocked && <AiBlockNotice block={assistBlocked} onSignIn={onSignOut} />}
+            <div className="mt-3 flex items-center justify-end gap-2">
               <button
                 type="button"
                 onClick={() => setIsOutlineModalOpen(false)}
@@ -9506,12 +9831,18 @@ function WorkspaceApp({
               <button
                 type="button"
                 onClick={generateOutline}
-                disabled={outlineLoading}
+                disabled={outlineLoading || Boolean(assistBlocked)}
                 className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {outlineLoading ? '產生中...' : '產生大綱'}
               </button>
             </div>
+
+            <AiHandoffPanel
+              unavailableReason={canEditActiveDocument ? null : '此文件目前為唯讀模式，無法插入大綱。'}
+              onPrepare={prepareOutlineHandoff}
+              onUseReply={applyOutlineHandoffReply}
+            />
           </div>
         </div>
       )}
