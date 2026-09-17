@@ -8,6 +8,7 @@ import {
   fetchBridgeStatus,
   loadBridgeConnection,
   pairWithBridge,
+  queryLocalNetworkPermission,
   runOnBridge,
   saveBridgeConnection,
 } from './terminalBridge'
@@ -97,6 +98,34 @@ describe('runOnBridge', () => {
   it('names an empty answer rather than returning it', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(json(200, { text: '  ' }))
     await expect(runOnBridge(47632, 'tok', 'claude', 'p', undefined, fetchImpl)).rejects.toThrow('沒有回傳內容')
+  })
+})
+
+describe('queryLocalNetworkPermission', () => {
+  const permissionsWith = (states: Record<string, PermissionState>) => ({
+    query: vi.fn(async ({ name }: { name: string }) => {
+      if (!(name in states)) throw new TypeError(`unknown permission ${name}`)
+      return { state: states[name] } as PermissionStatus
+    }),
+  })
+
+  // The case that looked like "not running" in the embedded Chromium.
+  it('reports denied when the browser blocks this page from the computer', async () => {
+    await expect(queryLocalNetworkPermission(permissionsWith({ 'local-network-access': 'denied' }))).resolves.toBe('denied')
+  })
+
+  it('lets the most restrictive spelling win', async () => {
+    const permissions = permissionsWith({ 'local-network-access': 'granted', 'loopback-network': 'denied' })
+    await expect(queryLocalNetworkPermission(permissions)).resolves.toBe('denied')
+  })
+
+  it('reports a pending prompt', async () => {
+    await expect(queryLocalNetworkPermission(permissionsWith({ 'local-network': 'prompt' }))).resolves.toBe('prompt')
+  })
+
+  it('reports unknown in browsers without the permission at all', async () => {
+    await expect(queryLocalNetworkPermission(permissionsWith({}))).resolves.toBe('unknown')
+    await expect(queryLocalNetworkPermission(undefined)).resolves.toBe('unknown')
   })
 })
 
