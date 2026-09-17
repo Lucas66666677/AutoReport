@@ -105,6 +105,7 @@ import {
   fetchBridgeStatus,
   loadBridgeConnection,
   pairWithBridge,
+  queryLocalNetworkPermission,
   runOnBridge,
   saveBridgeConnection,
   type BridgeCli,
@@ -4333,7 +4334,9 @@ type TerminalBridgePanelProps<Context> = {
 // this button, not appear for every student who opens the AI panel.
 function TerminalBridgePanel<Context>({ onPrepare, onUseReply, onBack }: TerminalBridgePanelProps<Context>) {
   const [connection, setConnection] = useState(loadBridgeConnection)
-  const [phase, setPhase] = useState<'idle' | 'checking' | 'offline' | 'outdated' | 'pairing' | 'ready' | 'running'>('idle')
+  const [phase, setPhase] = useState<
+    'idle' | 'checking' | 'offline' | 'blocked' | 'outdated' | 'pairing' | 'ready' | 'running'
+  >('idle')
   const [status, setStatus] = useState<BridgeStatus | null>(null)
   const [code, setCode] = useState('')
   const [portInput, setPortInput] = useState(String(connection.port))
@@ -4351,7 +4354,9 @@ function TerminalBridgePanel<Context>({ onPrepare, onUseReply, onBack }: Termina
     setError(null)
     const found = await fetchBridgeStatus(current.port, current.token)
     if (!found) {
-      setPhase('offline')
+      // Blocked by the browser looks identical to not running; tell them apart before
+      // sending the student off to reinstall a bridge that is already running.
+      setPhase((await queryLocalNetworkPermission()) === 'denied' ? 'blocked' : 'offline')
       return
     }
     setStatus(found)
@@ -4401,8 +4406,12 @@ function TerminalBridgePanel<Context>({ onPrepare, onUseReply, onBack }: Termina
         setPhase('pairing')
         setError('bridge 已重新啟動，請輸入終端機上新的配對碼。')
       } else if (err instanceof TypeError) {
-        setPhase('offline')
-        setError('連不到 bridge：終端機視窗是不是被關掉了？')
+        if ((await queryLocalNetworkPermission()) === 'denied') {
+          setPhase('blocked')
+        } else {
+          setPhase('offline')
+          setError('連不到 bridge：終端機視窗是不是被關掉了？')
+        }
       } else {
         setPhase('ready')
         setError(err instanceof Error ? err.message : '執行失敗')
@@ -4495,6 +4504,31 @@ function TerminalBridgePanel<Context>({ onPrepare, onUseReply, onBack }: Termina
           >
             重新偵測
           </button>
+        </div>
+      )}
+
+      {phase === 'blocked' && (
+        <div className="mt-3 space-y-3 text-xs leading-5 text-slate-600">
+          <p className="rounded-xl bg-amber-50 px-3 py-2 font-semibold text-amber-900 ring-1 ring-amber-200">
+            瀏覽器封鎖了這個網站連到你的電腦，所以就算 bridge 已經在執行也連不上。
+          </p>
+          <p>
+            請點網址列左邊的網站資訊圖示，打開網站設定，把「本機網路存取」改成允許。重新整理頁面後，再回來按重新偵測。
+          </p>
+          <button
+            type="button"
+            onClick={() => void check()}
+            className="h-11 w-full rounded-xl bg-slate-950 text-sm font-semibold text-white transition hover:bg-slate-800"
+          >
+            重新偵測
+          </button>
+          <details>
+            <summary className="cursor-pointer text-slate-500">還沒啟動 bridge？</summary>
+            <div className="mt-2 space-y-3">
+              <CopyCommand label="Windows（PowerShell）" command={commands.windows} />
+              <CopyCommand label="macOS / Linux" command={commands.unix} />
+            </div>
+          </details>
         </div>
       )}
 

@@ -110,6 +110,42 @@ export async function runOnBridge(
   return text
 }
 
+// --- Chrome's Local Network Access -------------------------------------------------
+
+export type LocalNetworkPermission = 'granted' | 'denied' | 'prompt' | 'unknown'
+
+// Spellings Chromium has used for the permission. Measured on 2026-09-17 in an embedded
+// Chromium: `local-network-access` is queryable and reported 'denied'. The others are
+// asked too, so a later split of loopback into its own permission is still caught.
+const LOCAL_NETWORK_PERMISSION_NAMES = ['local-network-access', 'loopback-network', 'local-network']
+
+/**
+ * Whether the browser lets this page reach addresses on the student's own computer.
+ *
+ * 'denied' is the case worth spotting. The bridge can be running perfectly and the
+ * browser still refuses to reach it -- measured in that Chromium: `Failed to fetch`,
+ * `net::ERR_BLOCKED_BY_CLIENT`, and the bridge never saw a request -- which otherwise
+ * looks exactly like "not running" and sends the student off to reinstall it.
+ * The most restrictive answer wins.
+ */
+export async function queryLocalNetworkPermission(
+  permissions: Pick<Permissions, 'query'> | undefined = globalThis.navigator?.permissions,
+): Promise<LocalNetworkPermission> {
+  if (!permissions?.query) return 'unknown'
+  const states: string[] = []
+  for (const name of LOCAL_NETWORK_PERMISSION_NAMES) {
+    try {
+      states.push((await permissions.query({ name } as unknown as PermissionDescriptor)).state)
+    } catch {
+      // Not a permission this browser knows.
+    }
+  }
+  if (states.includes('denied')) return 'denied'
+  if (states.includes('prompt')) return 'prompt'
+  if (states.includes('granted')) return 'granted'
+  return 'unknown'
+}
+
 // --- Remembering the pairing -------------------------------------------------------
 // The token only works until the bridge restarts, and localStorage can be unavailable
 // (private windows, blocked site data), so every access is best-effort.
