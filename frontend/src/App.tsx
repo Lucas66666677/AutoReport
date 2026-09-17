@@ -99,6 +99,19 @@ import { shrinkPastedImage } from './pastedImageSize'
 import { isEssentiallyImagesOnly, isEssentiallyOneTable } from './pasteScope'
 import { agentBlock, assistBlock, type AiBlock } from './aiAvailability'
 import {
+  BRIDGE_PROTOCOL,
+  BridgeRequestError,
+  bridgeSetupCommands,
+  fetchBridgeStatus,
+  loadBridgeConnection,
+  pairWithBridge,
+  runOnBridge,
+  saveBridgeConnection,
+  type BridgeCli,
+  type BridgeConnection,
+  type BridgeStatus,
+} from './terminalBridge'
+import {
   HANDOFF_DESTINATIONS,
   copyText,
   describeIntegrityFailure,
@@ -4283,6 +4296,287 @@ type AgentHandoffContext = {
   selected_text: string
 }
 
+function CopyCommand({ label, command }: { label: string; command: string }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <div>
+      <p className="font-semibold text-slate-700">{label}</p>
+      <div className="mt-1 flex items-start gap-2">
+        <code className="min-w-0 flex-1 break-all rounded-lg bg-slate-950 px-3 py-2 font-mono text-[11px] leading-5 text-slate-100">
+          {command}
+        </code>
+        <button
+          type="button"
+          onClick={() => void copyText(command).then(setCopied)}
+          className="h-11 shrink-0 rounded-xl border border-slate-200 px-3 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+        >
+          {copied ? '已複製' : '複製'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+type TerminalBridgePanelProps<Context> = {
+  onPrepare: () => Promise<{ prompt: string; context: Context }>
+  onUseReply: (reply: string, context: Context) => Promise<void>
+  onBack: () => void
+}
+
+// Hands the task to a CLI the student is signed in to on their own computer, through
+// the terminal bridge -- see terminalBridge.ts and public/bridge/autolabreport-bridge.mjs.
+// The prompt and the answer's checks are the copy-and-paste ones; only the carrying is
+// automatic.
+//
+// Nothing reaches for 127.0.0.1 until the student presses 連接終端機. Chrome asks before
+// a public page may reach this computer, and that question should follow a click on
+// this button, not appear for every student who opens the AI panel.
+function TerminalBridgePanel<Context>({ onPrepare, onUseReply, onBack }: TerminalBridgePanelProps<Context>) {
+  const [connection, setConnection] = useState(loadBridgeConnection)
+  const [phase, setPhase] = useState<'idle' | 'checking' | 'offline' | 'outdated' | 'pairing' | 'ready' | 'running'>('idle')
+  const [status, setStatus] = useState<BridgeStatus | null>(null)
+  const [code, setCode] = useState('')
+  const [portInput, setPortInput] = useState(String(connection.port))
+  const [runningLabel, setRunningLabel] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
+
+  function remember(next: BridgeConnection) {
+    saveBridgeConnection(next)
+    setConnection(next)
+  }
+
+  async function check(current: BridgeConnection = connection) {
+    setPhase('checking')
+    setError(null)
+    const found = await fetchBridgeStatus(current.port, current.token)
+    if (!found) {
+      setPhase('offline')
+      return
+    }
+    setStatus(found)
+    if (found.protocol !== BRIDGE_PROTOCOL) {
+      setPhase('outdated')
+      return
+    }
+    if (found.paired) {
+      setPhase('ready')
+      return
+    }
+    // A saved token the bridge no longer knows: it has restarted with a new one.
+    if (current.token) remember({ ...current, token: null })
+    setPhase('pairing')
+  }
+
+  async function pair() {
+    setError(null)
+    try {
+      const token = await pairWithBridge(connection.port, code.trim())
+      const next = { ...connection, token }
+      remember(next)
+      setCode('')
+      await check(next)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '配對失敗')
+    }
+  }
+
+  async function run(cli: BridgeCli) {
+    if (!connection.token) return
+    const controller = new AbortController()
+    abortRef.current = controller
+    setPhase('running')
+    setRunningLabel(cli.label)
+    setError(null)
+    try {
+      const { prompt, context } = await onPrepare()
+      const reply = await runOnBridge(connection.port, connection.token, cli.id, prompt, controller.signal)
+      await onUseReply(reply, context)
+      setPhase('ready')
+    } catch (err) {
+      if (controller.signal.aborted) {
+        setPhase('ready')
+      } else if (err instanceof BridgeRequestError && err.status === 401) {
+        remember({ ...connection, token: null })
+        setPhase('pairing')
+        setError('bridge 已重新啟動，請輸入終端機上新的配對碼。')
+      } else if (err instanceof TypeError) {
+        setPhase('offline')
+        setError('連不到 bridge：終端機視窗是不是被關掉了？')
+      } else {
+        setPhase('ready')
+        setError(err instanceof Error ? err.message : '執行失敗')
+      }
+    } finally {
+      abortRef.current = null
+      setRunningLabel(null)
+    }
+  }
+
+  function applyPort() {
+    const port = Number(portInput)
+    if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+      setError('連接埠必須是 1024 到 65535 之間的整數。')
+      return
+    }
+    const next = { port, token: null }
+    remember(next)
+    void check(next)
+  }
+
+  const commands = bridgeSetupCommands(window.location.origin, connection.port)
+  const usable = status?.clis.filter((cli) => cli.available && cli.enabled) ?? []
+  const installedButOff = status?.clis.filter((cli) => cli.available && !cli.enabled) ?? []
+
+  return (
+    <div className="mt-3">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-sm font-semibold text-slate-900">終端機 AI</p>
+        <button
+          type="button"
+          onClick={() => {
+            abortRef.current?.abort()
+            onBack()
+          }}
+          className="h-11 px-2 text-sm font-semibold text-slate-500 transition hover:text-slate-900"
+        >
+          換一個
+        </button>
+      </div>
+      <p className="mt-1 text-xs leading-5 text-slate-500">
+        用你電腦上已登入的 Claude Code、Codex 或 Gemini CLI 處理，答案會自動帶回來。
+      </p>
+
+      {phase === 'idle' && (
+        <button
+          type="button"
+          onClick={() => void check()}
+          className="mt-3 h-11 w-full rounded-xl bg-slate-950 text-sm font-semibold text-white transition hover:bg-slate-800"
+        >
+          連接終端機
+        </button>
+      )}
+
+      {phase === 'checking' && <p className="mt-3 text-xs text-slate-500">正在尋找 bridge…</p>}
+
+      {(phase === 'offline' || phase === 'outdated') && (
+        <div className="mt-3 space-y-3 text-xs leading-5 text-slate-600">
+          <p className="font-semibold text-slate-800">
+            {phase === 'outdated'
+              ? '這個 bridge 版本太舊了。請重新下載並啟動：'
+              : '找不到 bridge。在終端機貼上這一行並執行（需要 Node.js 18 以上）：'}
+          </p>
+          <CopyCommand label="Windows（PowerShell）" command={commands.windows} />
+          <CopyCommand label="macOS / Linux" command={commands.unix} />
+          <p>啟動後終端機會顯示配對碼。瀏覽器如果詢問是否允許這個網站存取本機網路或裝置，請按允許。</p>
+          <details>
+            <summary className="cursor-pointer text-slate-500">bridge 用了其他連接埠</summary>
+            <div className="mt-2 flex gap-2">
+              <input
+                value={portInput}
+                onChange={(event) => setPortInput(event.target.value)}
+                inputMode="numeric"
+                aria-label="bridge 連接埠"
+                className="h-11 w-28 rounded-xl border border-slate-200 px-3 text-sm text-slate-900 outline-none focus:border-slate-400"
+              />
+              <button
+                type="button"
+                onClick={applyPort}
+                className="h-11 rounded-xl border border-slate-200 px-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+              >
+                套用
+              </button>
+            </div>
+          </details>
+          <button
+            type="button"
+            onClick={() => void check()}
+            className="h-11 w-full rounded-xl bg-slate-950 text-sm font-semibold text-white transition hover:bg-slate-800"
+          >
+            重新偵測
+          </button>
+        </div>
+      )}
+
+      {phase === 'pairing' && (
+        <div className="mt-3 space-y-2">
+          <p className="text-xs leading-5 text-slate-600">找到 bridge 了。輸入終端機上顯示的配對碼：</p>
+          <div className="flex gap-2">
+            <input
+              value={code}
+              onChange={(event) => setCode(event.target.value)}
+              placeholder="ABCD-EFGH"
+              aria-label="配對碼"
+              autoComplete="off"
+              spellCheck={false}
+              className="h-11 min-w-0 flex-1 rounded-xl border border-slate-200 px-3 font-mono text-sm uppercase tracking-widest text-slate-900 outline-none focus:border-slate-400"
+            />
+            <button
+              type="button"
+              onClick={() => void pair()}
+              disabled={!code.trim() || Boolean(status?.pairingLocked)}
+              className="h-11 rounded-xl bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              配對
+            </button>
+          </div>
+          {status?.pairingLocked && (
+            <p className="text-xs leading-5 text-amber-800">配對已鎖定：錯誤次數太多。請重新啟動 bridge 取得新的配對碼。</p>
+          )}
+        </div>
+      )}
+
+      {(phase === 'ready' || phase === 'running') && status && (
+        <div className="mt-3 space-y-3">
+          {usable.map((cli) => (
+            <div key={cli.id}>
+              <button
+                type="button"
+                onClick={() => void run(cli)}
+                disabled={phase === 'running'}
+                className="h-11 w-full rounded-xl bg-slate-950 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                用 {cli.label} 執行
+              </button>
+              <p className={`mt-1 text-xs leading-5 ${cli.signedIn === false ? 'text-amber-800' : 'text-slate-500'}`}>
+                {cli.signedIn === false ? `${cli.label} 尚未登入：請先在終端機登入後再執行。` : cli.note}
+              </p>
+            </div>
+          ))}
+          {installedButOff.map((cli) => (
+            <p key={cli.id} className="text-xs leading-5 text-slate-500">
+              {cli.label} 已安裝但未啟用。{cli.note}要使用請加上 <code className="font-mono">--enable {cli.id}</code> 重新啟動 bridge。
+            </p>
+          ))}
+          {usable.length === 0 && (
+            <p className="text-xs leading-5 text-amber-800">
+              bridge 目前沒有可用的 CLI。安裝並登入 Claude Code 後重新啟動 bridge。
+            </p>
+          )}
+          {phase === 'running' && (
+            <div className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2 ring-1 ring-slate-200">
+              <p className="text-xs leading-5 text-slate-600">{runningLabel} 處理中…通常需要幾十秒到幾分鐘。</p>
+              <button
+                type="button"
+                onClick={() => abortRef.current?.abort()}
+                className="h-11 shrink-0 px-2 text-sm font-semibold text-slate-600 transition hover:text-slate-900"
+              >
+                取消
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <p role="alert" className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-800 ring-1 ring-rose-200">
+          {error}
+        </p>
+      )}
+    </div>
+  )
+}
+
 type AiHandoffPanelProps<Context> = {
   /** Why the student cannot start yet, shown instead of the choices. */
   unavailableReason?: string | null
@@ -4300,6 +4594,7 @@ type AiHandoffPanelProps<Context> = {
 // so a browser that refuses the clipboard still leaves the student a way through.
 function AiHandoffPanel<Context>({ unavailableReason, onPrepare, onUseReply }: AiHandoffPanelProps<Context>) {
   const [destination, setDestination] = useState<HandoffDestination | null>(null)
+  const [terminal, setTerminal] = useState(false)
   const [prepared, setPrepared] = useState<{ prompt: string; context: Context } | null>(null)
   const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
   const [showPrompt, setShowPrompt] = useState(false)
@@ -4309,6 +4604,7 @@ function AiHandoffPanel<Context>({ unavailableReason, onPrepare, onUseReply }: A
 
   function reset() {
     setDestination(null)
+    setTerminal(false)
     setPrepared(null)
     setCopyState('idle')
     setShowPrompt(false)
@@ -4360,7 +4656,9 @@ function AiHandoffPanel<Context>({ unavailableReason, onPrepare, onUseReply }: A
         ChatGPT、Claude、Gemini 等網頁版或桌面版都可以；不用登入，也不耗每日額度。
       </p>
 
-      {!destination ? (
+      {terminal && !unavailableReason ? (
+        <TerminalBridgePanel onPrepare={onPrepare} onUseReply={onUseReply} onBack={reset} />
+      ) : !destination ? (
         unavailableReason ? (
           <p className="mt-3 rounded-xl bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800 ring-1 ring-amber-200">
             {unavailableReason}
@@ -4379,6 +4677,16 @@ function AiHandoffPanel<Context>({ unavailableReason, onPrepare, onUseReply }: A
                 {option.label}
               </button>
             ))}
+            <button
+              type="button"
+              onClick={() => {
+                reset()
+                setTerminal(true)
+              }}
+              className="col-span-2 h-11 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-800 transition hover:border-slate-300 hover:bg-slate-50"
+            >
+              終端機 AI（Claude Code / Codex / Gemini CLI）
+            </button>
           </div>
         )
       ) : (

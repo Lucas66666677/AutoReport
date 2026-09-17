@@ -424,3 +424,93 @@ test('a rewrite from the student\'s own AI that changes a number is refused', as
   await panel.getByRole('button', { name: '使用這個回答' }).click()
   await expect(page.getByText('確認 AI 重寫')).toBeVisible()
 })
+
+// The terminal bridge, end to end: a real bridge process, started the way a student
+// starts it, with a stand-in for Claude Code first on its PATH. The page finds it,
+// pairs with the code it prints, runs the Agent through it, and gets the answer back
+// through the same import and checks as copy and paste.
+test('a guest can hand the Agent to a signed-in terminal CLI through the bridge', async ({ page }) => {
+  const { spawn } = await import('node:child_process')
+  const { chmod, mkdtemp, rm, writeFile } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+
+  const fakeClaude = [
+    "const args = process.argv.slice(2)",
+    "if (args[0] === 'auth') process.exit(0)",
+    "const chunks = []",
+    "process.stdin.on('data', (chunk) => chunks.push(chunk))",
+    "process.stdin.on('end', () => {",
+    "  const toolsOff = args.slice(-2).join(' ') === '--disallowedTools *'",
+    "  const answer = { findings: ['來自終端機的審閱', 'tools-off:' + toolsOff] }",
+    // String.fromCharCode(10), not an escape: this line is source for another program.
+    "  const newline = String.fromCharCode(10)",
+    "  process.stdout.write('```json' + newline + JSON.stringify(answer) + newline + '```')",
+    "})",
+  ].join('\n')
+
+  const bin = await mkdtemp(path.join(tmpdir(), 'bridge-e2e-bin-'))
+  await writeFile(path.join(bin, 'fake-claude.cjs'), fakeClaude)
+  if (process.platform === 'win32') {
+    await writeFile(path.join(bin, 'claude.cmd'), '@node "%~dp0fake-claude.cjs" %*\r\n')
+  } else {
+    await writeFile(path.join(bin, 'claude'), `#!/usr/bin/env node\n${fakeClaude}`)
+    await chmod(path.join(bin, 'claude'), 0o755)
+  }
+
+  // Windows spells it Path; setting a second PATH key would leave the child guessing.
+  const pathKey = Object.keys(process.env).find((key) => key.toUpperCase() === 'PATH') ?? 'PATH'
+  const port = 47711
+  const script = fileURLToPath(new URL('../public/bridge/autolabreport-bridge.mjs', import.meta.url))
+  const bridge = spawn(process.execPath, [script, '--port', String(port), '--allow-origin', 'http://127.0.0.1:5174'], {
+    env: { ...process.env, [pathKey]: `${bin}${path.delimiter}${process.env[pathKey] ?? ''}` },
+  })
+
+  try {
+    const pairingCode = await new Promise<string>((resolve, reject) => {
+      let printed = ''
+      const timer = setTimeout(() => reject(new Error(`bridge printed no pairing code:\n${printed}`)), 30_000)
+      bridge.stdout.on('data', (chunk: Buffer) => {
+        printed += chunk.toString('utf8')
+        const match = printed.match(/配對碼：([A-Z0-9]{4}-[A-Z0-9]{4})/)
+        if (match && printed.includes('Ctrl+C')) {
+          clearTimeout(timer)
+          resolve(match[1])
+        }
+      })
+      bridge.on('exit', (code) => reject(new Error(`bridge exited (${code}):\n${printed}`)))
+    })
+
+    await openBlankReport(page)
+    await writeReport(page, HANDOFF_REPORT)
+    await page.evaluate((testPort) => {
+      localStorage.setItem('autolabreport-terminal-bridge', JSON.stringify({ port: testPort, token: null }))
+    }, port)
+
+    await page.getByRole('button', { name: 'AI Agent', exact: true }).click()
+    const agent = page.locator('aside').filter({ has: page.getByRole('heading', { name: 'AI Agent' }) })
+    const panel = agent.getByRole('region', { name: '用你自己的 AI' })
+
+    await panel.getByRole('button', { name: /^終端機 AI/ }).click()
+    await panel.getByRole('button', { name: '連接終端機' }).click()
+
+    // A wrong code is refused in the bridge's own words.
+    await panel.getByLabel('配對碼').fill('AAAA-AAAA')
+    await panel.getByRole('button', { name: '配對', exact: true }).click()
+    await expect(panel.getByRole('alert')).toContainText('配對碼不正確')
+
+    await panel.getByLabel('配對碼').fill(pairingCode.toLowerCase())
+    await panel.getByRole('button', { name: '配對', exact: true }).click()
+
+    const run = panel.getByRole('button', { name: '用 Claude Code 執行' })
+    await expect(run).toBeVisible()
+    await expect(panel).toContainText('已關閉所有工具')
+    await run.click()
+
+    await expect(agent).toContainText('來自終端機的審閱')
+    // The stand-in reports the arguments it was started with: every tool removed.
+    await expect(agent).toContainText('tools-off:true')
+  } finally {
+    bridge.kill()
+    await rm(bin, { recursive: true, force: true })
+  }
+})
