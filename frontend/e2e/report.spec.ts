@@ -648,6 +648,10 @@ test('an AI app reads and edits the open report through the MCP connector', asyn
     await page.getByRole('button', { name: 'AI Agent', exact: true }).click()
     await expect(panel.getByRole('list', { name: 'AI app 最近的動作' })).toContainText('插入圖片')
 
+    // ChatGPT on the web works on cloud reports, so a guest is told to sign in first.
+    await panel.getByText('用 ChatGPT 網頁版').click()
+    await expect(panel).toContainText('需要先登入 AutoLabReport')
+
     // Disconnecting stops the AI at once.
     await panel.getByRole('button', { name: '中斷連線' }).click()
     await expect(panel.getByRole('button', { name: '連接 AI app' })).toBeVisible()
@@ -659,4 +663,15 @@ test('an AI app reads and edits the open report through the MCP connector', asyn
     connector.kill()
     await rm(stateDir, { recursive: true, force: true })
   }
+})
+
+// Supabase Auth sends a student here to approve ChatGPT; the page must not be rewritten
+// to the front page, as other unknown paths are for a visitor who is not signed in.
+test('the AI app consent page keeps its address and explains a broken link', async ({ page }) => {
+  await page.goto('/oauth/consent?authorization_id=abc-123')
+  await expect(page).toHaveURL(/\/oauth\/consent\?authorization_id=abc-123$/)
+  await expect(page.getByRole('heading', { name: /登入 AutoLabReport|目前無法處理授權/ })).toBeVisible()
+
+  await page.goto('/oauth/consent')
+  await expect(page.getByRole('heading', { name: '授權連結不完整' })).toBeVisible()
 })

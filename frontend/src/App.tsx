@@ -176,6 +176,19 @@ import {
   type TextEdit,
 } from './agentConnector'
 import { useAgentConnector, type AgentToolHandlers } from './useAgentConnector'
+import { OAuthConsentPage } from './OAuthConsentPage'
+import { consentAuthorizationId, isConsentRoute, rememberPendingConsent, takePendingConsent } from './oauthConsent'
+import {
+  REMOTE_APPLIED_TOAST,
+  REMOTE_CHECK_INTERVAL_MS,
+  REMOTE_KEPT_TOAST,
+  decideRemoteChange,
+  keepVersionInHistory,
+  saveOverKnownVersion,
+  sameInstant,
+  type KnownVersion,
+  type RemoteSyncActions,
+} from './remoteDocumentSync'
 import { createPrivateReportImageUrl, REPORT_IMAGE_BUCKET,
   parsePrivateReportImagePath,
 } from './reportImageStorage'
@@ -4419,8 +4432,34 @@ const PANEL_SECONDARY_BUTTON =
 // Lets an AI app the student already uses -- Claude Desktop, Claude Code, ChatGPT desktop,
 // Codex -- work on their reports through the MCP connector (agentConnector.ts). The
 // connection itself lives in WorkspaceApp, so it keeps working with this drawer closed.
-function AgentConnectorPanel({ connector }: { connector: AgentConnectorState }) {
+function AgentConnectorPanel({
+  connector,
+  signedIn,
+  apiBaseUrl,
+}: {
+  connector: AgentConnectorState
+  signedIn: boolean
+  apiBaseUrl: string
+}) {
   const { phase, status, error, activity, port, check, pair, disconnect, takeOver } = connector
+  // ChatGPT on the web reaches the backend's remote MCP server instead (mcp_remote.py),
+  // once the project's sign-in for AI apps is switched on.
+  const [remote, setRemote] = useState<{ url: string; enabled: boolean } | null>(null)
+  useEffect(() => {
+    if (!signedIn) return
+    let cancelled = false
+    fetch(`${apiBaseUrl}/api/mcp/status`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload: { url?: unknown; oauth_enabled?: unknown } | null) => {
+        if (!cancelled && payload && typeof payload.url === 'string') {
+          setRemote({ url: payload.url, enabled: payload.oauth_enabled === true })
+        }
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [signedIn, apiBaseUrl])
   const [code, setCode] = useState('')
   const [system, setSystem] = useState<'windows' | 'unix'>(() =>
     typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent) ? 'windows' : 'unix',
@@ -4588,6 +4627,32 @@ function AgentConnectorPanel({ connector }: { connector: AgentConnectorState }) 
           {error}
         </p>
       )}
+
+      <details className="mt-3 rounded-xl border border-slate-200 px-3 py-2 text-xs">
+        <summary className="cursor-pointer font-semibold text-slate-700">用 ChatGPT 網頁版</summary>
+        <div className="mt-2 space-y-2 leading-5 text-slate-600">
+          {!signedIn ? (
+            <p>ChatGPT 網頁版直接存取你的雲端報告，需要先登入 AutoLabReport。</p>
+          ) : !remote ? (
+            <p>正在確認…</p>
+          ) : !remote.enabled ? (
+            <p>ChatGPT 網頁版的連接還沒開放。</p>
+          ) : (
+            <>
+              <p>需要 ChatGPT Plus、Pro、Business、Enterprise 或 Education 方案。</p>
+              <p className="font-semibold text-slate-800">
+                1. ChatGPT → 設定（Settings）→ 安全性與登入（Security and login），開啟「Developer mode」
+              </p>
+              <p className="font-semibold text-slate-800">2. 到 ChatGPT Plugins 按「＋」建立 app，網址填這個，驗證方式選 OAuth：</p>
+              <CopyCommand label="MCP 網址" command={remote.url} />
+              <p className="font-semibold text-slate-800">3. 依畫面登入 AutoLabReport，按「允許」</p>
+              <p>
+                之後在對話的「＋」→「Developer mode」選 AutoLabReport。修改會直接存進你的報告，每次修改前自動備份；如果你正開著那份報告，幾秒內就會看到。
+              </p>
+            </>
+          )}
+        </div>
+      </details>
     </section>
   )
 }
@@ -5268,6 +5333,7 @@ function WorkspaceApp({
   const agentOpenReportRef = useRef<AgentOpenReport>(null)
   const agentBackupsRef = useRef(new Map<string, number>())
   const [agentImages] = useState(() => new AgentImageRegistry())
+  const remoteSyncActionsRef = useRef<RemoteSyncActions | null>(null)
   const editorScrollDisposableRef = useRef<{ dispose: () => void } | null>(null)
   const editorContentDisposableRef = useRef<{ dispose: () => void } | null>(null)
   const editorSelectionDisposableRef = useRef<{ dispose: () => void } | null>(null)
@@ -5292,6 +5358,7 @@ function WorkspaceApp({
   const documentSaveTimerRef = useRef<number | null>(null)
   const documentSaveRevisionRef = useRef(0)
   const documentSaveQueueRef = useRef<Promise<void>>(Promise.resolve())
+  const remoteKnownRef = useRef<KnownVersion>({ documentId: null, updatedAt: null })
   const isWorkspaceMountedRef = useRef(true)
 
   const isEditorEmpty = !markdown.trim()
@@ -5881,15 +5948,40 @@ function WorkspaceApp({
       const request = documentSaveQueueRef.current
         .catch(() => undefined)
         .then(async () => {
-          const { data, error } = await documentClient
-            .from('documents')
-            .update({ content: pendingSave.content, updated_at: pendingSave.queuedAt })
-            .eq('id', pendingSave.documentId)
-            .select('id')
-            .maybeSingle()
-
-          if (error) throw error
-          if (!data) throw new Error('文件不存在或目前帳號沒有編輯權限')
+          // Only over the version this tab last saw (remoteDocumentSync.ts). A collaborative
+          // (Yjs) document is kept in step by the collaboration server instead.
+          const known = remoteKnownRef.current
+          const knownUpdatedAt =
+            known.documentId === pendingSave.documentId && !ytextRef.current ? known.updatedAt : null
+          const { keptRemote } = await saveOverKnownVersion(pendingSave.content, knownUpdatedAt, {
+            update: async (onlyIfUpdatedAt) => {
+              let query = documentClient
+                .from('documents')
+                .update({ content: pendingSave.content, updated_at: pendingSave.queuedAt })
+                .eq('id', pendingSave.documentId)
+              if (onlyIfUpdatedAt) query = query.eq('updated_at', onlyIfUpdatedAt)
+              const { data, error } = await query.select('id').maybeSingle()
+              if (error) throw error
+              return data ? 'saved' : 'missed'
+            },
+            fetchRemote: async () => {
+              const { data, error } = await documentClient
+                .from('documents')
+                .select('content, updated_at')
+                .eq('id', pendingSave.documentId)
+                .maybeSingle()
+              if (error) throw error
+              return data ? { content: data.content ?? '', updatedAt: data.updated_at ?? null } : null
+            },
+            keepRemoteVersion: async (content) => {
+              const document = documentsRef.current.find((item) => item.id === pendingSave.documentId)
+              if (!document) return
+              const version = await keepVersionInHistory(documentClient, document, content, saveOwnerKey)
+              setDocumentVersions((current) => [version, ...current].slice(0, 120))
+            },
+          })
+          remoteKnownRef.current = { documentId: pendingSave.documentId, updatedAt: pendingSave.queuedAt }
+          if (keptRemote && isWorkspaceMountedRef.current) setBridgeToast(REMOTE_KEPT_TOAST)
 
           removeDocumentSave(window.localStorage, saveOwnerKey, pendingSave.documentId, pendingSave.revision)
           if (
@@ -9101,11 +9193,122 @@ function WorkspaceApp({
 
   const agentConnector = useAgentConnector({ handlersRef: agentToolHandlersRef, openReportRef: agentOpenReportRef })
 
-  // The connector's calls arrive between renders; they always use this render's handlers.
+  // --- Changes made elsewhere to the open cloud report (remoteDocumentSync.ts) ------------
+
+  const remoteSyncActions: RemoteSyncActions = {
+    // The editor's own text, line breaks as stored: the database holds what it saved.
+    localText: () => liveAgentEditor()?.getValue() ?? null,
+    hasUnsavedLocalChanges: (documentId) =>
+      pendingDocumentSaveRef.current !== null ||
+      documentSaveTimerRef.current !== null ||
+      (user ? readDocumentSaveOutbox(window.localStorage, user.id).some((item) => item.documentId === documentId) : false),
+    show: (documentId, content, updatedAt) => {
+      if (activeDocument?.id !== documentId) return
+      const ed = liveAgentEditor()
+      if (ed && canEditActiveDocumentRef.current) {
+        // As an edit, so Ctrl+Z brings back what was showing before.
+        const text = agentEditorText(ed)
+        const end = positionAt(text, text.length)
+        ed.pushUndoStop()
+        ed.executeEdits('remote-update', [
+          {
+            range: { startLineNumber: 1, startColumn: 1, endLineNumber: end.lineNumber, endColumn: end.column },
+            text: content,
+            forceMoveMarkers: true,
+          },
+        ])
+        ed.pushUndoStop()
+      } else {
+        isApplyingRemoteRef.current = true
+        updateMarkdownValue(content)
+        ed?.setValue(content)
+        isApplyingRemoteRef.current = false
+      }
+      setDocuments((currentDocuments) =>
+        currentDocuments.map((document) =>
+          document.id === documentId ? { ...document, content, updatedAt: updatedAt ?? document.updatedAt } : document,
+        ),
+      )
+      setBridgeToast(REMOTE_APPLIED_TOAST)
+    },
+    keep: async (documentId, content) => {
+      const document = documents.find((item) => item.id === documentId)
+      if (!supabase || !user || !document) return
+      const version = await keepVersionInHistory(supabase, document, content, user.id)
+      setDocumentVersions((current) => [version, ...current].slice(0, 120))
+      setBridgeToast(REMOTE_KEPT_TOAST)
+    },
+  }
+
+  // The connector's calls and the checks below arrive between renders; they always use
+  // this render's functions.
   useEffect(() => {
     agentToolHandlersRef.current = agentHandlers
     agentOpenReportRef.current = activeDocument ? { id: activeDocument.id, title: activeDocument.title } : null
+    remoteSyncActionsRef.current = remoteSyncActions
   })
+
+  // While a cloud report is showing, look for a newer version saved elsewhere -- by
+  // ChatGPT through the remote MCP server, or another tab. With nothing unsaved here it
+  // is shown; otherwise it is kept in the version history and the student's typing wins.
+  const syncedDocumentId = shouldUseSupabaseDocuments && currentView === 'editor' ? (activeDocument?.id ?? null) : null
+  useEffect(() => {
+    if (!supabase || !syncedDocumentId) return
+    const client = supabase
+    const documentId = syncedDocumentId
+    let cancelled = false
+    let checking = false
+
+    async function checkRemote() {
+      const actions = remoteSyncActionsRef.current
+      if (checking || cancelled || !actions || window.document.visibilityState !== 'visible' || ytextRef.current) return
+      checking = true
+      try {
+        // A save in flight moves the known version on; let it land first.
+        await documentSaveQueueRef.current.catch(() => undefined)
+        const { data: stamp } = await client.from('documents').select('updated_at').eq('id', documentId).maybeSingle()
+        if (cancelled || !stamp) return
+        const known = remoteKnownRef.current
+        const knownUpdatedAt = known.documentId === documentId ? known.updatedAt : null
+        if (knownUpdatedAt !== null && sameInstant(knownUpdatedAt, stamp.updated_at)) return
+        const { data: remote } = await client
+          .from('documents')
+          .select('content, updated_at')
+          .eq('id', documentId)
+          .maybeSingle()
+        const localContent = actions.localText()
+        if (cancelled || !remote || localContent === null) return
+        const remoteContent: string = remote.content ?? ''
+        const remoteUpdatedAt: string | null = remote.updated_at ?? null
+        const change = decideRemoteChange({
+          knownUpdatedAt,
+          remoteUpdatedAt,
+          remoteContent,
+          localContent,
+          hasUnsavedLocalChanges: actions.hasUnsavedLocalChanges(documentId),
+        })
+        remoteKnownRef.current = { documentId, updatedAt: remoteUpdatedAt }
+        if (change === 'apply') actions.show(documentId, remoteContent, remoteUpdatedAt)
+        if (change === 'conflict') await actions.keep(documentId, remoteContent)
+      } catch {
+        // The next check tries again.
+      } finally {
+        checking = false
+      }
+    }
+
+    void checkRemote()
+    const timer = window.setInterval(() => void checkRemote(), REMOTE_CHECK_INTERVAL_MS)
+    const onReturn = () => void checkRemote()
+    window.addEventListener('focus', onReturn)
+    window.document.addEventListener('visibilitychange', onReturn)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      window.removeEventListener('focus', onReturn)
+      window.document.removeEventListener('visibilitychange', onReturn)
+    }
+  }, [syncedDocumentId])
 
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50 font-sans text-slate-800">
@@ -10222,7 +10425,7 @@ function WorkspaceApp({
             </header>
 
             <div className={`min-h-0 flex-1 overflow-auto px-5 py-5 ${SCROLLBAR_HIDE}`}>
-              <AgentConnectorPanel connector={agentConnector} />
+              <AgentConnectorPanel connector={agentConnector} signedIn={Boolean(user)} apiBaseUrl={API_BASE_URL} />
               <section>
                 <div className="grid gap-2">
                   {AGENT_MODE_CONFIG.map((config) => (
@@ -11017,6 +11220,8 @@ function App() {
   const publicReportId =
     typeof window !== 'undefined' ? window.location.pathname.match(/^\/p\/([^/]+)/) : null
   const publicReportShareId = publicReportId?.[1] ? decodeURIComponent(publicReportId[1]) : null
+  // Where Supabase Auth sends a student to approve an AI app (oauthConsent.ts).
+  const onConsentRoute = typeof window !== 'undefined' && isConsentRoute(window.location.pathname)
   const [user, setUser] = useState<User | null>(null)
   const [isGuestMode, setIsGuestMode] = useState(
     () => window.localStorage.getItem(GUEST_SESSION_STORAGE_KEY) === 'true',
@@ -11063,6 +11268,7 @@ function App() {
   useEffect(() => {
     if (authLoading) return
     if (publicReportShareId) return
+    if (onConsentRoute) return
 
     if (user) {
       const clearTimer = window.setTimeout(() => {
@@ -11126,7 +11332,14 @@ function App() {
       isCancelled = true
       window.clearTimeout(loadTimer)
     }
-  }, [authLoading, publicReportShareId, user])
+  }, [authLoading, onConsentRoute, publicReportShareId, user])
+
+  // Signing in leaves the consent page; come back to it afterwards.
+  useEffect(() => {
+    if (authLoading || !user || onConsentRoute) return
+    const pending = takePendingConsent(window.location.origin)
+    if (pending) window.location.replace(pending)
+  }, [authLoading, onConsentRoute, user])
 
   if (publicReportShareId) {
     return (
@@ -11199,6 +11412,27 @@ function App() {
         <BrandMark size="default" />
         <span>{authLoading ? '正在確認登入狀態...' : '正在開啟共享文件...'}</span>
       </div>
+    )
+  }
+
+  if (onConsentRoute) {
+    const rememberThisPage = () => rememberPendingConsent(window.location.href)
+    return (
+      <OAuthConsentPage
+        authorizationId={consentAuthorizationId(window.location.search)}
+        user={user}
+        authMessage={authMessage}
+        oauth={supabase?.auth.oauth ?? null}
+        onOAuthLogin={(provider) => {
+          rememberThisPage()
+          void signInWithOAuth(provider)
+        }}
+        onSendMagicLink={(email) => {
+          rememberThisPage()
+          return sendMagicLink(email)
+        }}
+        onSignOut={() => void signOut()}
+      />
     )
   }
 

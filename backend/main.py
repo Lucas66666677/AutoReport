@@ -35,10 +35,13 @@ from fastapi.responses import RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from error_reporting import error_reporting_configured, report_exception
+from mcp_remote import router as mcp_router
 
 load_dotenv(Path(__file__).with_name(".env"))
 
 app = FastAPI(title="AutoLabReport API", version="0.4.0")
+# MCP for AI apps that only reach servers on the internet (ChatGPT on the web).
+app.include_router(mcp_router)
 
 # The deployed frontend origin is part of the *default* list, not only of the
 # CORS_ALLOWED_ORIGINS override. The default was localhost-only, and the live
