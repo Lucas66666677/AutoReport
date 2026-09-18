@@ -675,3 +675,119 @@ test('the AI app consent page keeps its address and explains a broken link', asy
   await page.goto('/oauth/consent')
   await expect(page.getByRole('heading', { name: '授權連結不完整' })).toBeVisible()
 })
+
+// The student decides how far a connected AI app may go (aiAppModes.ts).
+test('an AI app’s changes follow the mode the student chose', async ({ page }) => {
+  const { spawn } = await import('node:child_process')
+  const { mkdtemp, rm } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+
+  const port = 47713
+  const stateDir = await mkdtemp(path.join(tmpdir(), 'mcp-modes-state-'))
+  const script = fileURLToPath(new URL('../public/mcp/autolabreport-mcp.mjs', import.meta.url))
+  const connector = spawn(
+    process.execPath,
+    [script, '--port', String(port), '--allow-origin', 'http://127.0.0.1:5174', '--state-dir', stateDir],
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  )
+  let pending = ''
+  const waiting = new Map<number, (message: { result: { content: { text: string }[]; isError: boolean } }) => void>()
+  connector.stdout.on('data', (chunk: Buffer) => {
+    pending += chunk.toString('utf8')
+    for (let newline = pending.indexOf('\n'); newline >= 0; newline = pending.indexOf('\n')) {
+      const message = JSON.parse(pending.slice(0, newline))
+      pending = pending.slice(newline + 1)
+      waiting.get(message.id)?.(message)
+    }
+  })
+  const meta = {
+    'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+    'io.modelcontextprotocol/clientCapabilities': {},
+    'io.modelcontextprotocol/clientInfo': { name: 'E2E 代理', version: '1' },
+  }
+  let nextId = 1
+  function callTool(name: string, args: Record<string, unknown> = {}) {
+    const id = nextId
+    nextId += 1
+    const reply = new Promise<{ text: string; isError: boolean }>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`no reply to ${name}`)), 60_000)
+      waiting.set(id, (message) => {
+        clearTimeout(timer)
+        resolve({ text: message.result.content[0].text, isError: message.result.isError })
+      })
+    })
+    connector.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args, _meta: meta } })}\n`)
+    return reply
+  }
+  const editorText = () => page.evaluate(() => window.monaco.editor.getModels()[0].getValue())
+
+  try {
+    await page.addInitScript((testPort) => {
+      if (!localStorage.getItem('autolabreport-agent-connector')) {
+        localStorage.setItem('autolabreport-agent-connector', JSON.stringify({ port: testPort, token: null }))
+      }
+    }, port)
+    await openBlankReport(page)
+    await writeReport(page, '# 單擺實驗\n\n誤差待補。\n')
+
+    const code = (await callTool('connection_status')).text.match(/[A-Z0-9]{4}-[A-Z0-9]{4}/)![0]
+    await page.getByRole('button', { name: 'AI Agent', exact: true }).click()
+    const panel = page.getByRole('region', { name: '連接 AI app' })
+    await panel.getByRole('button', { name: '連接 AI app' }).click()
+    await panel.getByLabel('AI app 配對碼').fill(code)
+    await panel.getByRole('button', { name: '配對', exact: true }).click()
+    await expect(panel).toContainText('已連線')
+    const modes = panel.getByRole('radiogroup', { name: 'AI 權限模式' })
+    await expect(modes.getByRole('radio', { name: '自動' })).toHaveAttribute('aria-checked', 'true')
+
+    // Planning: the AI may read, and every change is refused.
+    await modes.getByRole('radio', { name: '規劃' }).click()
+    const planned = await callTool('edit_report', { old_text: '誤差待補。', new_text: '誤差約 0.25 s。' })
+    expect(planned.isError).toBe(true)
+    expect(planned.text).toContain('規劃')
+    expect((await callTool('read_report')).isError).toBe(false)
+    expect(await editorText()).toContain('誤差待補。')
+
+    // Manual: the change waits on a card; 允許 applies it and the AI hears so.
+    await modes.getByRole('radio', { name: '手動' }).click()
+    const allowed = callTool('edit_report', { old_text: '誤差待補。', new_text: '誤差約 0.25 s。' })
+    const card = page.getByRole('complementary', { name: 'AI app 的修改建議' })
+    await expect(card).toContainText('+ 誤差約 0.25 s。')
+    await expect(card).toContainText('− 誤差待補。')
+    expect(await editorText()).toContain('誤差待補。')
+    await card.getByRole('button', { name: '允許' }).click()
+    const allowedReply = await allowed
+    expect(allowedReply.isError).toBe(false)
+    expect(allowedReply.text).toContain('使用者已允許')
+    await expect.poll(editorText).toContain('誤差約 0.25 s。')
+    await expect(card).toBeHidden()
+
+    // 拒絕 leaves the report alone, and the AI is told.
+    const refused = callTool('edit_report', { old_text: '誤差約 0.25 s。', new_text: '亂寫的結論。' })
+    await card.getByRole('button', { name: '拒絕' }).click()
+    const refusedReply = await refused
+    expect(refusedReply.isError).toBe(true)
+    expect(refusedReply.text).toContain('拒絕')
+    expect(await editorText()).toContain('誤差約 0.25 s。')
+
+    // Automatic: straight in, no card.
+    await modes.getByRole('radio', { name: '自動' }).click()
+    expect((await callTool('edit_report', { old_text: '# 單擺實驗', new_text: '# 單擺實驗（第二次）' })).isError).toBe(false)
+    await expect.poll(editorText).toContain('# 單擺實驗（第二次）')
+    await expect(card).toBeHidden()
+
+    // A guest's choice stays in this browser.
+    await modes.getByRole('radio', { name: '規劃' }).click()
+    await page.reload()
+    // Reloading returns to the dashboard; the report is listed there.
+    await page.getByRole('button', { name: /未命名報告/ }).first().click()
+    await page.getByRole('button', { name: 'AI Agent', exact: true }).click()
+    await expect(
+      page.getByRole('region', { name: '連接 AI app' }).getByRole('radio', { name: '規劃' }),
+    ).toHaveAttribute('aria-checked', 'true')
+  } finally {
+    connector.stdin.end()
+    connector.kill()
+    await rm(stateDir, { recursive: true, force: true })
+  }
+})

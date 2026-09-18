@@ -179,8 +179,8 @@ class ProtocolTests(unittest.TestCase):
 
 
 class ToolTests(unittest.TestCase):
-    def call(self, database: FakeDatabase, name: str, args: dict[str, Any]) -> str:
-        with patch.object(mcp_remote, "_as_user", database):
+    def call(self, database: FakeDatabase, name: str, args: dict[str, Any], mode: str | None = "auto") -> str:
+        with patch.object(mcp_remote, "_as_user", database), patch.object(mcp_remote, "ai_app_mode", return_value=mode):
             return mcp_remote.call_tool(USER, name, args)
 
     def test_every_request_carries_the_students_own_token(self):
@@ -283,6 +283,90 @@ class ToolTests(unittest.TestCase):
         self.assertEqual(payload["title"], "單擺實驗")
         self.assertEqual(payload["content"], "# 目的\n")
         self.assertIn(payload["id"], text)
+
+
+class ModeTests(unittest.TestCase):
+    """The student's AI app mode decides what reaches the report."""
+
+    def call(self, database: FakeDatabase, name: str, args: dict[str, Any], mode: str | None) -> str:
+        with patch.object(mcp_remote, "_as_user", database), patch.object(mcp_remote, "ai_app_mode", return_value=mode):
+            return mcp_remote.call_tool(USER, name, args)
+
+    def test_planning_refuses_every_change_and_writes_nothing(self):
+        for name, args in (
+            ("edit_report", {"report_id": REPORT_ID, "old_text": "a", "new_text": "b"}),
+            ("write_report", {"report_id": REPORT_ID, "content": "new"}),
+            ("create_report", {"title": "新報告"}),
+        ):
+            with self.subTest(tool=name):
+                database = FakeDatabase(_report("a"))
+                with self.assertRaisesRegex(mcp_remote.ToolFailure, "規劃"):
+                    self.call(database, name, args, "plan")
+                self.assertEqual([m for m in database.methods() if not m.startswith("GET")], [])
+        # Reading is what planning is for.
+        self.assertIn("單擺實驗", self.call(FakeDatabase(_report("a")), "read_report", {"report_id": REPORT_ID}, "plan"))
+
+    def test_manual_turns_a_change_into_a_suggestion_the_student_approves(self):
+        database = FakeDatabase(_report("## 討論\n\n誤差待補。\n"))
+        text = self.call(
+            database, "edit_report", {"report_id": REPORT_ID, "old_text": "誤差待補。", "new_text": "誤差約 0.25 s。"}, "manual"
+        )
+        self.assertIn("修改建議", text)
+        self.assertNotIn("PATCH /rest/v1/documents", database.methods())
+        _, method, path, payload, _ = database.calls[-1]
+        self.assertEqual((method, path), ("POST", "/rest/v1/document_versions"))
+        self.assertEqual(payload["note"], mcp_remote.SUGGESTION_NOTE)
+        self.assertEqual(payload["content"], "## 討論\n\n誤差約 0.25 s。\n")
+        self.assertEqual(database.report["content"], "## 討論\n\n誤差待補。\n")
+
+    def test_manual_still_lets_a_new_report_be_created(self):
+        database = FakeDatabase()
+        self.assertIn("已建立報告", self.call(database, "create_report", {"title": "新報告"}, "manual"))
+
+    def test_changes_nothing_when_the_mode_cannot_be_read(self):
+        database = FakeDatabase(_report("a"))
+        with self.assertRaisesRegex(mcp_remote.ToolFailure, "暫時無法確認"):
+            self.call(database, "write_report", {"report_id": REPORT_ID, "content": "x"}, None)
+        self.assertEqual([m for m in database.methods() if not m.startswith("GET")], [])
+
+    def test_reads_the_mode_from_the_students_preferences_as_the_service_role(self):
+        seen: dict[str, Any] = {}
+
+        class Answer(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def answer(body: bytes):
+            def fake(request, timeout=None):
+                seen["url"] = request.full_url
+                seen["headers"] = {key.lower(): value for key, value in request.header_items()}
+                return Answer(body)
+
+            return fake
+
+        with patch.dict(os.environ, ENV):
+            mcp_remote._mode_cache.clear()
+            with patch.object(mcp_remote.urllib.request, "urlopen", answer(b'[{"preferences": {"aiAppMode": "plan"}}]')):
+                self.assertEqual(mcp_remote.ai_app_mode(USER["id"]), "plan")
+            self.assertIn(f"profiles?id=eq.{USER['id']}", seen["url"])
+            self.assertEqual(seen["headers"]["authorization"], f"Bearer {ENV['SUPABASE_SERVICE_ROLE_KEY']}")
+            # Cached: no second request inside the window.
+            with patch.object(mcp_remote.urllib.request, "urlopen", answer(b"garbage")):
+                self.assertEqual(mcp_remote.ai_app_mode(USER["id"]), "plan")
+            mcp_remote._mode_cache.clear()
+            with patch.object(mcp_remote.urllib.request, "urlopen", answer(b'[{"preferences": {"aiAppMode": "yolo"}}]')):
+                self.assertEqual(mcp_remote.ai_app_mode(USER["id"]), "auto")
+            mcp_remote._mode_cache.clear()
+
+            def unreachable(request, timeout=None):
+                raise urllib.error.URLError("down")
+
+            with patch.object(mcp_remote.urllib.request, "urlopen", unreachable):
+                self.assertIsNone(mcp_remote.ai_app_mode(USER["id"]))
+            mcp_remote._mode_cache.clear()
 
 
 class DatabaseRequestTests(unittest.TestCase):

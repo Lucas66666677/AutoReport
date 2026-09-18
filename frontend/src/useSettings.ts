@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { SupabaseClient, User } from '@supabase/supabase-js'
+import { DEFAULT_AI_APP_MODE, normalizeAiAppMode, type AiAppMode } from './aiAppModes'
 
 export type DefaultExportFormat = 'word' | 'pdf' | 'markdown'
 
@@ -10,6 +11,8 @@ export type NotePreferences = {
   autoNumberFigures: boolean
   autoNumberTables: boolean
   compactPreview: boolean
+  /** How far a connected AI app may go (aiAppModes.ts); the remote MCP server reads it too. */
+  aiAppMode: AiAppMode
 }
 
 export const DEFAULT_NOTE_PREFERENCES: NotePreferences = {
@@ -19,6 +22,7 @@ export const DEFAULT_NOTE_PREFERENCES: NotePreferences = {
   autoNumberFigures: true,
   autoNumberTables: true,
   compactPreview: false,
+  aiAppMode: DEFAULT_AI_APP_MODE,
 }
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number) {
@@ -57,6 +61,7 @@ export function normalizeNotePreferences(input: unknown): NotePreferences {
         : DEFAULT_NOTE_PREFERENCES.autoNumberTables,
     compactPreview:
       typeof source.compactPreview === 'boolean' ? source.compactPreview : DEFAULT_NOTE_PREFERENCES.compactPreview,
+    aiAppMode: normalizeAiAppMode(source.aiAppMode),
   }
 }
 
