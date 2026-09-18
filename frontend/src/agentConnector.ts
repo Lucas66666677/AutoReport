@@ -1,7 +1,7 @@
 // Talking to the AutoLabReport MCP connector (public/mcp/autolabreport-mcp.mjs), which an
-// AI app -- Claude Desktop, Claude Code, ChatGPT desktop, Codex -- starts on the
-// student's computer. The app sends it tool calls; it hands each one to this page, which
-// carries it out in the editor and posts the answer back.
+// AI app -- Claude Desktop, Claude Code, ChatGPT desktop, Codex, Gemini CLI -- starts on
+// the student's computer. The app sends it tool calls; it hands each one to this page,
+// which carries it out in the editor and posts the answer back.
 //
 // Nothing here reaches the student's computer until they ask to connect, and the
 // connector gives this tab nothing until it is paired with the code their AI app shows.
@@ -178,12 +178,19 @@ export function saveAgentConnection(connection: AgentConnection, storage: Storag
 
 // --- Setting it up ------------------------------------------------------------------
 
-export type AgentConnectorCommands = { download: string; claudeDesktop: string; claudeCode: string; codex: string }
+export type AgentConnectorCommands = {
+  download: string
+  claudeDesktop: string
+  claudeCode: string
+  codex: string
+  gemini: string
+}
 
 /**
  * What to paste into a terminal: download the connector once, then register it with the
  * AI app. A page served from anywhere but production (local development) has to be named
- * with --allow-origin, or the connector would refuse it.
+ * with --allow-origin, or the connector would refuse it. Gemini CLI takes the options it
+ * should pass on only after a `--`; before one, it would read them as its own.
  */
 export function agentConnectorCommands(
   pageOrigin: string,
@@ -199,6 +206,7 @@ export function agentConnectorCommands(
     claudeDesktop: `node ${script} --install claude-desktop${extra}`,
     claudeCode: `claude mcp add --scope user --transport stdio autolabreport -- node ${script}${extra}`,
     codex: `node ${script} --install codex${extra}`,
+    gemini: `gemini mcp add --scope user autolabreport node ${script}${extra && ` --${extra}`}`,
   })
   return {
     windows: forOs('"$HOME\\autolabreport-mcp.mjs"', `irm ${url} -OutFile "$HOME\\autolabreport-mcp.mjs"`),

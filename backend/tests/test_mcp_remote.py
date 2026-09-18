@@ -465,6 +465,18 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(evil.status_code, 403)
         self.assertEqual(chatgpt.status_code, 200)
 
+    def test_accepts_claude_and_gemini_on_the_web_as_well(self):
+        with patch.object(mcp_remote, "_fetch_user", return_value={"id": USER["id"]}):
+            for origin in ("https://claude.ai", "https://claude.com", "https://gemini.google.com"):
+                response = self.post(
+                    {"jsonrpc": "2.0", "id": 1, "method": "ping", "params": {"_meta": MODERN_META}},
+                    {"authorization": "Bearer good", "origin": origin},
+                )
+                self.assertEqual(response.status_code, 200, origin)
+            # Another Google page is not Gemini.
+            other = self.post({"jsonrpc": "2.0", "id": 1, "method": "ping"}, {"authorization": "Bearer good", "origin": "https://sites.google.com"})
+        self.assertEqual(other.status_code, 403)
+
     def test_runs_a_tool_end_to_end_as_the_student(self):
         database = FakeDatabase(_report("# 單擺實驗\n"))
         with patch.object(mcp_remote, "_fetch_user", return_value={"id": USER["id"]}), patch.object(mcp_remote, "_as_user", database):

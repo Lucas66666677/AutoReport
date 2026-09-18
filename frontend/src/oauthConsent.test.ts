@@ -74,6 +74,10 @@ describe('coming back after signing in', () => {
 describe('describeRedirect', () => {
   it('recognises the AI apps AutoLabReport knows, over https only', () => {
     expect(describeRedirect('https://chatgpt.com/connector_platform_oauth_redirect')).toEqual({ host: 'chatgpt.com', known: true })
+    expect(describeRedirect('https://claude.ai/api/mcp/auth_callback')).toEqual({ host: 'claude.ai', known: true })
+    expect(describeRedirect('https://gemini.google.com/oauth-redirect')).toEqual({ host: 'gemini.google.com', known: true })
+    // Anyone can put a page on some other Google host; only Gemini's own is known.
+    expect(describeRedirect('https://sites.google.com/view/cb')).toEqual({ host: 'sites.google.com', known: false })
     expect(describeRedirect('http://chatgpt.com/cb')).toEqual({ host: 'chatgpt.com', known: false })
     expect(describeRedirect('https://chatgpt.com.evil.example/cb')).toEqual({ host: 'chatgpt.com.evil.example', known: false })
     expect(describeRedirect('not a url')).toEqual({ host: 'not a url', known: false })

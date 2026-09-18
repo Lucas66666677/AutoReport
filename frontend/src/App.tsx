@@ -4464,7 +4464,7 @@ function AiSuggestionsCard({
         {suggestions.length > 1 && <span className="text-xs text-slate-500">還有 {suggestions.length - 1} 個</span>}
       </div>
       <p className="mt-1 text-xs leading-5 text-slate-500">
-        {first.source === 'remote' ? 'ChatGPT 網頁版' : '連接的 AI app'}：{first.summary}
+        {first.source === 'remote' ? '網頁版 AI' : '連接的 AI app'}：{first.summary}
       </p>
       <div className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-slate-50 p-2 font-mono text-xs leading-5 ring-1 ring-slate-200">
         {shown.map((line, index) =>
@@ -4513,9 +4513,17 @@ const PANEL_BUTTON =
 const PANEL_SECONDARY_BUTTON =
   'h-11 w-full rounded-xl border border-slate-200 text-sm font-semibold text-slate-700 transition hover:bg-slate-50'
 
+// The AI apps on the web that can add the remote MCP server, each with its own steps.
+const WEB_AI_APPS = [
+  { id: 'chatgpt', label: 'ChatGPT' },
+  { id: 'claude', label: 'Claude' },
+  { id: 'gemini', label: 'Gemini' },
+] as const
+type WebAiApp = (typeof WEB_AI_APPS)[number]['id']
+
 // Lets an AI app the student already uses -- Claude Desktop, Claude Code, ChatGPT desktop,
-// Codex -- work on their reports through the MCP connector (agentConnector.ts). The
-// connection itself lives in WorkspaceApp, so it keeps working with this drawer closed.
+// Codex, Gemini CLI -- work on their reports through the MCP connector (agentConnector.ts).
+// The connection itself lives in WorkspaceApp, so it keeps working with this drawer closed.
 function AgentConnectorPanel({
   connector,
   signedIn,
@@ -4530,8 +4538,8 @@ function AgentConnectorPanel({
   onChooseMode: (mode: AiAppMode) => void
 }) {
   const { phase, status, error, activity, port, check, pair, disconnect, takeOver } = connector
-  // ChatGPT on the web reaches the backend's remote MCP server instead (mcp_remote.py),
-  // once the project's sign-in for AI apps is switched on.
+  // ChatGPT, Claude and Gemini on the web reach the backend's remote MCP server instead
+  // (mcp_remote.py), once the project's sign-in for AI apps is switched on.
   const [remote, setRemote] = useState<{ url: string; enabled: boolean } | null>(null)
   useEffect(() => {
     if (!signedIn) return
@@ -4552,6 +4560,7 @@ function AgentConnectorPanel({
   const [system, setSystem] = useState<'windows' | 'unix'>(() =>
     typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent) ? 'windows' : 'unix',
   )
+  const [webApp, setWebApp] = useState<WebAiApp>('chatgpt')
   const commands = agentConnectorCommands(window.location.origin, port)[system]
   const clients = status?.clients.length ? `（${status.clients.join('、')}）` : ''
 
@@ -4566,9 +4575,9 @@ function AgentConnectorPanel({
     <section aria-label="連接 AI app" className="mb-6 rounded-2xl border border-slate-200 bg-white p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <h3 className="text-sm font-semibold text-slate-950">讓 Claude、ChatGPT 直接操作報告</h3>
+          <h3 className="text-sm font-semibold text-slate-950">讓 Claude、ChatGPT、Gemini 直接操作報告</h3>
           <p className="mt-1 text-xs leading-5 text-slate-500">
-            在 Claude Desktop、Claude Code、ChatGPT 桌面版或 Codex 裡直接下指令：AI 會讀取、修改你的報告，也能用它自己的能力上網查資料。
+            在 Claude Desktop、Claude Code、ChatGPT 桌面版、Codex 或 Gemini CLI 裡直接下指令：AI 會讀取、修改你的報告，也能用它自己的能力上網查資料。網頁版在最下面。
           </p>
         </div>
         {phase === 'connected' && (
@@ -4636,6 +4645,7 @@ function AgentConnectorPanel({
           <CopyCommand label="Claude Desktop" command={commands.claudeDesktop} />
           <CopyCommand label="Claude Code" command={commands.claudeCode} />
           <CopyCommand label="ChatGPT 桌面版、Codex" command={commands.codex} />
+          <CopyCommand label="Gemini CLI" command={commands.gemini} />
           <p className="font-semibold text-slate-800">3. 重新開啟 AI app，對它說「連接 AutoLabReport」</p>
           <p>
             AI 會給你一組配對碼；這個頁面偵測到連接器後會請你輸入。瀏覽器如果詢問是否允許這個網站存取本機網路或裝置，請按允許。
@@ -4739,26 +4749,67 @@ function AgentConnectorPanel({
       )}
 
       <details className="mt-3 rounded-xl border border-slate-200 px-3 py-2 text-xs">
-        <summary className="cursor-pointer font-semibold text-slate-700">用 ChatGPT 網頁版</summary>
+        <summary className="cursor-pointer font-semibold text-slate-700">用網頁版 AI（ChatGPT、Claude、Gemini）</summary>
         <div className="mt-2 space-y-2 leading-5 text-slate-600">
           {!signedIn ? (
-            <p>ChatGPT 網頁版直接存取你的雲端報告，需要先登入 AutoLabReport。</p>
+            <p>網頁版 AI 直接存取你的雲端報告，需要先登入 AutoLabReport。</p>
           ) : !remote ? (
             <p>正在確認…</p>
           ) : !remote.enabled ? (
-            <p>ChatGPT 網頁版的連接還沒開放。</p>
+            <p>網頁版 AI 的連接還沒開放。</p>
           ) : (
             <>
-              <p>需要 ChatGPT Plus、Pro、Business、Enterprise 或 Education 方案。</p>
-              <p className="font-semibold text-slate-800">
-                1. ChatGPT → 設定（Settings）→ 安全性與登入（Security and login），開啟「Developer mode」
-              </p>
-              <p className="font-semibold text-slate-800">2. 到 ChatGPT Plugins 按「＋」建立 app，網址填這個，驗證方式選 OAuth：</p>
-              <CopyCommand label="MCP 網址" command={remote.url} />
-              <p className="font-semibold text-slate-800">3. 依畫面登入 AutoLabReport，按「允許」</p>
-              <p>
-                之後在對話的「＋」→「Developer mode」選 AutoLabReport。修改會直接存進你的報告，每次修改前自動備份；如果你正開著那份報告，幾秒內就會看到。
-              </p>
+              <div role="group" aria-label="網頁版 AI" className="flex gap-2">
+                {WEB_AI_APPS.map((app) => (
+                  <button
+                    key={app.id}
+                    type="button"
+                    aria-pressed={webApp === app.id}
+                    onClick={() => setWebApp(app.id)}
+                    className={`h-9 rounded-xl px-3 text-xs font-semibold transition ${
+                      webApp === app.id ? 'bg-slate-950 text-white' : 'border border-slate-200 text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    {app.label}
+                  </button>
+                ))}
+              </div>
+              {webApp === 'chatgpt' && (
+                <>
+                  <p>需要 ChatGPT Plus、Pro、Business、Enterprise 或 Education 方案。</p>
+                  <p className="font-semibold text-slate-800">
+                    1. ChatGPT → 設定（Settings）→ 安全性與登入（Security and login），開啟「Developer mode」
+                  </p>
+                  <p className="font-semibold text-slate-800">2. 到 ChatGPT Plugins 按「＋」建立 app，網址填這個，驗證方式選 OAuth：</p>
+                  <CopyCommand label="MCP 網址" command={remote.url} />
+                  <p className="font-semibold text-slate-800">3. 依畫面登入 AutoLabReport，按「允許」</p>
+                  <p>之後在對話的「＋」→「Developer mode」選 AutoLabReport。</p>
+                </>
+              )}
+              {webApp === 'claude' && (
+                <>
+                  <p>免費方案也可以，但只能加一個自訂連接器。Team、Enterprise 方案要由組織的 Owner 先加好。</p>
+                  <p className="font-semibold text-slate-800">
+                    1. claude.ai → Customize → Connectors，按「＋」→「Add custom connector」，網址填這個：
+                  </p>
+                  <CopyCommand label="MCP 網址" command={remote.url} />
+                  <p className="font-semibold text-slate-800">2. 按「Connect」，依畫面登入 AutoLabReport，按「允許」</p>
+                  <p>之後在對話框左下的「＋」→「Connectors」打開 AutoLabReport。加好之後，Claude Desktop 也能用。</p>
+                </>
+              )}
+              {webApp === 'gemini' && (
+                <>
+                  <p>
+                    Google 目前只開放給人在美國、18 歲以上、用個人 Google 帳號、使用英文，並開啟「Keep Activity」的使用者，台灣暫時還不能用。符合條件的話：
+                  </p>
+                  <p className="font-semibold text-slate-800">
+                    1. gemini.google.com → Settings → Connected Apps，在「Custom apps」按「Add a custom app」，網址填這個：
+                  </p>
+                  <CopyCommand label="MCP 網址" command={remote.url} />
+                  <p className="font-semibold text-slate-800">2. 按「Next」，依畫面登入 AutoLabReport，按「允許」</p>
+                </>
+              )}
+              <p>修改會直接存進你的報告，每次修改前自動備份；如果你正開著那份報告，幾秒內就會看到。</p>
             </>
           )}
         </div>
@@ -9247,7 +9298,7 @@ function WorkspaceApp({
 
   function chooseAiAppMode(mode: AiAppMode) {
     if (user) {
-      // In the profile, so the remote MCP server (ChatGPT on the web) follows it too.
+      // In the profile, so the remote MCP server (AI apps on the web) follows it too.
       updateNotePreferences({ aiAppMode: mode })
     } else {
       saveGuestAiAppMode(mode)
@@ -9308,7 +9359,7 @@ function WorkspaceApp({
     }
   }
 
-  // A suggestion ChatGPT on the web left in the version history: the whole report as it
+  // A suggestion an AI app on the web left in the version history: the whole report as it
   // proposed it.
   async function applyWholeReport(documentId: string, content: string) {
     const report = requireAgentReport()
@@ -9464,7 +9515,7 @@ function WorkspaceApp({
         if (aiSuggestionActionsRef.current.has(id)) continue
         const content = normalizeNewlines(row.content ?? '')
         aiSuggestionActionsRef.current.set(id, { remoteVersionId: row.id, apply: () => applyWholeReport(documentId, content) })
-        offered.push({ id, source: 'remote', documentId, summary: 'ChatGPT 網頁版提出的修改', before, after: content })
+        offered.push({ id, source: 'remote', documentId, summary: '整份報告的修改建議', before, after: content })
       }
       if (offered.length) setAiSuggestions((current) => [...current, ...offered])
     },
@@ -9478,8 +9529,8 @@ function WorkspaceApp({
     remoteSyncActionsRef.current = remoteSyncActions
   })
 
-  // While a cloud report is showing, look for a newer version saved elsewhere -- by
-  // ChatGPT through the remote MCP server, or another tab. With nothing unsaved here it
+  // While a cloud report is showing, look for a newer version saved elsewhere -- by an
+  // AI app on the web through the remote MCP server, or another tab. With nothing unsaved here it
   // is shown; otherwise it is kept in the version history and the student's typing wins.
   const syncedDocumentId = shouldUseSupabaseDocuments && currentView === 'editor' ? (activeDocument?.id ?? null) : null
   useEffect(() => {
@@ -9496,7 +9547,7 @@ function WorkspaceApp({
       try {
         // A save in flight moves the known version on; let it land first.
         await documentSaveQueueRef.current.catch(() => undefined)
-        // Suggestions ChatGPT on the web left in manual mode (mcp_remote.py). Only new ones
+        // Suggestions AI apps on the web left in manual mode (mcp_remote.py). Only new ones
         // are fetched in full.
         const { data: suggested } = await client
           .from('document_versions')

@@ -32,10 +32,11 @@ const SECONDARY =
   'h-11 w-full rounded-xl border border-slate-200 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50'
 
 /**
- * Where a student decides whether an AI app -- ChatGPT on the web -- may reach their
- * AutoLabReport account (Supabase Auth's OAuth 2.1 server sends them here). The app gets
- * a token with the student's own permissions, so the page says so plainly, shows where
- * approving sends them, and makes them confirm an app AutoLabReport does not know.
+ * Where a student decides whether an AI app on the web -- ChatGPT, Claude, Gemini -- may
+ * reach their AutoLabReport account (Supabase Auth's OAuth 2.1 server sends them here).
+ * The app gets a token with the student's own permissions, so the page says so plainly,
+ * shows where approving sends them, and makes them confirm an app AutoLabReport does not
+ * know.
  */
 export function OAuthConsentPage({
   authorizationId,
