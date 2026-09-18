@@ -12,6 +12,7 @@ import re
 import secrets
 import socket
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import urllib.parse
@@ -109,8 +110,8 @@ if STRIPE_SECRET_KEY:
 # GROQ_MODEL=llama-3.3-70b-versatile
 # GROQ_MODELS=llama-3.3-70b-versatile,llama-3.1-8b-instant
 # GEMINI_API_KEY=...
-# GEMINI_MODEL=gemini-2.0-flash
-# GEMINI_MODELS=gemini-2.0-flash,gemini-1.5-flash
+# GEMINI_MODEL=gemini-2.5-flash
+# GEMINI_MODELS=gemini-2.5-flash,gemini-2.5-flash-lite
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
@@ -141,7 +142,9 @@ GEMINI_MODELS = _parse_model_list(
     os.getenv("GEMINI_MODEL"),
     os.getenv("GEMINI_MODELS"),
     os.getenv("GEMINI_FALLBACK_MODELS"),
-    default="gemini-2.0-flash",
+    # gemini-2.0-flash, the old default, is listed as shut down in Google's model
+    # documentation (checked 2026-09-18), so the Gemini fallback had been failing.
+    default="gemini-2.5-flash",
 )
 
 groq_client = (
@@ -845,7 +848,31 @@ def _fallback_ai_response(action: str, text: str) -> str:
     return re.sub(r"\n{3,}", "\n\n", formatted).strip() + "\n"
 
 
-def _post_json(url: str, headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
+def _describe_upstream_rejection(status: int, model: str | None) -> str:
+    """What a provider's refusal means for the student, and what to do about it.
+
+    Every refusal used to read 「AI 服務暫時拒絕請求，請稍後重試」. For a model that
+    no longer exists that is wrong advice -- retrying can never work -- and it is how the
+    shut-down Gemini and DeepSeek defaults went unnoticed. Never includes the key, and
+    never the URL, which for Gemini used to carry the key.
+    """
+    named = f"「{model}」" if model else ""
+    if status in (400, 404):
+        return f"AI 服務不接受模型{named}：可能已下架，或你的 API Key 沒有這個模型的權限。請到 AI 設定重新選擇模型。"
+    if status in (401, 403):
+        return "AI 服務拒絕了這組 API Key：可能已失效或沒有權限。請到 AI 設定重新儲存 API Key。"
+    if status == 429:
+        return "已達到 AI 服務的使用上限或帳戶額度不足（429）。請稍後再試，或到該服務的帳戶檢查額度。"
+    return "AI 服務暫時拒絕請求，請稍後重試"
+
+
+def _post_json(
+    url: str,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+    *,
+    model: str | None = None,
+) -> dict[str, Any]:
     data = json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
@@ -853,10 +880,16 @@ def _post_json(url: str, headers: dict[str, str], payload: dict[str, Any]) -> di
             return json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as exc:
         logger.warning("AI upstream rejected a request. status=%s", exc.code)
-        raise HTTPException(status_code=502, detail="AI 服務暫時拒絕請求，請稍後重試") from None
+        raise HTTPException(status_code=502, detail=_describe_upstream_rejection(exc.code, model)) from None
     except urllib.error.URLError:
         logger.warning("AI upstream is unavailable")
         raise HTTPException(status_code=502, detail="AI 服務暫時無法連線，請稍後重試") from None
+
+
+def _get_json(url: str, headers: dict[str, str], timeout: float = 10) -> dict[str, Any]:
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 def _post_form(url: str, headers: dict[str, str], payload: dict[str, Any]) -> dict[str, Any]:
@@ -1611,6 +1644,7 @@ def _run_openai_compatible(
             ],
             "temperature": 0.4,
         },
+        model=model,
     )
     return result["choices"][0]["message"]["content"].strip()
 
@@ -1636,52 +1670,171 @@ def _run_openai_client_chat(client: OpenAI, prompt: str, model: str) -> str:
     return content.strip()
 
 
-def _run_builtin_dual_engine(prompt: str) -> tuple[str, str]:
-    if groq_client is None and gemini_client is None:
+# --- Choosing a model -------------------------------------------------------------
+#
+# The settings page offered a fixed list: several names no provider accepts
+# ('gemini-flash', 'deepseek-r1', a literal 'user-api-model'), the same list whatever
+# the provider, and a "Pro" list of models built-in AI never had. Built-in AI ignored
+# the choice entirely, and a student's own key was sent whatever was picked. A key is
+# now asked which models it can use, and built-in AI offers exactly the models
+# configured for it.
+
+MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,99}$")
+
+# Tried in order when a student leaves the model on 自動; the first one the key can use
+# wins. Written 2026-09-18 from each provider's documentation, which listed
+# gemini-1.5-flash and gemini-2.0-flash as gone and no longer mentioned deepseek-chat --
+# the old defaults for Gemini and DeepSeek keys, so 自動 had been failing on every call
+# for both. Resolving against the key's own list keeps 自動 working as names change.
+OWN_KEY_MODEL_PREFERENCES: dict[str, tuple[str, ...]] = {
+    "openai": ("gpt-5.6-luna", "gpt-5.6-terra", "gpt-4o-mini", "gpt-4.1-mini"),
+    "gemini": ("gemini-2.5-flash", "gemini-3.5-flash", "gemini-2.5-flash-lite"),
+    "anthropic": ("claude-haiku-4-5-20251001", "claude-haiku-4-5", "claude-sonnet-5"),
+    "deepseek": ("deepseek-flash", "deepseek-v4-pro", "deepseek-chat"),
+}
+
+# A provider's list includes models that cannot answer a chat prompt.
+_NON_CHAT_MODEL_MARKERS = (
+    "embed", "tts", "transcribe", "whisper", "audio", "realtime", "image",
+    "dall-e", "moderation", "search", "live", "aqa", "guard",
+)
+# When none of the preferences is available, prefer the cheap tier over whatever the
+# provider happens to list first, which can be its most expensive model.
+_CHEAP_MODEL_MARKERS = ("mini", "flash", "haiku", "luna", "lite", "nano")
+
+_MODEL_LIST_TTL_SECONDS = 600
+_model_list_cache: dict[tuple[str, str], tuple[float, list[str]]] = {}
+
+
+def _validate_model_id(model: str) -> str:
+    if not MODEL_ID_RE.fullmatch(model) or ".." in model:
+        raise HTTPException(status_code=400, detail="模型名稱格式不正確")
+    return model
+
+
+def _is_chat_model(model_id: str) -> bool:
+    lowered = model_id.lower()
+    return not any(marker in lowered for marker in _NON_CHAT_MODEL_MARKERS)
+
+
+def _fetch_provider_models(provider: str, api_key: str) -> list[str]:
+    """The chat models this key can use, as its provider reports them. Raises on failure."""
+    if provider in ("openai", "deepseek"):
+        base = "https://api.openai.com/v1" if provider == "openai" else "https://api.deepseek.com"
+        payload = _get_json(f"{base}/models", {"Authorization": f"Bearer {api_key}"})
+        ids = [str(item.get("id", "")) for item in payload.get("data", [])]
+        if provider == "openai":
+            ids = [model_id for model_id in ids if model_id.startswith(("gpt-", "o1", "o3", "o4", "chatgpt-"))]
+    elif provider == "gemini":
+        payload = _get_json(
+            "https://generativelanguage.googleapis.com/v1beta/models?pageSize=200",
+            {"x-goog-api-key": api_key},
+        )
+        ids = [
+            str(item.get("name", "")).removeprefix("models/")
+            for item in payload.get("models", [])
+            if "generateContent" in (item.get("supportedGenerationMethods") or [])
+        ]
+        ids = [model_id for model_id in ids if model_id.startswith("gemini-")]
+    elif provider == "anthropic":
+        payload = _get_json(
+            "https://api.anthropic.com/v1/models?limit=100",
+            {"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+        )
+        ids = [str(item.get("id", "")) for item in payload.get("data", [])]
+    else:
+        return []
+
+    models: list[str] = []
+    for model_id in ids:
+        if model_id and MODEL_ID_RE.fullmatch(model_id) and _is_chat_model(model_id) and model_id not in models:
+            models.append(model_id)
+    return models
+
+
+def _provider_models(provider: str, api_key: str) -> list[str] | None:
+    """The key's model list, cached for ten minutes; None when the provider cannot be asked."""
+    cache_key = (provider, hashlib.sha256(api_key.encode("utf-8")).hexdigest())
+    now = time.monotonic()
+    cached = _model_list_cache.get(cache_key)
+    if cached and cached[0] > now:
+        return cached[1]
+    try:
+        models = _fetch_provider_models(provider, api_key)
+    except Exception as exc:
+        logger.warning("Listing models failed. provider=%s error_type=%s", provider, type(exc).__name__)
+        return None
+    _model_list_cache[cache_key] = (now + _MODEL_LIST_TTL_SECONDS, models)
+    return models
+
+
+def _resolve_own_key_model(provider: str, api_key: str, requested: str | None) -> str:
+    """The student's choice, or for 自動 the first preference this key can use."""
+    if requested:
+        return _validate_model_id(requested)
+    preferences = OWN_KEY_MODEL_PREFERENCES.get(provider)
+    if preferences is None:
+        raise HTTPException(status_code=400, detail="不支援的 AI provider")
+    available = _provider_models(provider, api_key)
+    if not available:
+        return preferences[0]
+    for model in preferences:
+        if model in available:
+            return model
+    cheap = [model for model in available if any(marker in model.lower() for marker in _CHEAP_MODEL_MARKERS)]
+    return (cheap or available)[0]
+
+
+def _builtin_attempts(preferred: str | None) -> list[tuple[str, str]]:
+    """Engines and models built-in AI tries, in order, with a configured choice first.
+
+    A choice that is not configured -- including every name the old settings list
+    offered -- is ignored rather than refused, which is what built-in AI always did,
+    so settings saved before this change keep working.
+    """
+    attempts: list[tuple[str, str]] = []
+    if groq_client is not None:
+        attempts += [("groq", model) for model in GROQ_MODELS]
+    if gemini_client is not None:
+        attempts += [("gemini", model) for model in GEMINI_MODELS]
+    if preferred:
+        chosen = [attempt for attempt in attempts if attempt[1] == preferred]
+        attempts = chosen + [attempt for attempt in attempts if attempt[1] != preferred]
+    return attempts
+
+
+def _run_builtin_dual_engine(prompt: str, preferred: str | None = None) -> tuple[str, str]:
+    attempts = _builtin_attempts(preferred)
+    if not attempts:
         raise RuntimeError("Built-in AI is not configured")
 
-    if groq_client is not None:
-        for model in GROQ_MODELS:
-            try:
-                return _run_openai_client_chat(groq_client, prompt, model), f"groq:{model}"
-            except Exception as exc:
-                logger.warning(
-                    "Groq built-in AI failed for model %s; trying next fallback. error_type=%s",
-                    model,
-                    type(exc).__name__,
-                )
-
-    if gemini_client is not None:
-        last_error_type = "unknown"
-        for model in GEMINI_MODELS:
-            try:
-                return (
-                    _run_openai_client_chat(gemini_client, prompt, model),
-                    f"gemini:{model}",
-                )
-            except Exception as exc:
-                last_error_type = type(exc).__name__
-                logger.warning(
-                    "Gemini built-in AI failed for model %s; trying next fallback. error_type=%s",
-                    model,
-                    last_error_type,
-                )
-        raise HTTPException(
-            status_code=502,
-            detail=f"內建 AI 暫時無法使用（錯誤類型：{last_error_type}）",
-        )
-
+    last_error_type = "unknown"
+    for engine, model in attempts:
+        client = groq_client if engine == "groq" else gemini_client
+        try:
+            return _run_openai_client_chat(client, prompt, model), f"{engine}:{model}"
+        except Exception as exc:
+            last_error_type = type(exc).__name__
+            logger.warning(
+                "Built-in AI %s failed for model %s; trying the next. error_type=%s",
+                engine,
+                model,
+                last_error_type,
+            )
     raise HTTPException(
         status_code=502,
-        detail="所有 Groq fallback model 都失敗，且未設定 GEMINI_API_KEY 作為 fallback",
+        detail=f"內建 AI 暫時無法使用（錯誤類型：{last_error_type}）",
     )
 
 
 def _run_gemini(api_key: str, prompt: str, model: str) -> str:
+    # The key goes in a header, not the URL, where proxies and logs keep it. The model
+    # is part of the path, so it is escaped.
     result = _post_json(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
-        {"Content-Type": "application/json"},
+        f"https://generativelanguage.googleapis.com/v1beta/models/{urllib.parse.quote(model, safe='-._')}:generateContent",
+        {"Content-Type": "application/json", "x-goog-api-key": api_key},
         {"contents": [{"parts": [{"text": prompt}]}]},
+        model=model,
     )
     return result["candidates"][0]["content"]["parts"][0]["text"].strip()
 
@@ -1699,6 +1852,7 @@ def _run_anthropic(api_key: str, prompt: str, model: str) -> str:
             "max_tokens": 1800,
             "messages": [{"role": "user", "content": prompt}],
         },
+        model=model,
     )
     return result["content"][0]["text"].strip()
 
@@ -1765,18 +1919,17 @@ def _run_ai_provider(
 
     if body.provider == "built_in":
         if groq_client is not None or gemini_client is not None:
-            return _run_builtin_dual_engine(prompt)
+            return _run_builtin_dual_engine(prompt, body.model or None)
         return _fallback_ai_response(body.action, body.text), "fallback-rule"
 
     if body.provider == "user_api_key":
         if not user_api_key or provider == "none":
             raise HTTPException(status_code=400, detail="請先安全儲存 API Provider 與 API Key")
 
+        model = _resolve_own_key_model(provider, user_api_key, body.model or None)
         if provider == "openai":
-            model = body.model or "gpt-4o-mini"
             return _run_openai_compatible(user_api_key, prompt, model), model
         if provider == "deepseek":
-            model = body.model or "deepseek-chat"
             return (
                 _run_openai_compatible(
                     user_api_key,
@@ -1787,10 +1940,8 @@ def _run_ai_provider(
                 model,
             )
         if provider == "gemini":
-            model = body.model or "gemini-1.5-flash"
             return _run_gemini(user_api_key, prompt, model), model
         if provider == "anthropic":
-            model = body.model or "claude-3-5-haiku-latest"
             return _run_anthropic(user_api_key, prompt, model), model
 
     raise HTTPException(status_code=400, detail="不支援的 AI provider")
@@ -2234,6 +2385,54 @@ def run_ai(body: AiRunRequest, authorization: str | None = Header(default=None))
         model=model,
         remaining_quota=quota["remaining"] if quota else None,
     )
+
+
+class ModelOption(BaseModel):
+    id: str
+    label: str
+
+
+class AiModelsResponse(BaseModel):
+    built_in: list[ModelOption]
+    own_key_provider: str | None = None
+    # False when the provider could not be asked and the list is our preferences instead.
+    own_key_live: bool = False
+    own_key_models: list[ModelOption] = []
+    own_key_default: str | None = None
+
+
+@app.get("/api/ai/models", response_model=AiModelsResponse)
+def list_ai_models(authorization: str | None = Header(default=None)):
+    """The models a student can actually choose: built-in AI's configured ones, and
+    whatever their own saved key's provider says that key can use."""
+    user = _get_user_from_authorization(authorization)
+    if user is None:
+        raise HTTPException(status_code=401, detail="請先登入")
+
+    engine_names = {"groq": "Groq", "gemini": "Gemini"}
+    response = AiModelsResponse(
+        built_in=[
+            ModelOption(id=model, label=f"{model}（{engine_names[engine]}）")
+            for engine, model in _builtin_attempts(None)
+        ]
+    )
+
+    try:
+        api_key, provider = _get_decrypted_user_api_key(user, None)
+    except HTTPException:
+        return response  # No saved key: nothing more to offer.
+    if provider not in OWN_KEY_MODEL_PREFERENCES:
+        return response
+
+    available = _provider_models(provider, api_key)
+    response.own_key_provider = provider
+    response.own_key_live = available is not None
+    response.own_key_models = [
+        ModelOption(id=model, label=model)
+        for model in (available if available is not None else OWN_KEY_MODEL_PREFERENCES[provider])
+    ]
+    response.own_key_default = _resolve_own_key_model(provider, api_key, None)
+    return response
 
 
 @app.get("/api/ai/quota")
