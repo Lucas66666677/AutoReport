@@ -18,9 +18,11 @@
 //   another site from reaching it by pointing its own domain at your computer.
 // - Before it runs anything, the page must be paired using the code this program prints
 //   in your terminal. Repeated wrong codes lock pairing until you restart it.
-// - It runs only the three tools above, with arguments fixed in this file. The page
-//   sends the prompt as input, never as part of a command, so nothing it sends can
-//   change what gets run.
+// - It runs only the three tools above, with arguments fixed in this file. The one thing
+//   the page may add is which model to use, and that is held to letters, digits, '.',
+//   '_' and '-' (never a leading '-'), so it can only be read as a model name. The
+//   prompt is sent as input, never as part of a command, so nothing the page sends can
+//   change which program runs or what it may do.
 // - Each run happens in a new empty folder that is deleted afterwards.
 // - Claude Code runs with every tool removed, so it can only write text. Codex and
 //   Gemini CLI cannot be restricted that far -- in their safe modes they may still read
@@ -38,8 +40,10 @@ import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export const PROTOCOL = 1
-export const VERSION = '1.0.0'
+// 2: /run accepts a model. A page that needs it refuses an older bridge rather than
+// have its choice silently ignored.
+export const PROTOCOL = 2
+export const VERSION = '1.1.0'
 export const DEFAULT_PORT = 47632
 export const DEFAULT_ORIGINS = ['https://autolabreport.lucirel.com']
 
@@ -48,6 +52,11 @@ export const MAX_PROMPT_CHARS = 800_000
 export const MAX_OUTPUT_BYTES = 2 * 1024 * 1024
 export const RUN_TIMEOUT_MS = 5 * 60 * 1000
 export const MAX_PAIRING_FAILURES = 8
+
+// A model name from the page becomes one command-line argument, so it is held to
+// characters no shell or CLI can read as anything but a name: it cannot start with
+// '-' (a flag), and has no spaces, quotes or shell syntax. cmd.exe passes it unquoted.
+export const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 
 // Passed as the command-line prompt; the real prompt arrives on standard input. Plain
 // ASCII on purpose: it has to survive cmd.exe quoting and every Windows code page.
@@ -75,6 +84,7 @@ export const ADAPTERS = {
       '*',
     ],
     parse: (stdout) => stdout,
+    withModel: (args, model) => insertBefore(args, '--disallowedTools', ['--model', model]),
   },
   codex: {
     id: 'codex',
@@ -86,6 +96,7 @@ export const ADAPTERS = {
     // final message to stdout (progress goes to stderr).
     args: ['exec', '--sandbox', 'read-only', '--skip-git-repo-check', '-'],
     parse: (stdout) => stdout,
+    withModel: (args, model) => insertBefore(args, '-', ['--model', model]),
   },
   gemini: {
     id: 'gemini',
@@ -97,7 +108,21 @@ export const ADAPTERS = {
     // answer is the `response` field.
     args: ['--output-format', 'json', '--approval-mode', 'default', '-p', STDIN_INSTRUCTION],
     parse: parseGeminiJson,
+    withModel: (args, model) => insertBefore(args, '-p', ['--model', model]),
   },
+}
+
+function insertBefore(args, marker, extra) {
+  const at = args.lastIndexOf(marker)
+  if (at < 0) throw new Error(`argument ${marker} not found`)
+  return [...args.slice(0, at), ...extra, ...args.slice(at)]
+}
+
+/** The fixed arguments for `adapter`, with `model` in its place when one is chosen. */
+export function argumentsFor(adapter, model) {
+  if (!model) return adapter.args
+  if (!MODEL_RE.test(model)) throw new BridgeError(400, '模型名稱格式不正確：只能用英文、數字、點、底線和連字號。')
+  return adapter.withModel(adapter.args, model)
 }
 
 export class BridgeError extends Error {
@@ -134,6 +159,34 @@ export function parseGeminiJson(stdout) {
   return payload.response
 }
 
+/**
+ * Why a CLI failed, in one short line: the message of a JSON error -- Gemini CLI reports
+ * failures that way with --output-format json -- else the last lines of stderr, else the
+ * last lines of stdout, where some CLIs print a refusal such as an unknown model name.
+ */
+export function failureDetail(stderr, stdout) {
+  for (const text of [stdout, stderr]) {
+    const start = text.indexOf('{')
+    const end = text.lastIndexOf('}')
+    if (start < 0 || end <= start) continue
+    try {
+      const message = JSON.parse(text.slice(start, end + 1))?.error?.message
+      if (typeof message === 'string' && message.trim()) return stripAnsi(message).trim().slice(0, 400)
+    } catch {
+      // Not JSON after all.
+    }
+  }
+  const tail = (text) =>
+    stripAnsi(text)
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .slice(-3)
+      .join(' ')
+      .slice(0, 400)
+  return tail(stderr) || tail(stdout)
+}
+
 // ---------------------------------------------------------------------------------
 // Finding and starting the tools
 
@@ -161,8 +214,9 @@ export async function resolveExecutable(command, { env = process.env, platform =
 
 function quoteForCmd(value) {
   if (/^[A-Za-z0-9_\-.:\\/=]+$/.test(value)) return value
-  // Every argument comes from ADAPTERS or a PATH lookup, never from a request, so this
-  // should be unreachable; refuse rather than guess how cmd.exe would read it.
+  // Every argument comes from ADAPTERS, a PATH lookup, or a model name already held to
+  // MODEL_RE (which the pattern above covers), so this should be unreachable; refuse
+  // rather than guess how cmd.exe would read it.
   if (/["%^&|<>!\r\n]/.test(value)) throw new BridgeError(500, '拒絕把含有特殊字元的參數交給 cmd.exe。')
   return `"${value}"`
 }
@@ -222,12 +276,13 @@ function killTree(child) {
 }
 
 /** Run one adapter on `prompt` in a fresh empty folder and return its answer text. */
-export async function runCli({ adapter, executable, prompt, timeoutMs = RUN_TIMEOUT_MS, signal }) {
+export async function runCli({ adapter, executable, prompt, model, timeoutMs = RUN_TIMEOUT_MS, signal }) {
+  const args = argumentsFor(adapter, model)
   const workdir = await mkdtemp(path.join(tmpdir(), 'autolabreport-bridge-'))
   liveWorkdirs.add(workdir)
   try {
     return await new Promise((resolve, reject) => {
-      const launch = buildSpawn(executable, adapter.args)
+      const launch = buildSpawn(executable, args)
       const child = spawn(launch.file, launch.args, {
         ...launch.options,
         cwd: workdir,
@@ -294,7 +349,7 @@ export async function runCli({ adapter, executable, prompt, timeoutMs = RUN_TIME
         if (settled) return
         const text = stripAnsi(Buffer.concat(stdout).toString('utf8'))
         if (code !== 0) {
-          const detail = stripAnsi(stderrTail).trim().split(/\r?\n/).slice(-3).join(' ').slice(0, 400)
+          const detail = failureDetail(stderrTail, text)
           finish(new BridgeError(502, `${adapter.label} 執行失敗（代碼 ${code}）${detail ? `：${detail}` : ''}`))
           return
         }
@@ -513,6 +568,11 @@ export function createBridgeServer({
         send(res, 400, { error: '沒有收到 prompt。' })
         return
       }
+      if (body.model !== undefined && body.model !== null && body.model !== '' &&
+          (typeof body.model !== 'string' || !MODEL_RE.test(body.model))) {
+        send(res, 400, { error: '模型名稱格式不正確：只能用英文、數字、點、底線和連字號。' })
+        return
+      }
       if (body.prompt.length > MAX_PROMPT_CHARS) {
         send(res, 413, { error: 'Prompt 太長。' })
         return
@@ -534,6 +594,7 @@ export function createBridgeServer({
           adapter: entry.adapter,
           executable: entry.executable,
           prompt: body.prompt,
+          model: body.model || undefined,
           signal: controller.signal,
         })
         const ms = Date.now() - started

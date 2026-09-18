@@ -6,10 +6,27 @@
 // checked exactly as for copy and paste (aiHandoff.ts), so a terminal answer meets the
 // same rules as any other.
 
-export const BRIDGE_PROTOCOL = 1
+// 2: /run takes a model. An older bridge would ignore the choice, so it is refused.
+export const BRIDGE_PROTOCOL = 2
 export const DEFAULT_BRIDGE_PORT = 47632
 export const PRODUCTION_ORIGIN = 'https://autolabreport.lucirel.com'
 export const BRIDGE_SCRIPT_PATH = '/bridge/autolabreport-bridge.mjs'
+
+// The bridge's own rule for a model name (MODEL_RE there): checked here too, so a typo
+// is caught beside the input instead of coming back as a 400.
+export const BRIDGE_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+
+// The model names offered for each CLI. They live on the site rather than in the bridge,
+// so the list follows the site instead of whichever copy of the bridge a student
+// downloaded. 其他 takes any other name, and a name the CLI refuses comes back as the
+// CLI's own error. Checked on 2026-09-18 against: Claude Code's documented --model
+// aliases (each follows the newest model of its tier); the Codex models page; and the
+// Gemini API model list -- not the Gemini CLI page, which still names shut-down previews.
+export const BRIDGE_MODEL_SUGGESTIONS: ReadonlyMap<string, readonly string[]> = new Map([
+  ['claude', ['fable', 'opus', 'sonnet', 'haiku']],
+  ['codex', ['gpt-6-astra', 'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini']],
+  ['gemini', ['gemini-3.8-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-pro', 'gemini-2.5-flash']],
+])
 
 export type BridgeCli = {
   id: string
@@ -95,14 +112,15 @@ export async function runOnBridge(
   token: string,
   cli: string,
   prompt: string,
-  signal?: AbortSignal,
+  options: { signal?: AbortSignal; model?: string } = {},
   fetchImpl: typeof fetch = fetch,
 ): Promise<string> {
   const response = await fetchImpl(bridgeUrl(port, '/run'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ cli, prompt }),
-    signal,
+    // No model means the CLI's own default.
+    body: JSON.stringify(options.model ? { cli, prompt, model: options.model } : { cli, prompt }),
+    signal: options.signal,
   })
   if (!response.ok) throw await readError(response, '執行失敗')
   const { text } = (await response.json()) as { text?: unknown }
@@ -152,18 +170,31 @@ export async function queryLocalNetworkPermission(
 
 const STORAGE_KEY = 'autolabreport-terminal-bridge'
 
-export type BridgeConnection = { port: number; token: string | null }
+export type BridgeConnection = {
+  port: number
+  token: string | null
+  /** The model chosen for each CLI; missing means the CLI's own default. */
+  models?: Record<string, string>
+}
 
 export function loadBridgeConnection(storage: Storage | undefined = globalThis.localStorage): BridgeConnection {
   try {
     const saved = JSON.parse(storage?.getItem(STORAGE_KEY) ?? 'null') as Partial<BridgeConnection> | null
     const port = Number(saved?.port)
+    const models: Record<string, string> = {}
+    if (saved?.models && typeof saved.models === 'object') {
+      for (const [cli, model] of Object.entries(saved.models)) {
+        // Stored data is not trusted: only a name the bridge would accept survives.
+        if (typeof model === 'string' && BRIDGE_MODEL_RE.test(model)) models[cli] = model
+      }
+    }
     return {
       port: Number.isInteger(port) && port >= 1024 && port <= 65535 ? port : DEFAULT_BRIDGE_PORT,
       token: typeof saved?.token === 'string' && saved.token ? saved.token : null,
+      models,
     }
   } catch {
-    return { port: DEFAULT_BRIDGE_PORT, token: null }
+    return { port: DEFAULT_BRIDGE_PORT, token: null, models: {} }
   }
 }
 
