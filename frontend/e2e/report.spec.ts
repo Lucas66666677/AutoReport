@@ -531,3 +531,132 @@ test('a guest can hand the Agent to a signed-in terminal CLI through the bridge'
     await rm(bin, { recursive: true, force: true })
   }
 })
+
+
+test('an AI app reads and edits the open report through the MCP connector', async ({ page }) => {
+  const { spawn } = await import('node:child_process')
+  const { mkdtemp, rm, writeFile } = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+
+  const port = 47712
+  const stateDir = await mkdtemp(path.join(tmpdir(), 'mcp-e2e-state-'))
+  const script = fileURLToPath(new URL('../public/mcp/autolabreport-mcp.mjs', import.meta.url))
+  // The connector exactly as an AI app starts it, apart from the port, the dev origin and
+  // a throwaway folder for its pairing data.
+  const connector = spawn(
+    process.execPath,
+    [script, '--port', String(port), '--allow-origin', 'http://127.0.0.1:5174', '--state-dir', stateDir],
+    { stdio: ['pipe', 'pipe', 'pipe'] },
+  )
+
+  // A minimal AI app: MCP over stdio, one JSON message per line, the current revision.
+  let pending = ''
+  const waiting = new Map<number, (message: { result: { content: { text: string }[]; isError: boolean } }) => void>()
+  connector.stdout.on('data', (chunk: Buffer) => {
+    pending += chunk.toString('utf8')
+    for (let newline = pending.indexOf('\n'); newline >= 0; newline = pending.indexOf('\n')) {
+      const message = JSON.parse(pending.slice(0, newline))
+      pending = pending.slice(newline + 1)
+      waiting.get(message.id)?.(message)
+    }
+  })
+  const meta = {
+    'io.modelcontextprotocol/protocolVersion': '2026-07-28',
+    'io.modelcontextprotocol/clientCapabilities': {},
+    'io.modelcontextprotocol/clientInfo': { name: 'E2E 代理', version: '1' },
+  }
+  let nextId = 1
+  async function callTool(name: string, args: Record<string, unknown> = {}) {
+    const id = nextId
+    nextId += 1
+    const reply = new Promise<{ result: { content: { text: string }[]; isError: boolean } }>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error(`no reply to ${name}`)), 60_000)
+      waiting.set(id, (message) => {
+        clearTimeout(timer)
+        resolve(message)
+      })
+    })
+    connector.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args, _meta: meta } })}\n`)
+    const { result } = await reply
+    return { text: result.content[0].text, isError: result.isError }
+  }
+  const editorText = () => page.evaluate(() => window.monaco.editor.getModels()[0].getValue())
+
+  try {
+    // The page looks for the connector on this test's port. Seeded before the app loads,
+    // because the workspace reads it once, and only if nothing is saved yet.
+    await page.addInitScript((testPort) => {
+      if (!localStorage.getItem('autolabreport-agent-connector')) {
+        localStorage.setItem('autolabreport-agent-connector', JSON.stringify({ port: testPort, token: null }))
+      }
+    }, port)
+    await openBlankReport(page)
+    await writeReport(page, '# 單擺實驗\n\n## 結果\n\n週期為 2.01 s。\n\n## 討論\n\n誤差待補。\n')
+
+    // Not connected yet: the AI is told how, with a code to give the student.
+    const status = await callTool('connection_status')
+    expect(status.isError).toBe(false)
+    const code = status.text.match(/[A-Z0-9]{4}-[A-Z0-9]{4}/)?.[0]
+    expect(code, status.text).toBeTruthy()
+
+    await page.getByRole('button', { name: 'AI Agent', exact: true }).click()
+    const panel = page.getByRole('region', { name: '連接 AI app' })
+    await panel.getByRole('button', { name: '連接 AI app' }).click()
+    await panel.getByLabel('AI app 配對碼').fill(code!.toLowerCase())
+    await panel.getByRole('button', { name: '配對', exact: true }).click()
+    await expect(panel).toContainText('已連線（E2E 代理）')
+
+    // The AI reads the report the student sees.
+    const read = await callTool('read_report')
+    expect(read.isError).toBe(false)
+    expect(read.text).toContain('週期為 2.01 s。')
+
+    // An edit lands in the editor at once, flags the number it introduced, and Ctrl+Z
+    // takes it back.
+    const edit = await callTool('edit_report', { old_text: '誤差待補。', new_text: '誤差主要來自計時的反應時間，約 0.25 s。' })
+    expect(edit.isError).toBe(false)
+    expect(edit.text).toContain('0.25')
+    await expect.poll(editorText).toContain('誤差主要來自計時的反應時間，約 0.25 s。')
+    // The student closes the drawer and undoes it from the keyboard.
+    await page.getByRole('button', { name: '關閉 AI Agent' }).click()
+    await page.locator('.monaco-editor .view-lines').first().click()
+    await page.keyboard.press('ControlOrMeta+z')
+    await expect.poll(editorText).toContain('誤差待補。')
+
+    // A mistake comes back as a failure the AI can act on, and changes nothing.
+    const miss = await callTool('edit_report', { old_text: '不存在的句子', new_text: 'x' })
+    expect(miss.isError).toBe(true)
+    expect(miss.text).toContain('read_report')
+
+    // An image file from this computer goes in after the paragraph the AI named; reading
+    // again shows it as a short link rather than the image data.
+    const png = path.join(stateDir, 'period.png')
+    await writeFile(
+      png,
+      Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==', 'base64'),
+    )
+    const inserted = await callTool('insert_image', { path: png, alt: '圖 1：週期', after_text: '週期為 2.01 s。' })
+    expect(inserted.isError, inserted.text).toBe(false)
+    expect(await editorText()).toContain('週期為 2.01 s。\n\n![圖 1：週期](data:image/png;base64,')
+    const reread = await callTool('read_report')
+    expect(reread.text).toContain('週期為 2.01 s。\n\n![圖 1：週期](agent-image://1)\n\n## 討論')
+
+    const checks = await callTool('check_report')
+    expect(checks.isError).toBe(false)
+    expect(checks.text).toContain('項')
+    // With the drawer closed the connection carried on; reopening shows what the AI did.
+    await page.getByRole('button', { name: 'AI Agent', exact: true }).click()
+    await expect(panel.getByRole('list', { name: 'AI app 最近的動作' })).toContainText('插入圖片')
+
+    // Disconnecting stops the AI at once.
+    await panel.getByRole('button', { name: '中斷連線' }).click()
+    await expect(panel.getByRole('button', { name: '連接 AI app' })).toBeVisible()
+    const after = await callTool('read_report')
+    expect(after.isError).toBe(true)
+    expect(after.text).toContain('連接 AI app')
+  } finally {
+    connector.stdin.end()
+    connector.kill()
+    await rm(stateDir, { recursive: true, force: true })
+  }
+})

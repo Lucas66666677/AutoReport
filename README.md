@@ -28,6 +28,16 @@ Closed Beta 默认关闭：
 
 这些入口只有在前后端对应 feature flag 都明确设为 true 后才可开放。关闭中的功能不属于本轮验收范围。
 
+## 学生自己的 AI
+
+除了内建 AI（需要登录），学生也可以用自己已有的 AI，不耗额度：
+
+- **复制／粘贴**：把 prompt 复制到 ChatGPT、Claude、Gemini、DeepSeek、Kimi 等（网页或桌面版），再把回答贴回来；与内建 AI 走同一套数字完整性检查。
+- **终端机 bridge**（`frontend/public/bridge/autolabreport-bridge.mjs`）：学生在自己电脑上执行，页面把 Agent 任务交给已登录的 Claude Code、Codex 或 Gemini CLI，可选模型。
+- **MCP 连接器**（`frontend/public/mcp/autolabreport-mcp.mjs`）：注册到 Claude Desktop、Claude Code、ChatGPT 桌面版或 Codex 后，学生直接在这些 AI app 里下指令；AI 可以列出、打开、读取、检查、新建和修改报告，并插入本机图片，上网搜索等则由 AI app 自己完成。修改都在页面的编辑器里执行：第一次修改前自动备份版本，可用 Ctrl+Z 复原。
+
+两个本机程序都只监听 127.0.0.1，只接受 `https://autolabreport.lucirel.com` 的 Origin 与 127.0.0.1／localhost 的 Host，而且必须先用配对码配对（输错多次会锁定）。两者都是零依赖的单一文件，需要 Node.js 18 以上。
+
 ## 安全基线
 
 - Markdown 中的 Python 代码块只显示，不在 API 进程执行。
@@ -114,6 +124,8 @@ git diff --check
 ~~~text
 backend/                 FastAPI、AI、Word 导出与安全测试
 frontend/                React 工作区与前端测试
+frontend/public/bridge/  学生本机执行的终端机 bridge
+frontend/public/mcp/     学生本机的 MCP 连接器（由 AI app 启动）
 supabase/                基础 schema 与按日期排序的迁移
 collaboration-server/    默认关闭的 Hocuspocus 服务
 extension/               Closed Beta 默认关闭的浏览器扩充

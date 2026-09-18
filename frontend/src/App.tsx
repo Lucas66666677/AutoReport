@@ -156,6 +156,26 @@ import {
 } from './editorViewMode'
 import { resolveApiBaseUrl } from './apiConfig'
 import { analyzeReportQuality } from './reportQuality'
+import {
+  AgentImageRegistry,
+  agentConnectorCommands,
+  agentNow,
+  base64ToFile,
+  describeChecks,
+  describeReport,
+  describeReports,
+  exactEdit,
+  imageInsertion,
+  needsBackup,
+  newNumbersNote,
+  normalizeNewlines,
+  numbersAddedBy,
+  positionAt,
+  sleepMs,
+  type AgentOpenReport,
+  type TextEdit,
+} from './agentConnector'
+import { useAgentConnector, type AgentToolHandlers } from './useAgentConnector'
 import { createPrivateReportImageUrl, REPORT_IMAGE_BUCKET,
   parsePrivateReportImagePath,
 } from './reportImageStorage'
@@ -4389,6 +4409,189 @@ function BridgeModelPicker({
   )
 }
 
+type AgentConnectorState = ReturnType<typeof useAgentConnector>
+
+const PANEL_BUTTON =
+  'h-11 w-full rounded-xl bg-slate-950 text-sm font-semibold text-white transition hover:bg-slate-800'
+const PANEL_SECONDARY_BUTTON =
+  'h-11 w-full rounded-xl border border-slate-200 text-sm font-semibold text-slate-700 transition hover:bg-slate-50'
+
+// Lets an AI app the student already uses -- Claude Desktop, Claude Code, ChatGPT desktop,
+// Codex -- work on their reports through the MCP connector (agentConnector.ts). The
+// connection itself lives in WorkspaceApp, so it keeps working with this drawer closed.
+function AgentConnectorPanel({ connector }: { connector: AgentConnectorState }) {
+  const { phase, status, error, activity, port, check, pair, disconnect, takeOver } = connector
+  const [code, setCode] = useState('')
+  const [system, setSystem] = useState<'windows' | 'unix'>(() =>
+    typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent) ? 'windows' : 'unix',
+  )
+  const commands = agentConnectorCommands(window.location.origin, port)[system]
+  const clients = status?.clients.length ? `（${status.clients.join('、')}）` : ''
+
+  // While the student sets it up, notice the moment their AI app starts the connector.
+  useEffect(() => {
+    if (phase !== 'not-running') return
+    const timer = window.setInterval(() => void check({ quiet: true }), 4000)
+    return () => window.clearInterval(timer)
+  }, [phase, check])
+
+  return (
+    <section aria-label="連接 AI app" className="mb-6 rounded-2xl border border-slate-200 bg-white p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-950">讓 Claude、ChatGPT 直接操作報告</h3>
+          <p className="mt-1 text-xs leading-5 text-slate-500">
+            在 Claude Desktop、Claude Code、ChatGPT 桌面版或 Codex 裡直接下指令：AI 會讀取、修改你的報告，也能用它自己的能力上網查資料。
+          </p>
+        </div>
+        {phase === 'connected' && (
+          <span className="shrink-0 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700 ring-1 ring-emerald-200">
+            已連線
+          </span>
+        )}
+      </div>
+
+      {phase === 'off' && (
+        <button type="button" onClick={() => void check()} className={`mt-3 ${PANEL_BUTTON}`}>
+          連接 AI app
+        </button>
+      )}
+
+      {phase === 'checking' && <p className="mt-3 text-xs text-slate-500">正在尋找連接器…</p>}
+
+      {(phase === 'not-running' || phase === 'outdated') && (
+        <div className="mt-3 space-y-3 text-xs leading-5 text-slate-600">
+          <p className="font-semibold text-slate-800">
+            {phase === 'outdated'
+              ? '連接器的版本太舊了。請重新下載（第 1 步），再重新開啟 AI app：'
+              : '還沒偵測到連接器。第一次使用請照這三步做（需要 Node.js 18 以上）：'}
+          </p>
+          <div role="group" aria-label="作業系統" className="flex gap-2">
+            {(['windows', 'unix'] as const).map((value) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={system === value}
+                onClick={() => setSystem(value)}
+                className={`h-9 rounded-xl px-3 text-xs font-semibold transition ${
+                  system === value ? 'bg-slate-950 text-white' : 'border border-slate-200 text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                {value === 'windows' ? 'Windows' : 'macOS / Linux'}
+              </button>
+            ))}
+          </div>
+          <p className="font-semibold text-slate-800">1. 下載連接器（在終端機執行）</p>
+          <CopyCommand label={system === 'windows' ? 'PowerShell' : '終端機'} command={commands.download} />
+          <p className="font-semibold text-slate-800">2. 加到你用的 AI app（選一個，只要做一次）</p>
+          <CopyCommand label="Claude Desktop" command={commands.claudeDesktop} />
+          <CopyCommand label="Claude Code" command={commands.claudeCode} />
+          <CopyCommand label="ChatGPT 桌面版、Codex" command={commands.codex} />
+          <p className="font-semibold text-slate-800">3. 重新開啟 AI app，對它說「連接 AutoLabReport」</p>
+          <p>
+            AI 會給你一組配對碼；這個頁面偵測到連接器後會請你輸入。瀏覽器如果詢問是否允許這個網站存取本機網路或裝置，請按允許。
+          </p>
+          <button type="button" onClick={() => void check()} className={PANEL_BUTTON}>
+            重新偵測
+          </button>
+        </div>
+      )}
+
+      {phase === 'blocked' && (
+        <div className="mt-3 space-y-3 text-xs leading-5 text-slate-600">
+          <p className="rounded-xl bg-amber-50 px-3 py-2 font-semibold text-amber-900 ring-1 ring-amber-200">
+            瀏覽器封鎖了這個網站連到你的電腦，所以就算 AI app 已經啟動連接器也連不上。
+          </p>
+          <p>請點網址列左邊的網站資訊圖示，打開網站設定，把「本機網路存取」改成允許。重新整理頁面後，再回來按重新偵測。</p>
+          <button type="button" onClick={() => void check()} className={PANEL_BUTTON}>
+            重新偵測
+          </button>
+        </div>
+      )}
+
+      {phase === 'pairing' && (
+        <form
+          className="mt-3 space-y-2"
+          onSubmit={(event) => {
+            event.preventDefault()
+            void pair(code)
+          }}
+        >
+          <p className="text-xs leading-5 text-slate-600">
+            找到連接器了{clients}。在 AI app 裡說「連接 AutoLabReport」，把它給你的配對碼輸入這裡：
+          </p>
+          <div className="flex gap-2">
+            <input
+              value={code}
+              onChange={(event) => setCode(event.target.value)}
+              placeholder="ABCD-EFGH"
+              aria-label="AI app 配對碼"
+              autoComplete="off"
+              spellCheck={false}
+              className="h-11 min-w-0 flex-1 rounded-xl border border-slate-200 px-3 font-mono text-sm uppercase tracking-widest text-slate-900 outline-none focus:border-slate-400"
+            />
+            <button
+              type="submit"
+              disabled={!code.trim()}
+              className="h-11 shrink-0 rounded-xl bg-slate-950 px-4 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-50"
+            >
+              配對
+            </button>
+          </div>
+        </form>
+      )}
+
+      {phase === 'reconnecting' && (
+        <div className="mt-3 space-y-3 text-xs leading-5 text-slate-600">
+          <p>正在連到 AI app 的連接器…AI app 關閉時會自動重試，重新開啟後就會接上。</p>
+          <button type="button" onClick={() => void disconnect()} className={PANEL_SECONDARY_BUTTON}>
+            中斷連線
+          </button>
+        </div>
+      )}
+
+      {phase === 'connected' && (
+        <div className="mt-3 space-y-3 text-xs leading-5 text-slate-600">
+          <p>
+            已連線{clients}。現在就可以在 AI app 裡下指令，例如「幫我看這份結報還缺什麼，上網查原理補進前言，再把討論寫完整」。
+          </p>
+          <p>AI 的修改會直接出現在編輯器；第一次修改前會自動備份版本，也可以按 Ctrl+Z 復原。</p>
+          {activity.length > 0 && (
+            <ul aria-label="AI app 最近的動作" className="space-y-1 rounded-xl bg-slate-50 p-3 ring-1 ring-slate-200">
+              {activity.map((entry) => (
+                <li key={entry.id} className={`line-clamp-2 ${entry.ok ? 'text-slate-600' : 'text-rose-700'}`}>
+                  {entry.ok ? '✓' : '✕'} {entry.summary}
+                </li>
+              ))}
+            </ul>
+          )}
+          <button type="button" onClick={() => void disconnect()} className={PANEL_SECONDARY_BUTTON}>
+            中斷連線
+          </button>
+        </div>
+      )}
+
+      {phase === 'elsewhere' && (
+        <div className="mt-3 space-y-2 text-xs leading-5 text-slate-600">
+          <p>AI app 目前連在另一個 AutoLabReport 分頁。</p>
+          <button type="button" onClick={takeOver} className={PANEL_BUTTON}>
+            改用這個分頁
+          </button>
+          <button type="button" onClick={() => void disconnect()} className={PANEL_SECONDARY_BUTTON}>
+            中斷連線
+          </button>
+        </div>
+      )}
+
+      {error && (
+        <p role="alert" className="mt-3 rounded-xl bg-rose-50 px-3 py-2 text-xs leading-5 text-rose-800 ring-1 ring-rose-200">
+          {error}
+        </p>
+      )}
+    </section>
+  )
+}
+
 type TerminalBridgePanelProps<Context> = {
   onPrepare: () => Promise<{ prompt: string; context: Context }>
   onUseReply: (reply: string, context: Context) => Promise<void>
@@ -5061,6 +5264,10 @@ function WorkspaceApp({
     selectedLength: 0,
   })
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null)
+  const agentToolHandlersRef = useRef<AgentToolHandlers | null>(null)
+  const agentOpenReportRef = useRef<AgentOpenReport>(null)
+  const agentBackupsRef = useRef(new Map<string, number>())
+  const [agentImages] = useState(() => new AgentImageRegistry())
   const editorScrollDisposableRef = useRef<{ dispose: () => void } | null>(null)
   const editorContentDisposableRef = useRef<{ dispose: () => void } | null>(null)
   const editorSelectionDisposableRef = useRef<{ dispose: () => void } | null>(null)
@@ -8734,6 +8941,172 @@ function WorkspaceApp({
     ],
   ]
 
+  // --- AI apps working through the MCP connector (agentConnector.ts) ------------------
+  // Declared below every function they use (React Compiler, see agentConnector.ts).
+
+  // The editor, if it is showing a live report. After the student leaves the editor the
+  // ref still holds the disposed editor, whose text reads as empty.
+  function liveAgentEditor() {
+    const ed = editorRef.current
+    return ed?.getModel() ? ed : null
+  }
+
+  // The editor's text with LF line breaks, whatever the document itself uses.
+  function agentEditorText(ed: editor.IStandaloneCodeEditor) {
+    return ed.getModel()?.getLinesContent().join('\n') ?? ''
+  }
+
+  function agentReportText() {
+    const ed = liveAgentEditor()
+    return ed ? agentEditorText(ed) : normalizeNewlines(ytextRef.current?.toString() ?? markdown)
+  }
+
+  function requireAgentReport() {
+    if (!activeDocument) throw new Error('目前沒有打開的報告。請先用 list_reports 找到報告，再用 open_report 打開。')
+    return activeDocument
+  }
+
+  // Changes go through the editor, where the student sees them and Ctrl+Z undoes them.
+  async function agentEditor() {
+    requireAgentReport()
+    if (!canEditActiveDocumentRef.current) throw new Error('這份報告目前是唯讀的，無法修改。')
+    if (currentView !== 'editor') setCurrentView('editor')
+    for (let waited = 0; waited < 8000; waited += 100) {
+      const ed = liveAgentEditor()
+      if (ed) return ed
+      await sleepMs(100)
+    }
+    throw new Error('報告編輯器沒有開啟。請使用者切換到 AutoLabReport 的報告畫面，再試一次。')
+  }
+
+  function backUpBeforeAgentChange(documentId: string) {
+    const now = agentNow()
+    if (!needsBackup(agentBackupsRef.current.get(documentId), now)) return
+    agentBackupsRef.current.set(documentId, now)
+    saveActiveDocumentVersion('AI app 修改前自動備份')
+  }
+
+  function applyAgentChange(ed: editor.IStandaloneCodeEditor, text: string, edit: TextEdit) {
+    const start = positionAt(text, edit.start)
+    const end = positionAt(text, edit.end)
+    ed.pushUndoStop()
+    const applied = ed.executeEdits('ai-app', [
+      {
+        range: { startLineNumber: start.lineNumber, startColumn: start.column, endLineNumber: end.lineNumber, endColumn: end.column },
+        text: edit.text,
+        forceMoveMarkers: true,
+      },
+    ])
+    ed.pushUndoStop()
+    if (!applied) throw new Error('編輯器拒絕了這次修改（報告可能是唯讀的）。')
+    updateMarkdownValue(ed.getValue())
+    updateEditorStats(ed)
+    const shown = positionAt(`${text.slice(0, edit.start)}${edit.text}`, edit.start + edit.text.length)
+    ed.revealLineInCenterIfOutsideViewport(shown.lineNumber)
+    setBridgeToast('AI app 修改了報告，按 Ctrl+Z 可以復原')
+  }
+
+  function fromAgentText(value: unknown) {
+    const restored = agentImages.fromAgent(typeof value === 'string' ? value : '')
+    if ('error' in restored) throw new Error(restored.error)
+    return normalizeNewlines(restored.text)
+  }
+
+  async function createReportForAgent(title: string, content: string) {
+    if (databaseLoading) throw new Error('AutoLabReport 正在同步資料，請稍候再試。')
+    if (supabase && shouldUseSupabaseDocuments) {
+      setDatabaseLoading(true)
+      try {
+        const client = supabase
+        const documentId = await insertOwnedDocument((row) => client.from('documents').insert([row]), {
+          title,
+          content,
+          share_setting: 'private',
+          user_id: user?.id,
+        })
+        await refreshSupabaseDocuments(documentId)
+      } finally {
+        setDatabaseLoading(false)
+      }
+    } else {
+      const nextDocument = createDocument(title, content, null)
+      setDocuments((currentDocuments) => [...currentDocuments, nextDocument])
+      loadDocument(nextDocument)
+    }
+    setCurrentView('editor')
+  }
+
+  const agentHandlers: AgentToolHandlers = {
+    list_reports: async () =>
+      describeReports(
+        documents
+          .filter((document) => document.type === 'file' && !document.isTrashed)
+          .map((document) => ({ id: document.id, title: document.title, updatedAt: document.updatedAt ?? document.createdAt })),
+        activeDocument?.id ?? null,
+      ),
+    open_report: async (args) => {
+      const target = documents.find((document) => document.id === args.reportId && document.type === 'file' && !document.isTrashed)
+      if (!target) throw new Error(`找不到 id 為 ${String(args.reportId)} 的報告。請用 list_reports 查看可用的 id。`)
+      loadDocument(target)
+      setCurrentView('editor')
+      return `已打開報告「${target.title}」。`
+    },
+    read_report: async () => {
+      const report = requireAgentReport()
+      return describeReport(report.title, report.id, agentImages.toAgent(agentReportText()))
+    },
+    check_report: async () => {
+      requireAgentReport()
+      return describeChecks(analyzeReportQuality(agentReportText()))
+    },
+    edit_report: async (args) => {
+      const ed = await agentEditor()
+      const report = requireAgentReport()
+      const text = agentEditorText(ed)
+      const edit = exactEdit(text, fromAgentText(args.oldText), fromAgentText(args.newText))
+      if ('error' in edit) throw new Error(edit.error)
+      backUpBeforeAgentChange(report.id)
+      applyAgentChange(ed, text, edit)
+      return `已修改報告「${report.title}」。${newNumbersNote(numbersAddedBy(text, edit.text))}`
+    },
+    write_report: async (args) => {
+      const ed = await agentEditor()
+      const report = requireAgentReport()
+      const text = agentEditorText(ed)
+      const content = fromAgentText(args.content)
+      backUpBeforeAgentChange(report.id)
+      applyAgentChange(ed, text, { start: 0, end: text.length, text: content })
+      return `已改寫整份報告「${report.title}」（${content.length} 字元），原本的內容已備份到版本歷史。${newNumbersNote(numbersAddedBy(text, content))}`
+    },
+    create_report: async (args) => {
+      const title = (typeof args.title === 'string' ? args.title.trim() : '') || '未命名報告'
+      await createReportForAgent(title, fromAgentText(args.content))
+      return `已建立並打開報告「${title}」。`
+    },
+    insert_image: async (args) => {
+      const mimeType = String(args.mimeType)
+      if (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mimeType)) throw new Error('只能插入 PNG、JPEG、GIF 或 WebP 圖片。')
+      const ed = await agentEditor()
+      const report = requireAgentReport()
+      const url = await uploadPastedImage(base64ToFile(String(args.data), mimeType, `ai-app-image.${mimeType.split('/')[1]}`))
+      const alt = (typeof args.alt === 'string' ? args.alt : '').replace(/[[\]]/g, '').trim() || '圖片'
+      const text = agentEditorText(ed)
+      const edit = imageInsertion(text, `![${alt}](${url})`, typeof args.afterText === 'string' ? fromAgentText(args.afterText) : undefined)
+      if ('error' in edit) throw new Error(edit.error)
+      backUpBeforeAgentChange(report.id)
+      applyAgentChange(ed, text, edit)
+      return `已在報告「${report.title}」插入圖片「${alt}」。`
+    },
+  }
+
+  const agentConnector = useAgentConnector({ handlersRef: agentToolHandlersRef, openReportRef: agentOpenReportRef })
+
+  // The connector's calls arrive between renders; they always use this render's handlers.
+  useEffect(() => {
+    agentToolHandlersRef.current = agentHandlers
+    agentOpenReportRef.current = activeDocument ? { id: activeDocument.id, title: activeDocument.title } : null
+  })
+
   return (
     <div className="flex h-screen overflow-hidden bg-slate-50 font-sans text-slate-800">
       <input
@@ -9047,10 +9420,13 @@ function WorkspaceApp({
               type="button"
               onClick={() => setIsAgentDrawerOpen(true)}
               className="inline-flex h-10 shrink-0 items-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50 hover:text-slate-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
-              title="開啟 AI Agent"
+              title={agentConnector.phase === 'connected' ? '開啟 AI Agent（AI app 已連線）' : '開啟 AI Agent'}
             >
               <Beaker className="h-4 w-4" strokeWidth={2} />
               <span className="hidden lg:inline">AI Agent</span>
+              {agentConnector.phase === 'connected' && (
+                <span aria-hidden="true" className="h-2 w-2 rounded-full bg-emerald-500" />
+              )}
             </button>
 
             <div ref={advancedMenuRef} className="relative">
@@ -9846,6 +10222,7 @@ function WorkspaceApp({
             </header>
 
             <div className={`min-h-0 flex-1 overflow-auto px-5 py-5 ${SCROLLBAR_HIDE}`}>
+              <AgentConnectorPanel connector={agentConnector} />
               <section>
                 <div className="grid gap-2">
                   {AGENT_MODE_CONFIG.map((config) => (

@@ -1,6 +1,8 @@
-# The terminal bridge is a Node script students download and run, and it starts with a
-# `#!/usr/bin/env node` line. With core.autocrlf=true -- the Windows default -- a checkout
-# rewrote it with CRLF endings. Node still ran it, but Vitest could no longer load it
-# ("SyntaxError: Invalid or unexpected token"), so its 28 security tests silently
-# stopped running on Windows while CI, on Linux, stayed green. Always LF.
+# The terminal bridge and the MCP connector are Node scripts students download and run,
+# and each starts with a `#!/usr/bin/env node` line. With core.autocrlf=true -- the
+# Windows default -- a checkout rewrote the bridge with CRLF endings. Node still ran it,
+# but Vitest could no longer load it ("SyntaxError: Invalid or unexpected token"), so its
+# 28 security tests silently stopped running on Windows while CI, on Linux, stayed green.
+# Always LF.
 frontend/public/bridge/*.mjs text eol=lf
+frontend/public/mcp/*.mjs text eol=lf
