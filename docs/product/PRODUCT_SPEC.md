@@ -61,6 +61,7 @@ All excluded features default to disabled. Enabling one creates a separate relea
 | Invited viewer | Non-trashed invited document | No | No |
 | Invited editor | Non-trashed invited document | Content only | No |
 | Public / anonymous | Non-trashed document with view or legacy edit share setting | No | No |
+| AI app holding a student's grant (OAuth token with `client_id`) | What that student can read | Content only; may create private top-level documents and add version backups | No: no delete, trash, move, rename or re-share, and no other data or stored files |
 | Service role | Server operations only | Server operations only | Server operations only |
 
 Legacy public edit links are treated as read-only. Browser clients cannot change user_id, workspace ownership, view count, plan, quota, Stripe or integration secrets.

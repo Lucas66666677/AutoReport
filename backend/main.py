@@ -1141,6 +1141,24 @@ def _get_decrypted_user_api_key(
     return decrypt_secret(str(encrypted_key)), str(stored_provider)
 
 
+def _is_ai_app_token(token: str) -> bool:
+    """Whether a token was issued to an AI app through Supabase Auth's OAuth server.
+
+    Those tokens carry a client_id claim; a student's own sign-in never does. An AI
+    app's grant is for the MCP tools (mcp_remote.py) alone, so every other endpoint
+    treats it as no sign-in at all. The claim is read without checking the signature:
+    that can only refuse a token, and Supabase Auth verifies every token it accepts.
+    """
+    parts = token.split(".")
+    if len(parts) != 3:
+        return False
+    try:
+        claims = json.loads(base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4)))
+    except (ValueError, UnicodeDecodeError):
+        return False
+    return isinstance(claims, dict) and bool(claims.get("client_id"))
+
+
 def _get_user_from_authorization(authorization: str | None) -> dict[str, Any] | None:
     if not authorization or not authorization.lower().startswith("bearer "):
         return None
@@ -1148,6 +1166,8 @@ def _get_user_from_authorization(authorization: str | None) -> dict[str, Any] | 
         return None
 
     token = authorization.split(" ", 1)[1].strip()
+    if _is_ai_app_token(token):
+        return None
     assert SUPABASE_URL is not None
     assert SUPABASE_SERVICE_ROLE_KEY is not None
 

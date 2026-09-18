@@ -11334,6 +11334,22 @@ function App() {
     }
   }, [authLoading, onConsentRoute, publicReportShareId, user])
 
+  // On the consent page: does the database already confine AI apps (mcp_remote.py)?
+  const [aiAppLimitsActive, setAiAppLimitsActive] = useState(false)
+  useEffect(() => {
+    if (!onConsentRoute) return
+    let cancelled = false
+    fetch(`${API_BASE_URL}/api/mcp/status`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload: { ai_app_limits?: unknown } | null) => {
+        if (!cancelled) setAiAppLimitsActive(payload?.ai_app_limits === true)
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [onConsentRoute])
+
   // Signing in leaves the consent page; come back to it afterwards.
   useEffect(() => {
     if (authLoading || !user || onConsentRoute) return
@@ -11432,6 +11448,7 @@ function App() {
           return sendMagicLink(email)
         }}
         onSignOut={() => void signOut()}
+        limitsActive={aiAppLimitsActive}
       />
     )
   }
