@@ -98,6 +98,7 @@ import { collectHtmlImageSources, collectImageUrlsFromText, imageMarkdown } from
 import { shrinkPastedImage } from './pastedImageSize'
 import { isEssentiallyImagesOnly, isEssentiallyOneTable } from './pasteScope'
 import { agentBlock, assistBlock, type AiBlock } from './aiAvailability'
+import { modelOptionsFor, normalizeModelChoice, type AiModels } from './modelChoice'
 import {
   BRIDGE_PROTOCOL,
   BridgeRequestError,
@@ -1680,6 +1681,7 @@ function normalizeAiSettings(settings: Partial<AiSettings> | null | undefined): 
     ...(settings ?? {}),
     userApiKey: typeof settings?.userApiKey === 'string' ? settings.userApiKey : '',
     promptLibrary: normalizePromptLibrary(settings?.promptLibrary),
+    defaultModel: normalizeModelChoice(settings?.defaultModel),
     preferredProvider:
       settings?.preferredProvider === 'extension' || settings?.preferredProvider === 'user_api_key'
         ? settings.preferredProvider
@@ -1872,6 +1874,7 @@ function AiSettingsView({
   quota,
   quotaLoading,
   isSignedIn = true,
+  models,
   userApiKeySaving,
   notePreferences,
   preferencesLoading,
@@ -1885,6 +1888,7 @@ function AiSettingsView({
   quota: AiQuota | null
   quotaLoading: boolean
   isSignedIn?: boolean
+  models: AiModels | null
   userApiKeySaving: boolean
   notePreferences: NotePreferences
   preferencesLoading: boolean
@@ -1895,7 +1899,10 @@ function AiSettingsView({
   onChangeNotePreferences: (patch: Partial<NotePreferences>) => void
 }) {
   function updateSettings(patch: Partial<AiSettings>) {
-    onChangeSettings(normalizeAiSettings({ ...settings, ...patch }))
+    const providerChanged =
+      (patch.preferredProvider !== undefined && patch.preferredProvider !== settings.preferredProvider) ||
+      (patch.userApiProvider !== undefined && patch.userApiProvider !== settings.userApiProvider)
+    onChangeSettings(normalizeAiSettings({ ...settings, ...patch, ...(providerChanged ? { defaultModel: '' } : {}) }))
   }
 
   const isPro = quota?.plan === 'pro'
@@ -1904,20 +1911,7 @@ function AiSettingsView({
   const limit = quota?.limit ?? 0
   const remaining = quota?.remaining ?? 0
   const remainingPercent = quota ? Math.max(0, Math.min(100, (remaining / Math.max(limit, 1)) * 100)) : 0
-  const modelOptions = isPro
-    ? [
-        { value: '', label: 'AutoLab Premium（自動選擇）' },
-        { value: 'gpt-4.1', label: 'GPT-4.1（高品質）' },
-        { value: 'claude-sonnet-4', label: 'Claude Sonnet（長文寫作）' },
-        { value: 'gemini-2.5-pro', label: 'Gemini Pro（資料整理）' },
-        { value: 'deepseek-r1', label: 'DeepSeek R1（推理檢查）' },
-      ]
-    : [
-        { value: '', label: 'Auto Free（自動選擇）' },
-        { value: 'gemini-flash', label: 'Gemini Flash（免費/快速）' },
-        { value: 'deepseek-chat', label: 'DeepSeek Chat（免費/長文）' },
-        { value: 'user-api-model', label: '自備 API 模型' },
-      ]
+  const modelChoice = modelOptionsFor(settings.preferredProvider, models, settings.defaultModel)
   const connectionCards = [
     {
       id: 'built_in' as AiProvider,
@@ -2052,7 +2046,7 @@ function AiSettingsView({
           <section className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-lg font-semibold text-slate-950">模型選擇</h2>
             <p className="mt-1 text-sm leading-6 text-slate-500">
-              免費版顯示免費模型；Pro 版可切換高級模型。留空代表由系統自動選擇。
+              列出的是實際可用的模型：內建 AI 依站方設定，自備 API Key 則直接向廠商查詢這組 Key 能用哪些。
             </p>
             <label className="mt-5 block">
               <span className="text-sm font-semibold text-slate-700">預設模型</span>
@@ -2061,13 +2055,21 @@ function AiSettingsView({
                 onChange={(event) => updateSettings({ defaultModel: event.target.value })}
                 className="mt-2 h-12 w-full rounded-2xl border border-slate-200 bg-white px-4 text-sm font-medium text-slate-900 outline-none transition focus:border-slate-400 focus:ring-4 focus:ring-slate-100"
               >
-                {modelOptions.map((model) => (
+                {modelChoice.options.map((model) => (
                   <option key={model.value} value={model.value}>
                     {model.label}
                   </option>
                 ))}
               </select>
             </label>
+            {!isSignedIn && (
+              <p className="mt-3 text-sm leading-6 text-slate-500">登入後會列出內建 AI 與你的 API Key 實際可用的模型。</p>
+            )}
+            {isSignedIn && modelChoice.note && (
+              <p className="mt-3 rounded-2xl bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900 ring-1 ring-amber-200">
+                {modelChoice.note}
+              </p>
+            )}
             <label className="mt-5 flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm font-medium text-slate-600">
               <span>插件完成後自動回填編輯器</span>
               <input
@@ -4937,6 +4939,7 @@ function WorkspaceApp({
   const [pendingAiChange, setPendingAiChange] = useState<PendingAiChange | null>(null)
   const [userApiKeySaving, setUserApiKeySaving] = useState(false)
   const [aiQuota, setAiQuota] = useState<AiQuota | null>(null)
+  const [aiModels, setAiModels] = useState<AiModels | null>(null)
   const [aiQuotaLoading, setAiQuotaLoading] = useState(false)
   const [billingConfig, setBillingConfig] = useState<BillingConfig | null>(null)
   const [billingActionLoading, setBillingActionLoading] = useState<'checkout' | 'portal' | null>(null)
@@ -5151,6 +5154,21 @@ function WorkspaceApp({
     return token ? { Authorization: `Bearer ${token}` } : {}
   }, [user])
 
+  const refreshAiModels = useCallback(async () => {
+    if (!user) {
+      setAiModels(null)
+      return
+    }
+    try {
+      const headers = await getAuthHeaders()
+      const res = await fetch(`${API_BASE_URL}/api/ai/models`, { headers })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      setAiModels((await res.json()) as AiModels)
+    } catch {
+      setAiModels(null)
+    }
+  }, [getAuthHeaders, user])
+
   const refreshAiQuota = useCallback(async () => {
     if (!user) {
       setAiQuota(null)
@@ -5340,6 +5358,8 @@ function WorkspaceApp({
         }),
       )
       setBridgeToast('API Key 已加密儲存，輸入框已清空')
+      // A new key can mean a new provider and a different set of models.
+      void refreshAiModels()
     } catch (err) {
       const message = err instanceof Error ? err.message : 'API Key 儲存失敗'
       setBridgeToast(`API Key 儲存失敗：${message}`)
@@ -5483,6 +5503,7 @@ function WorkspaceApp({
         if (!isCancelled) {
           aiSettingsHydratedRef.current = true
           void refreshAiQuota()
+          void refreshAiModels()
         }
       }
     }, 0)
@@ -5491,7 +5512,7 @@ function WorkspaceApp({
       isCancelled = true
       window.clearTimeout(fetchTimer)
     }
-  }, [refreshAiQuota, user])
+  }, [refreshAiModels, refreshAiQuota, user])
 
   useEffect(() => {
     if (!supabase || !user || !aiSettingsHydratedRef.current) return
@@ -9285,6 +9306,7 @@ function WorkspaceApp({
       ) : currentView === 'settings' ? (
         <AiSettingsView
           isSignedIn={Boolean(user)}
+          models={aiModels}
           settings={aiSettings}
           quota={aiQuota}
           quotaLoading={aiQuotaLoading}
