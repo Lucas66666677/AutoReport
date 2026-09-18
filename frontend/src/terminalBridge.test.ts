@@ -92,7 +92,7 @@ describe('runOnBridge', () => {
 
   it('sends the chosen model, and nothing when the CLI default is wanted', async () => {
     // A fresh Response per call: a body can only be read once.
-    const fetchImpl = vi.fn(async () => json(200, { text: 'ok' }))
+    const fetchImpl = vi.fn().mockImplementation(async () => json(200, { text: 'ok' }))
     await runOnBridge(47632, 'tok', 'claude', 'p', { model: 'sonnet' }, fetchImpl)
     expect(JSON.parse(fetchImpl.mock.calls[0][1].body).model).toBe('sonnet')
     await runOnBridge(47632, 'tok', 'claude', 'p', { model: '' }, fetchImpl)
