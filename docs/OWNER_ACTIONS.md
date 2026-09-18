@@ -6,7 +6,7 @@ Updated: 2026-07-24
 
 | 平台 | 要做什么 | 控制台位置 | 所需值 | 为什么 | 如何验证 | 是否阻塞 Beta |
 |---|---|---|---|---|---|---|
-| Supabase Database | 在全新项目一次贴上 `supabase/bringup.sql`（等同按顺序执行全部 11 个 migration，至 `20260912_template_imitation_presets.sql`）| Project Settings／CLI Migration 管理 | Project ref 与本机保存的数据库密码；不要贴到聊天 | 建立 RLS、trigger、quota RPC 与私有 Storage | dry-run 清单一致、push 成功并完成下方权限矩阵 | 是 |
+| Supabase Database | 在全新项目一次贴上 `supabase/bringup.sql`（等同按顺序执行全部 12 个 migration，至 `20260918_ai_app_least_privilege.sql`）| Project Settings／CLI Migration 管理 | Project ref 与本机保存的数据库密码；不要贴到聊天 | 建立 RLS、trigger、quota RPC 与私有 Storage | dry-run 清单一致、push 成功并完成下方权限矩阵 | 是 |
 | Supabase Auth URL | 配置正式与 staging URL | Authentication → URL Configuration | Site URL、允许的 redirect URL | OAuth／Magic Link 必须回到正确网站 | 两个域名登录后不循环、不跳错站 | 是 |
 | Supabase Email | 启用 Magic Link 与邮件模板 | Authentication → Providers → Email | 发件设置、模板、redirect | Google 故障时仍能登录 | Beta 邮箱收到链接并完成登录 | 若承诺 Email 则是 |
 | Google OAuth | 发布或配置测试用户；填入 Supabase provider | Google Cloud → OAuth consent screen／Credentials；Supabase → Providers → Google | Client ID、Client Secret、Supabase callback URI、授权域名 | 解决 403 access_denied 并提供主要登录 | 非项目拥有者账号成功登录／登出／重登 | 若承诺 Google 则是 |
@@ -22,6 +22,7 @@ Updated: 2026-07-24
 | GitHub OAuth | GitHub 登录与 Sync 都维持关闭 | Supabase Providers／GitHub OAuth Apps；Env | VITE_ENABLE_GITHUB_AUTH=false、同步 flags=false | 避免未配置或缺 CSRF 验收的流程 | 登录页无 GitHub；sync route=503 | 否；保持关闭 |
 | Collaboration server | 本轮不部署或保持拒绝连接 | 服务环境变量 | COLLABORATION_ENABLED=false | 避免 Yjs 与 HTTP 双写覆盖 | 前端不开连接；server 拒绝认证 | 否；保持关闭 |
 | Supabase OAuth Server | 开启 OAuth 2.1 server，Authorization Path 设为 `/oauth/consent`，并允许动态注册（Dynamic Client Registration） | Authentication → OAuth Server | Authorization Path `/oauth/consent`；Site URL 须为 `https://autolabreport.lucirel.com` | ChatGPT 网页版只能连云端 MCP（后端 `/mcp`），它的登录授权由 Supabase OAuth 提供 | `https://<project>.supabase.co/.well-known/oauth-authorization-server/auth/v1` 返回 200 且含 `registration_endpoint`；连接器面板出现「用 ChatGPT 網頁版」步骤 | 否；开启后才有 ChatGPT 网页版 |
+| Supabase SQL（AI app 最小权限） | 已上线的项目在 SQL Editor 执行 `supabase/migrations/20260918_ai_app_least_privilege.sql` 一次 | SQL Editor | 仓库里的该文件内容（没有任何 secret） | AI app（ChatGPT 网页版）拿到的授权原本等同学生本人；执行后只能读报告、建立私人报告、改报告内容、新增版本备份，不能删除、分享、搬移，也碰不到其他资料与图片 | `https://autoreport-xnq5.onrender.com/api/mcp/status` 的 `ai_app_limits` 变成 `true`；同意页改显示「不能刪除、分享或搬移報告」 | 否；开放 ChatGPT 网页版前建议先执行 |
 | Render（可选） | 加 `SUPABASE_ANON_KEY`，值为公开的 anon key（不是 secret） | Service → Environment | 与 Vercel 的 `VITE_SUPABASE_ANON_KEY` 相同 | `/mcp` 以学生身份查资料库时，网关改用 anon key：万一网关忽略学生 token，也只会以 anon 执行，而不是 service role | ChatGPT 网页版的工具照常运作 | 否 |
 | Error monitoring | 选择并配置 Sentry 或同类服务 | 监控平台项目设置／Vercel／Render | DSN、release tag、告警收件人；先做 PII 审查 | 20 位学生发生错误时 Owner 能主动发现 | staging 发送测试事件并收到告警 | 是 |
 | Feedback | 指定学生可见的回报渠道与负责人 | Owner 选择的 Email／表单／群组 | 公开联系地址、负责人、响应时间 | 保存／登录／导出受阻时有升级路径 | 从应用入口发送测试消息并收到 | 是 |

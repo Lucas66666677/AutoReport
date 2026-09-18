@@ -291,6 +291,35 @@ def oauth_server_enabled() -> bool:
     return enabled
 
 
+_limits_status: dict[str, Any] = {"checked": 0.0, "active": False}
+
+
+def ai_app_limits_active() -> bool:
+    """Whether the database confines AI apps to report content
+    (20260918_ai_app_least_privilege.sql), so the consent page can say exactly what a
+    grant allows. Its function exists only once the owner has run that migration.
+    Checked every 5 minutes, as the service role, calling nothing that changes data."""
+    now = time.monotonic()
+    if _limits_status["checked"] and now - _limits_status["checked"] < OAUTH_STATUS_CACHE_SECONDS:
+        return bool(_limits_status["active"])
+    active = False
+    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    try:
+        if key:
+            request = urllib.request.Request(
+                f"{_supabase_url()}/rest/v1/rpc/is_ai_app_session",
+                data=b"{}",
+                method="POST",
+                headers={"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(request, timeout=10) as response:
+                active = response.status == 200
+    except Exception:
+        active = False
+    _limits_status.update(checked=now, active=active)
+    return active
+
+
 # ---------------------------------------------------------------------------------------
 # Reports, in the same words the local connector's page uses
 
@@ -721,9 +750,10 @@ def mcp_status(request: Request) -> dict[str, Any]:
     """For the connector panel: the address to give ChatGPT, and whether sign-in is on."""
     try:
         enabled = oauth_server_enabled()
+        limited = ai_app_limits_active()
     except ToolFailure:
-        enabled = False
-    return {"url": f"{_public_base(request)}/mcp", "oauth_enabled": enabled}
+        enabled = limited = False
+    return {"url": f"{_public_base(request)}/mcp", "oauth_enabled": enabled, "ai_app_limits": limited}
 
 
 def _unauthorized(request: Request, had_token: bool) -> JSONResponse:

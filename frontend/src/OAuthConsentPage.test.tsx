@@ -51,6 +51,13 @@ describe('OAuthConsentPage', () => {
     expect(screen.getByText('chatgpt.com')).toBeTruthy()
   })
 
+  // Once the database confines AI apps, the page can promise exactly that -- and not before.
+  it('says what a grant allows only once the database enforces it', async () => {
+    renderPage({ limitsActive: true })
+    expect(await screen.findByText(/不能刪除、分享或搬移報告/)).toBeTruthy()
+    expect(screen.queryByText(/權限等同你登入/)).toBeNull()
+  })
+
   it('sends the student back to the app with the code when they approve', async () => {
     const props = renderPage()
     fireEvent.click(await screen.findByRole('button', { name: '允許' }))

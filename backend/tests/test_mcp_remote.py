@@ -410,11 +410,35 @@ class HttpTests(unittest.TestCase):
             )
         self.assertEqual(response.status_code, 413)
 
-    def test_tells_the_page_whether_sign_in_is_on(self):
-        mcp_remote._oauth_status.update(checked=0.0, enabled=False)
-        with patch.object(mcp_remote, "oauth_server_enabled", return_value=True):
+    def test_tells_the_page_whether_sign_in_is_on_and_how_far_a_grant_reaches(self):
+        with patch.object(mcp_remote, "oauth_server_enabled", return_value=True), patch.object(
+            mcp_remote, "ai_app_limits_active", return_value=True
+        ):
             response = self.client.get("/api/mcp/status", headers={"host": "autoreport-xnq5.onrender.com"})
-        self.assertEqual(response.json(), {"url": "https://autoreport-xnq5.onrender.com/mcp", "oauth_enabled": True})
+        self.assertEqual(
+            response.json(),
+            {"url": "https://autoreport-xnq5.onrender.com/mcp", "oauth_enabled": True, "ai_app_limits": True},
+        )
+
+    def test_knows_the_database_rule_is_active_only_once_its_function_exists(self):
+        class Answer(io.BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def missing(request, timeout=None):
+            raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, io.BytesIO(b"{}"))
+
+        mcp_remote._limits_status.update(checked=0.0, active=False)
+        with patch.object(mcp_remote.urllib.request, "urlopen", missing):
+            self.assertFalse(mcp_remote.ai_app_limits_active())
+        mcp_remote._limits_status.update(checked=0.0, active=False)
+        with patch.object(mcp_remote.urllib.request, "urlopen", lambda request, timeout=None: Answer(b"false")):
+            self.assertTrue(mcp_remote.ai_app_limits_active())
 
 
 if __name__ == "__main__":

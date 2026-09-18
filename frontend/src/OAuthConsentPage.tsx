@@ -13,6 +13,8 @@ type OAuthConsentPageProps = {
   onOAuthLogin: (provider: Provider) => void
   onSendMagicLink: (email: string) => Promise<boolean>
   onSignOut: () => void
+  /** Whether the database confines AI apps to report content (see mcp_remote.py). */
+  limitsActive?: boolean
   navigate?: (url: string) => void
 }
 
@@ -43,6 +45,7 @@ export function OAuthConsentPage({
   onOAuthLogin,
   onSendMagicLink,
   onSignOut,
+  limitsActive = false,
   navigate = goTo,
 }: OAuthConsentPageProps) {
   const [stage, setStage] = useState<Stage>({ name: 'loading' })
@@ -193,7 +196,9 @@ export function OAuthConsentPage({
           </ul>
         </div>
         <p className="text-xs leading-5 text-slate-600">
-          這個授權的權限等同你登入 AutoLabReport，請只允許你信任、而且是你自己設定的 AI app。
+          {limitsActive
+            ? '它只能讀取、建立報告和修改報告內容：不能刪除、分享或搬移報告，也碰不到你的其他資料。請只允許你信任、而且是你自己設定的 AI app。'
+            : '這個授權的權限等同你登入 AutoLabReport，請只允許你信任、而且是你自己設定的 AI app。'}
         </p>
         <p className="text-sm text-slate-700">
           允許後會回到：<strong className="font-semibold text-slate-950">{host}</strong>
