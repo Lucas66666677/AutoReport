@@ -441,7 +441,11 @@ test('a guest can hand the Agent to a signed-in terminal CLI through the bridge'
     "process.stdin.on('data', (chunk) => chunks.push(chunk))",
     "process.stdin.on('end', () => {",
     "  const toolsOff = args.slice(-2).join(' ') === '--disallowedTools *'",
-    "  const answer = { findings: ['來自終端機的審閱', 'tools-off:' + toolsOff] }",
+    "  const modelAt = args.indexOf('--model')",
+    "  const model = modelAt >= 0 ? args[modelAt + 1] : 'default'",
+    // A name the stand-in does not know fails the way a real CLI's refusal does.
+    "  if (model === 'nope') { process.exitCode = 1; process.stdout.write('model nope is not available'); return }",
+    "  const answer = { findings: ['來自終端機的審閱', 'tools-off:' + toolsOff, 'model:' + model] }",
     // String.fromCharCode(10), not an escape: this line is source for another program.
     "  const newline = String.fromCharCode(10)",
     "  process.stdout.write('```json' + newline + JSON.stringify(answer) + newline + '```')",
@@ -504,10 +508,23 @@ test('a guest can hand the Agent to a signed-in terminal CLI through the bridge'
     const run = panel.getByRole('button', { name: '用 Claude Code 執行' })
     await expect(run).toBeVisible()
     await expect(panel).toContainText('已關閉所有工具')
+
+    // A name the CLI refuses: the student sees the CLI's reason and the way back.
+    await panel.getByLabel('Claude Code 模型').selectOption({ label: '其他（自行輸入）…' })
+    await panel.getByLabel('Claude Code 自訂模型').fill('nope')
+    await expect(panel).toContainText('/model')
+    await run.click()
+    await expect(panel.getByRole('alert')).toContainText('model nope is not available')
+    await expect(panel.getByRole('alert')).toContainText('改回「CLI 預設」')
+
+    // A model from the list; the CLI must be started with it.
+    await panel.getByLabel('Claude Code 模型').selectOption('sonnet')
     await run.click()
 
     await expect(agent).toContainText('來自終端機的審閱')
-    // The stand-in reports the arguments it was started with: every tool removed.
+    // The stand-in reports the arguments it was started with: the chosen model, and
+    // still every tool removed.
+    await expect(agent).toContainText('model:sonnet')
     await expect(agent).toContainText('tools-off:true')
   } finally {
     bridge.kill()

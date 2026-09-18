@@ -100,6 +100,8 @@ import { isEssentiallyImagesOnly, isEssentiallyOneTable } from './pasteScope'
 import { agentBlock, assistBlock, type AiBlock } from './aiAvailability'
 import { modelOptionsFor, normalizeModelChoice, type AiModels } from './modelChoice'
 import {
+  BRIDGE_MODEL_RE,
+  BRIDGE_MODEL_SUGGESTIONS,
   BRIDGE_PROTOCOL,
   BridgeRequestError,
   bridgeSetupCommands,
@@ -4320,6 +4322,73 @@ function CopyCommand({ label, command }: { label: string; command: string }) {
   )
 }
 
+// Which model a terminal CLI runs: blank is the CLI's own default, the list offers the
+// names in BRIDGE_MODEL_SUGGESTIONS, and 其他 takes any other. The bridge enforces the
+// same name rule, so a name can only ever be a name on its command line.
+function BridgeModelPicker({
+  cli,
+  value,
+  disabled,
+  onChange,
+}: {
+  cli: BridgeCli
+  value: string
+  disabled: boolean
+  onChange: (model: string) => void
+}) {
+  const suggestions = BRIDGE_MODEL_SUGGESTIONS.get(cli.id) ?? []
+  const [typing, setTyping] = useState(() => value !== '' && !suggestions.includes(value))
+  const invalid = value !== '' && !BRIDGE_MODEL_RE.test(value)
+  const showInput = typing || suggestions.length === 0
+
+  return (
+    <div className="mb-2 space-y-1">
+      {suggestions.length > 0 && (
+        <select
+          value={typing ? '__custom__' : value}
+          onChange={(event) => {
+            if (event.target.value === '__custom__') {
+              setTyping(true)
+            } else {
+              setTyping(false)
+              onChange(event.target.value)
+            }
+          }}
+          disabled={disabled}
+          aria-label={`${cli.label} 模型`}
+          className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none focus:border-slate-400"
+        >
+          <option value="">模型：CLI 預設</option>
+          {suggestions.map((model) => (
+            <option key={model} value={model}>
+              模型：{model}
+            </option>
+          ))}
+          <option value="__custom__">其他（自行輸入）…</option>
+        </select>
+      )}
+      {showInput && (
+        <input
+          value={value}
+          onChange={(event) => onChange(event.target.value.trim())}
+          disabled={disabled}
+          placeholder={suggestions.length > 0 ? '輸入模型名稱' : '模型名稱（留空＝CLI 預設）'}
+          aria-label={`${cli.label} 自訂模型`}
+          autoComplete="off"
+          spellCheck={false}
+          className="h-11 w-full rounded-xl border border-slate-200 px-3 font-mono text-sm text-slate-900 outline-none focus:border-slate-400"
+        />
+      )}
+      {showInput && !invalid && (
+        <p className="text-xs leading-5 text-slate-500">可用的名稱：在 {cli.label} 裡輸入 /model 查看。</p>
+      )}
+      {invalid && (
+        <p className="text-xs leading-5 text-rose-700">模型名稱只能用英文、數字、點、底線和連字號，而且不能以連字號開頭。</p>
+      )}
+    </div>
+  )
+}
+
 type TerminalBridgePanelProps<Context> = {
   onPrepare: () => Promise<{ prompt: string; context: Context }>
   onUseReply: (reply: string, context: Context) => Promise<void>
@@ -4349,6 +4418,10 @@ function TerminalBridgePanel<Context>({ onPrepare, onUseReply, onBack }: Termina
   function remember(next: BridgeConnection) {
     saveBridgeConnection(next)
     setConnection(next)
+  }
+
+  function chooseModel(cliId: string, model: string) {
+    remember({ ...connection, models: { ...(connection.models ?? {}), [cliId]: model } })
   }
 
   async function check(current: BridgeConnection = connection) {
@@ -4390,6 +4463,11 @@ function TerminalBridgePanel<Context>({ onPrepare, onUseReply, onBack }: Termina
 
   async function run(cli: BridgeCli) {
     if (!connection.token) return
+    const model = connection.models?.[cli.id] ?? ''
+    if (model && !BRIDGE_MODEL_RE.test(model)) {
+      setError('模型名稱格式不正確，請修正後再執行。')
+      return
+    }
     const controller = new AbortController()
     abortRef.current = controller
     setPhase('running')
@@ -4397,7 +4475,10 @@ function TerminalBridgePanel<Context>({ onPrepare, onUseReply, onBack }: Termina
     setError(null)
     try {
       const { prompt, context } = await onPrepare()
-      const reply = await runOnBridge(connection.port, connection.token, cli.id, prompt, controller.signal)
+      const reply = await runOnBridge(connection.port, connection.token, cli.id, prompt, {
+        signal: controller.signal,
+        model: model || undefined,
+      })
       await onUseReply(reply, context)
       setPhase('ready')
     } catch (err) {
@@ -4416,7 +4497,14 @@ function TerminalBridgePanel<Context>({ onPrepare, onUseReply, onBack }: Termina
         }
       } else {
         setPhase('ready')
-        setError(err instanceof Error ? err.message : '執行失敗')
+        const message = err instanceof Error ? err.message : '執行失敗'
+        // A CLI that does not know the chosen model fails like any other run, so say
+        // which name was sent and how to go back to the default.
+        setError(
+          model && err instanceof BridgeRequestError && err.status === 502
+            ? `${message}（這次指定的模型是 ${model}；如果 ${cli.label} 不認得這個名稱，把模型改回「CLI 預設」再試一次。）`
+            : message,
+        )
       }
     } finally {
       abortRef.current = null
@@ -4566,6 +4654,12 @@ function TerminalBridgePanel<Context>({ onPrepare, onUseReply, onBack }: Termina
         <div className="mt-3 space-y-3">
           {usable.map((cli) => (
             <div key={cli.id}>
+              <BridgeModelPicker
+                cli={cli}
+                value={connection.models?.[cli.id] ?? ''}
+                disabled={phase === 'running'}
+                onChange={(model) => chooseModel(cli.id, model)}
+              />
               <button
                 type="button"
                 onClick={() => void run(cli)}

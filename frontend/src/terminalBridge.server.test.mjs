@@ -19,8 +19,10 @@ import {
   ADAPTERS,
   MAX_BODY_BYTES,
   MAX_PAIRING_FAILURES,
+  MODEL_RE,
   buildSpawn,
   createBridgeServer,
+  failureDetail,
   formatPairingCode,
   parseArguments,
   parseGeminiJson,
@@ -29,6 +31,7 @@ import {
   stopAllRuns,
   stripAnsi,
 } from '../public/bridge/autolabreport-bridge.mjs'
+import { BRIDGE_MODEL_RE, BRIDGE_MODEL_SUGGESTIONS } from './terminalBridge'
 
 const ORIGIN = 'https://autolabreport.lucirel.com'
 const isWindows = process.platform === 'win32'
@@ -43,6 +46,8 @@ process.stdin.on('end', () => {
   if (stdin.includes('MODE:fail')) { process.stderr.write('\\u001b[31mnot signed in\\u001b[0m\\nplease run login\\n'); process.exit(3) }
   if (stdin.includes('MODE:slow')) { setTimeout(() => process.stdout.write(report), 60000); return }
   if (stdin.includes('MODE:gemini')) { process.stdout.write('Loaded cached credentials.\\n' + JSON.stringify({ response: '來自 Gemini 的答案' })); return }
+  if (stdin.includes('MODE:stdout-fail')) { process.exitCode = 1; process.stdout.write('model nope was not found\\n'); return }
+  if (stdin.includes('MODE:json-fail')) { process.exitCode = 1; process.stderr.write('Loaded cached credentials.\\n'); process.stdout.write(JSON.stringify({ error: { type: 'ApiError', message: 'Requested entity was not found.', code: 404 } })); return }
   if (stdin.includes('MODE:empty')) { return }
   process.stdout.write('\\u001b[1m' + report + '\\u001b[0m')
 })
@@ -195,6 +200,7 @@ describe('pairing', () => {
       expect(byId.codex).toMatchObject({ available: true, enabled: false })
       expect(byId.gemini).toMatchObject({ available: false, enabled: false })
       expect(byId.codex.note).toContain('讀取')
+      expect(res.json.protocol).toBe(2)
     } finally {
       await bridge.close()
     }
@@ -281,6 +287,45 @@ describe('running a CLI', () => {
     }
   })
 
+  it('runs the chosen model, and every tool is still removed', async () => {
+    const bridge = await startBridge()
+    try {
+      const res = await run(bridge, { cli: 'claude', prompt: 'hi', model: 'sonnet' })
+      expect(res.status).toBe(200)
+      const seen = JSON.parse(res.json.text)
+      expect(seen.args).toContain('--model')
+      expect(seen.args[seen.args.indexOf('--model') + 1]).toBe('sonnet')
+      // --disallowedTools takes a list, so the model must not end up after it.
+      expect(seen.args.slice(-2)).toEqual(['--disallowedTools', '*'])
+    } finally {
+      await bridge.close()
+    }
+  })
+
+  // A model name is the one thing the page now puts on a command line.
+  it('refuses a model name that could be read as a flag or as shell syntax, before starting anything', async () => {
+    const bridge = await startBridge()
+    try {
+      for (const model of ['--dangerously-skip-permissions', 'sonnet & calc', 'a b', '"x"', 'x;rm', '../x']) {
+        const res = await run(bridge, { cli: 'claude', prompt: 'hi', model })
+        expect(res.status, model).toBe(400)
+      }
+      expect(bridge.state.running).toBe(false)
+    } finally {
+      await bridge.close()
+    }
+  })
+
+  it('runs the CLI’s own default when no model is chosen', async () => {
+    const bridge = await startBridge()
+    try {
+      const res = await run(bridge, { cli: 'claude', prompt: 'hi', model: '' })
+      expect(JSON.parse(res.json.text).args).toEqual(ADAPTERS.claude.args)
+    } finally {
+      await bridge.close()
+    }
+  })
+
   it('strips terminal colour codes from the answer', async () => {
     const bridge = await startBridge()
     try {
@@ -319,6 +364,24 @@ describe('running a CLI', () => {
       expect(res.status).toBe(502)
       expect(res.json.error).toContain('please run login')
       expect(res.json.error).not.toContain('\u001b')
+    } finally {
+      await bridge.close()
+    }
+  })
+
+  // Some CLIs print a refusal -- an unknown model name, say -- as ordinary output, and
+  // Gemini CLI prints it as JSON after a log line. Either way the student should see the
+  // reason, not just an exit code.
+  it('reports why a CLI failed when the reason is on stdout or in a JSON error', async () => {
+    const bridge = await startBridge()
+    try {
+      const plain = await run(bridge, { cli: 'claude', prompt: 'MODE:stdout-fail' })
+      expect(plain.status).toBe(502)
+      expect(plain.json.error).toContain('model nope was not found')
+      const json = await run(bridge, { cli: 'claude', prompt: 'MODE:json-fail' })
+      expect(json.status).toBe(502)
+      expect(json.json.error).toContain('Requested entity was not found.')
+      expect(json.json.error).not.toContain('Loaded cached credentials')
     } finally {
       await bridge.close()
     }
@@ -410,6 +473,20 @@ describe('helpers', () => {
     expect(parseGeminiJson('log\n{"response":"ok"}')).toBe('ok')
     expect(() => parseGeminiJson('{"error":{"message":"quota"}}')).toThrow('quota')
     expect(() => parseGeminiJson('no json here')).toThrow()
+  })
+
+  it('finds why a CLI failed: a JSON error first, then the end of stderr, then of stdout', () => {
+    expect(failureDetail('Loaded cached credentials.\n', 'log\n{"error":{"message":"quota"}}')).toBe('quota')
+    expect(failureDetail('one\ntwo\n\nthree\nfour\n', 'ignored')).toBe('two three four')
+    expect(failureDetail('', 'API Error: 404\n')).toBe('API Error: 404')
+    expect(failureDetail('', '')).toBe('')
+  })
+
+  // The page checks a model name before sending it and offers names per CLI: both sides
+  // must agree on the rule, and the page must offer names only for CLIs the bridge has.
+  it('agrees with the page on model names', () => {
+    expect(BRIDGE_MODEL_RE.source).toBe(MODEL_RE.source)
+    expect([...BRIDGE_MODEL_SUGGESTIONS.keys()].sort()).toEqual(Object.keys(ADAPTERS).sort())
   })
 
   it('removes colour and cursor codes', () => {
