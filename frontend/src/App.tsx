@@ -160,6 +160,7 @@ import {
   AgentImageRegistry,
   agentConnectorCommands,
   agentNow,
+  applyTextEdit,
   base64ToFile,
   describeChecks,
   describeReport,
@@ -176,6 +177,24 @@ import {
   type TextEdit,
 } from './agentConnector'
 import { useAgentConnector, type AgentToolHandlers } from './useAgentConnector'
+import {
+  AI_APP_MODES,
+  AI_SUGGESTION_NOTE,
+  PLAN_MODE_REFUSAL,
+  SUGGESTION_REJECTED,
+  SUGGESTION_WAITING,
+  SUGGESTION_WAIT_MS,
+  compactDiff,
+  lineDiff,
+  loadGuestAiAppMode,
+  loadHandledSuggestions,
+  nextSuggestionId,
+  rememberHandledSuggestion,
+  saveGuestAiAppMode,
+  type AiAppMode,
+  type AiSuggestion,
+  type AiSuggestionActions,
+} from './aiAppModes'
 import { OAuthConsentPage } from './OAuthConsentPage'
 import { consentAuthorizationId, isConsentRoute, rememberPendingConsent, takePendingConsent } from './oauthConsent'
 import {
@@ -4422,6 +4441,71 @@ function BridgeModelPicker({
   )
 }
 
+// A change an AI app proposed in manual mode (aiAppModes.ts), with what it changes, for
+// the student to allow or refuse. One at a time, oldest first.
+function AiSuggestionsCard({
+  suggestions,
+  onDecide,
+}: {
+  suggestions: AiSuggestion[]
+  onDecide: (id: string, allowed: boolean) => void
+}) {
+  if (!suggestions.length) return null
+  const [first] = suggestions
+  const diff = compactDiff(lineDiff(first.before, first.after))
+  const shown = diff.slice(0, 14)
+  return (
+    <aside
+      aria-label="AI app 的修改建議"
+      className="fixed bottom-4 right-4 z-[60] w-[min(420px,calc(100vw-2rem))] rounded-2xl border border-slate-200 bg-white p-4 shadow-2xl shadow-slate-300/60"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-sm font-semibold text-slate-950">AI app 想修改報告</p>
+        {suggestions.length > 1 && <span className="text-xs text-slate-500">還有 {suggestions.length - 1} 個</span>}
+      </div>
+      <p className="mt-1 text-xs leading-5 text-slate-500">
+        {first.source === 'remote' ? 'ChatGPT 網頁版' : '連接的 AI app'}：{first.summary}
+      </p>
+      <div className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-slate-50 p-2 font-mono text-xs leading-5 ring-1 ring-slate-200">
+        {shown.map((line, index) =>
+          line === null ? (
+            <div key={index} className="text-slate-400">
+              …
+            </div>
+          ) : (
+            <div
+              key={index}
+              className={
+                line.kind === 'added' ? 'bg-emerald-50 text-emerald-800' : line.kind === 'removed' ? 'bg-rose-50 text-rose-800' : 'text-slate-600'
+              }
+            >
+              {line.kind === 'added' ? '+ ' : line.kind === 'removed' ? '− ' : '  '}
+              {line.text || ' '}
+            </div>
+          ),
+        )}
+        {diff.length > shown.length && <div className="text-slate-400">…（還有 {diff.length - shown.length} 行）</div>}
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={() => onDecide(first.id, false)}
+          className="h-10 rounded-xl border border-slate-200 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+        >
+          拒絕
+        </button>
+        <button
+          type="button"
+          onClick={() => onDecide(first.id, true)}
+          className="h-10 rounded-xl bg-slate-950 text-sm font-semibold text-white transition hover:bg-slate-800"
+        >
+          允許
+        </button>
+      </div>
+    </aside>
+  )
+}
+
 type AgentConnectorState = ReturnType<typeof useAgentConnector>
 
 const PANEL_BUTTON =
@@ -4436,10 +4520,14 @@ function AgentConnectorPanel({
   connector,
   signedIn,
   apiBaseUrl,
+  mode,
+  onChooseMode,
 }: {
   connector: AgentConnectorState
   signedIn: boolean
   apiBaseUrl: string
+  mode: AiAppMode
+  onChooseMode: (mode: AiAppMode) => void
 }) {
   const { phase, status, error, activity, port, check, pair, disconnect, takeOver } = connector
   // ChatGPT on the web reaches the backend's remote MCP server instead (mcp_remote.py),
@@ -4488,6 +4576,28 @@ function AgentConnectorPanel({
             已連線
           </span>
         )}
+      </div>
+
+      <div className="mt-3">
+        <div role="radiogroup" aria-label="AI 權限模式" className="grid grid-cols-3 gap-1 rounded-xl bg-slate-100 p-1">
+          {AI_APP_MODES.map((entry) => (
+            <button
+              key={entry.mode}
+              type="button"
+              role="radio"
+              aria-checked={mode === entry.mode}
+              onClick={() => onChooseMode(entry.mode)}
+              className={`h-9 rounded-lg text-xs font-semibold transition ${
+                mode === entry.mode ? 'bg-white text-slate-950 shadow-sm' : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              {entry.label}
+            </button>
+          ))}
+        </div>
+        <p className="mt-1.5 text-xs leading-5 text-slate-500">
+          {AI_APP_MODES.find((entry) => entry.mode === mode)?.description}
+        </p>
       </div>
 
       {phase === 'off' && (
@@ -9128,6 +9238,88 @@ function WorkspaceApp({
     setCurrentView('editor')
   }
 
+  // --- How far a connected AI app may go (aiAppModes.ts) ----------------------------------
+
+  const [guestAiAppMode, setGuestAiAppMode] = useState<AiAppMode>(loadGuestAiAppMode)
+  const aiAppMode: AiAppMode = user ? notePreferences.aiAppMode : guestAiAppMode
+  const [aiSuggestions, setAiSuggestions] = useState<AiSuggestion[]>([])
+  const aiSuggestionActionsRef = useRef(new Map<string, AiSuggestionActions>())
+
+  function chooseAiAppMode(mode: AiAppMode) {
+    if (user) {
+      // In the profile, so the remote MCP server (ChatGPT on the web) follows it too.
+      updateNotePreferences({ aiAppMode: mode })
+    } else {
+      saveGuestAiAppMode(mode)
+      setGuestAiAppMode(mode)
+    }
+  }
+
+  // Planning refuses a change, automatic makes it, manual shows it and waits a while for
+  // the student; if they have not decided by then, the suggestion stays and a later 允許
+  // still applies it. `apply` works on the report as it is at that moment.
+  async function throughAiAppMode(
+    documentId: string,
+    summary: string,
+    before: string,
+    after: string,
+    apply: () => Promise<string>,
+  ): Promise<string> {
+    if (aiAppMode === 'plan') throw new Error(PLAN_MODE_REFUSAL)
+    if (aiAppMode === 'auto') return apply()
+    const id = nextSuggestionId()
+    const allowed = await new Promise<boolean | null>((settle) => {
+      const entry: AiSuggestionActions = { apply, settle }
+      aiSuggestionActionsRef.current.set(id, entry)
+      setAiSuggestions((current) => [...current, { id, source: 'local', documentId, summary, before, after }])
+      window.setTimeout(() => {
+        entry.settle = undefined
+        settle(null)
+      }, SUGGESTION_WAIT_MS)
+    })
+    if (allowed === null) return SUGGESTION_WAITING
+    if (!allowed) throw new Error(SUGGESTION_REJECTED)
+    return `使用者已允許。${await apply()}`
+  }
+
+  async function decideAiSuggestion(id: string, allowed: boolean) {
+    const entry = aiSuggestionActionsRef.current.get(id)
+    aiSuggestionActionsRef.current.delete(id)
+    setAiSuggestions((current) => current.filter((item) => item.id !== id))
+    if (!entry) return
+    if (entry.settle) {
+      // An AI app is waiting: it applies the change and hears how it went.
+      entry.settle(allowed)
+      return
+    }
+    if (entry.remoteVersionId) rememberHandledSuggestion(id)
+    try {
+      if (allowed) {
+        await entry.apply()
+        setBridgeToast('已套用 AI app 的修改建議，按 Ctrl+Z 可以復原')
+      }
+      // Decided: out of the history. Only the owner may delete there; the note above
+      // keeps it from coming back for a collaborator.
+      if (entry.remoteVersionId && supabase) {
+        await supabase.from('document_versions').delete().eq('id', entry.remoteVersionId)
+      }
+    } catch (err) {
+      setBridgeToast(`無法套用這個建議：${err instanceof Error ? err.message : '未知錯誤'}`)
+    }
+  }
+
+  // A suggestion ChatGPT on the web left in the version history: the whole report as it
+  // proposed it.
+  async function applyWholeReport(documentId: string, content: string) {
+    const report = requireAgentReport()
+    if (report.id !== documentId) throw new Error('這個建議屬於另一份報告，請先打開那份報告。')
+    const ed = await agentEditor()
+    const current = agentEditorText(ed)
+    backUpBeforeAgentChange(report.id)
+    applyAgentChange(ed, current, { start: 0, end: current.length, text: content })
+    return '已套用修改建議。'
+  }
+
   const agentHandlers: AgentToolHandlers = {
     list_reports: async () =>
       describeReports(
@@ -9152,25 +9344,40 @@ function WorkspaceApp({
       return describeChecks(analyzeReportQuality(agentReportText()))
     },
     edit_report: async (args) => {
+      if (aiAppMode === 'plan') throw new Error(PLAN_MODE_REFUSAL)
       const ed = await agentEditor()
       const report = requireAgentReport()
+      const oldText = fromAgentText(args.oldText)
+      const newText = fromAgentText(args.newText)
       const text = agentEditorText(ed)
-      const edit = exactEdit(text, fromAgentText(args.oldText), fromAgentText(args.newText))
-      if ('error' in edit) throw new Error(edit.error)
-      backUpBeforeAgentChange(report.id)
-      applyAgentChange(ed, text, edit)
-      return `已修改報告「${report.title}」。${newNumbersNote(numbersAddedBy(text, edit.text))}`
+      const preview = exactEdit(text, oldText, newText)
+      if ('error' in preview) throw new Error(preview.error)
+      return throughAiAppMode(report.id, '修改一段文字', text, applyTextEdit(text, preview), async () => {
+        const liveEditor = await agentEditor()
+        const current = agentEditorText(liveEditor)
+        const edit = exactEdit(current, oldText, newText)
+        if ('error' in edit) throw new Error(edit.error)
+        backUpBeforeAgentChange(report.id)
+        applyAgentChange(liveEditor, current, edit)
+        return `已修改報告「${report.title}」。${newNumbersNote(numbersAddedBy(current, edit.text))}`
+      })
     },
     write_report: async (args) => {
+      if (aiAppMode === 'plan') throw new Error(PLAN_MODE_REFUSAL)
       const ed = await agentEditor()
       const report = requireAgentReport()
-      const text = agentEditorText(ed)
       const content = fromAgentText(args.content)
-      backUpBeforeAgentChange(report.id)
-      applyAgentChange(ed, text, { start: 0, end: text.length, text: content })
-      return `已改寫整份報告「${report.title}」（${content.length} 字元），原本的內容已備份到版本歷史。${newNumbersNote(numbersAddedBy(text, content))}`
+      return throughAiAppMode(report.id, '改寫整份報告', agentEditorText(ed), content, async () => {
+        const liveEditor = await agentEditor()
+        const current = agentEditorText(liveEditor)
+        backUpBeforeAgentChange(report.id)
+        applyAgentChange(liveEditor, current, { start: 0, end: current.length, text: content })
+        return `已改寫整份報告「${report.title}」（${content.length} 字元），原本的內容已備份到版本歷史。${newNumbersNote(numbersAddedBy(current, content))}`
+      })
     },
     create_report: async (args) => {
+      // A new report changes nothing already there: planning refuses it, manual allows it.
+      if (aiAppMode === 'plan') throw new Error(PLAN_MODE_REFUSAL)
       const title = (typeof args.title === 'string' ? args.title.trim() : '') || '未命名報告'
       await createReportForAgent(title, fromAgentText(args.content))
       return `已建立並打開報告「${title}」。`
@@ -9178,16 +9385,25 @@ function WorkspaceApp({
     insert_image: async (args) => {
       const mimeType = String(args.mimeType)
       if (!['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(mimeType)) throw new Error('只能插入 PNG、JPEG、GIF 或 WebP 圖片。')
+      if (aiAppMode === 'plan') throw new Error(PLAN_MODE_REFUSAL)
       const ed = await agentEditor()
       const report = requireAgentReport()
-      const url = await uploadPastedImage(base64ToFile(String(args.data), mimeType, `ai-app-image.${mimeType.split('/')[1]}`))
       const alt = (typeof args.alt === 'string' ? args.alt : '').replace(/[[\]]/g, '').trim() || '圖片'
+      const afterText = typeof args.afterText === 'string' ? fromAgentText(args.afterText) : undefined
       const text = agentEditorText(ed)
-      const edit = imageInsertion(text, `![${alt}](${url})`, typeof args.afterText === 'string' ? fromAgentText(args.afterText) : undefined)
-      if ('error' in edit) throw new Error(edit.error)
-      backUpBeforeAgentChange(report.id)
-      applyAgentChange(ed, text, edit)
-      return `已在報告「${report.title}」插入圖片「${alt}」。`
+      // The preview shows where it goes; the file is uploaded only once allowed.
+      const preview = imageInsertion(text, `![${alt}](圖片)`, afterText)
+      if ('error' in preview) throw new Error(preview.error)
+      return throughAiAppMode(report.id, `插入圖片「${alt}」`, text, applyTextEdit(text, preview), async () => {
+        const url = await uploadPastedImage(base64ToFile(String(args.data), mimeType, `ai-app-image.${mimeType.split('/')[1]}`))
+        const liveEditor = await agentEditor()
+        const current = agentEditorText(liveEditor)
+        const edit = imageInsertion(current, `![${alt}](${url})`, afterText)
+        if ('error' in edit) throw new Error(edit.error)
+        backUpBeforeAgentChange(report.id)
+        applyAgentChange(liveEditor, current, edit)
+        return `已在報告「${report.title}」插入圖片「${alt}」。`
+      })
     },
   }
 
@@ -9238,6 +9454,20 @@ function WorkspaceApp({
       setDocumentVersions((current) => [version, ...current].slice(0, 120))
       setBridgeToast(REMOTE_KEPT_TOAST)
     },
+    knowsSuggestion: (versionId) =>
+      aiSuggestionActionsRef.current.has(`remote-${versionId}`) || loadHandledSuggestions().has(`remote-${versionId}`),
+    offerSuggestions: (documentId, rows) => {
+      const before = normalizeNewlines(liveAgentEditor()?.getValue() ?? '')
+      const offered: AiSuggestion[] = []
+      for (const row of rows) {
+        const id = `remote-${row.id}`
+        if (aiSuggestionActionsRef.current.has(id)) continue
+        const content = normalizeNewlines(row.content ?? '')
+        aiSuggestionActionsRef.current.set(id, { remoteVersionId: row.id, apply: () => applyWholeReport(documentId, content) })
+        offered.push({ id, source: 'remote', documentId, summary: 'ChatGPT 網頁版提出的修改', before, after: content })
+      }
+      if (offered.length) setAiSuggestions((current) => [...current, ...offered])
+    },
   }
 
   // The connector's calls and the checks below arrive between renders; they always use
@@ -9266,6 +9496,21 @@ function WorkspaceApp({
       try {
         // A save in flight moves the known version on; let it land first.
         await documentSaveQueueRef.current.catch(() => undefined)
+        // Suggestions ChatGPT on the web left in manual mode (mcp_remote.py). Only new ones
+        // are fetched in full.
+        const { data: suggested } = await client
+          .from('document_versions')
+          .select('id')
+          .eq('document_id', documentId)
+          .eq('note', AI_SUGGESTION_NOTE)
+          .order('created_at', { ascending: true })
+        const freshIds = ((suggested ?? []) as Array<{ id: string }>)
+          .map((row) => row.id)
+          .filter((id) => !actions.knowsSuggestion(id))
+        if (freshIds.length) {
+          const { data: rows } = await client.from('document_versions').select('id, content').in('id', freshIds)
+          if (!cancelled && rows) actions.offerSuggestions(documentId, rows as Array<{ id: string; content: string }>)
+        }
         const { data: stamp } = await client.from('documents').select('updated_at').eq('id', documentId).maybeSingle()
         if (cancelled || !stamp) return
         const known = remoteKnownRef.current
@@ -10382,6 +10627,13 @@ function WorkspaceApp({
       )}
 
       {currentView === 'editor' && (
+        <AiSuggestionsCard
+          suggestions={aiSuggestions.filter((suggestion) => suggestion.documentId === (activeDocument?.id ?? null))}
+          onDecide={(id, allowed) => void decideAiSuggestion(id, allowed)}
+        />
+      )}
+
+      {currentView === 'editor' && (
         <div className={`pointer-events-none fixed inset-0 z-50 ${isAgentDrawerOpen ? '' : 'hidden'}`}>
           <button
             type="button"
@@ -10425,7 +10677,13 @@ function WorkspaceApp({
             </header>
 
             <div className={`min-h-0 flex-1 overflow-auto px-5 py-5 ${SCROLLBAR_HIDE}`}>
-              <AgentConnectorPanel connector={agentConnector} signedIn={Boolean(user)} apiBaseUrl={API_BASE_URL} />
+              <AgentConnectorPanel
+                connector={agentConnector}
+                signedIn={Boolean(user)}
+                apiBaseUrl={API_BASE_URL}
+                mode={aiAppMode}
+                onChooseMode={chooseAiAppMode}
+              />
               <section>
                 <div className="grid gap-2">
                   {AGENT_MODE_CONFIG.map((config) => (

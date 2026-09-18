@@ -21,6 +21,9 @@ export type RemoteSyncActions = {
   hasUnsavedLocalChanges: (documentId: string) => boolean
   show: (documentId: string, content: string, updatedAt: string | null) => void
   keep: (documentId: string, content: string) => Promise<void>
+  /** Whether a suggestion ChatGPT left in the version history is already shown or decided. */
+  knowsSuggestion: (versionId: string) => boolean
+  offerSuggestions: (documentId: string, rows: Array<{ id: string; content: string }>) => void
 }
 
 /** The version of a document this tab last saw saved. */
