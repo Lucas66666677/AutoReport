@@ -756,6 +756,7 @@ describe('registering with the AI apps', () => {
     expect(text).toContain('--install claude-desktop')
     expect(text).toContain('--install codex')
     expect(text).toContain('ChatGPT')
+    expect(text).toContain(`gemini mcp add --scope user autolabreport "${command}" "${script}"`)
     expect(text).toContain(JSON.stringify(script))
   })
 

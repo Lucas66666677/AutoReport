@@ -2,8 +2,9 @@
 // AutoLabReport MCP connector.
 //
 // Lets an AI app you already use -- Claude Desktop, Claude Code, ChatGPT desktop, Codex,
-// or any other app that speaks MCP -- read and edit the AutoLabReport report open in your
-// browser. You register it with the app once; the app starts it by itself after that.
+// Gemini CLI, or any other app that speaks MCP -- read and edit the AutoLabReport report
+// open in your browser. You register it with the app once; the app starts it by itself
+// after that.
 //
 //   node autolabreport-mcp.mjs --setup                   how to add it to each app
 //   node autolabreport-mcp.mjs --install claude-desktop  add it to Claude Desktop
@@ -40,7 +41,7 @@ import { homedir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-export const VERSION = '1.1.0'
+export const VERSION = '1.1.1'
 // The page <-> connector API below, not MCP. A page that needs a newer one says so.
 export const HUB_PROTOCOL = 1
 export const DEFAULT_PORT = 47633
@@ -1221,6 +1222,9 @@ export function setupText({ command = process.execPath, script = scriptPath(), p
     `  或在 ChatGPT 桌面版：設定 → MCP servers → Add server → STDIO，指令填 ${quoteForShell(command)}，參數填 ${quoteForShell(script)}`,
     '  然後重新啟動 ChatGPT 桌面版。',
     '',
+    '■ Gemini CLI',
+    `  gemini mcp add --scope user ${SERVER_NAME} ${runner}`,
+    '',
     '加好之後，在 AI app 裡說「連接 AutoLabReport」，AI 會給你一組配對碼；',
     '在 AutoLabReport 報告頁點「AI Agent」→「連接 AI app」，輸入配對碼即可。',
   ].join('\n')
@@ -1272,7 +1276,7 @@ export function parseArguments(argv) {
 
 const HELP = `AutoLabReport MCP 連接器 ${VERSION}
 
-讓 Claude Desktop、Claude Code、ChatGPT 桌面版、Codex 等 AI app 讀取和修改你在
+讓 Claude Desktop、Claude Code、ChatGPT 桌面版、Codex、Gemini CLI 等 AI app 讀取和修改你在
 AutoLabReport 打開的報告。AI app 會自己啟動這個程式；你只需要把它加進 app 一次。
 
   --setup                   列出加到各個 AI app 的方法（含這台電腦上的路徑）

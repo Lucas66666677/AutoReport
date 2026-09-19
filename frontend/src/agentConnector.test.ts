@@ -128,6 +128,8 @@ describe('agentConnectorCommands', () => {
     expect(windows.claudeCode).toBe('claude mcp add --scope user --transport stdio autolabreport -- node "$HOME\\autolabreport-mcp.mjs"')
     expect(unix.download).toBe('curl -fsSLo ~/autolabreport-mcp.mjs https://autolabreport.lucirel.com/mcp/autolabreport-mcp.mjs')
     expect(unix.codex).toBe('node ~/autolabreport-mcp.mjs --install codex')
+    expect(windows.gemini).toBe('gemini mcp add --scope user autolabreport node "$HOME\\autolabreport-mcp.mjs"')
+    expect(unix.gemini).toBe('gemini mcp add --scope user autolabreport node ~/autolabreport-mcp.mjs')
   })
 
   // The connector refuses every page but production unless told otherwise.
@@ -135,6 +137,10 @@ describe('agentConnectorCommands', () => {
     const { unix } = agentConnectorCommands('http://127.0.0.1:5173', 48000)
     expect(unix.claudeCode).toContain('--allow-origin http://127.0.0.1:5173 --port 48000')
     expect(unix.claudeDesktop).toContain('--install claude-desktop --allow-origin http://127.0.0.1:5173')
+    // Before a `--`, Gemini CLI would take --port for one of its own options.
+    expect(unix.gemini).toBe(
+      'gemini mcp add --scope user autolabreport node ~/autolabreport-mcp.mjs -- --allow-origin http://127.0.0.1:5173 --port 48000',
+    )
   })
 })
 

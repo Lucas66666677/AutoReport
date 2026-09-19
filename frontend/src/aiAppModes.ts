@@ -1,5 +1,5 @@
 // How far an AI app connected through MCP may go on its own -- through the local
-// connector (agentConnector.ts) and ChatGPT on the web (backend/mcp_remote.py) alike.
+// connector (agentConnector.ts) and AI apps on the web (backend/mcp_remote.py) alike.
 // The student picks one in the AI Agent drawer; it is kept in their preferences, so the
 // server knows it too.
 //
@@ -26,7 +26,7 @@ export const PLAN_MODE_REFUSAL =
 export const SUGGESTION_WAITING =
   '已送出修改建議，使用者在 AutoLabReport 按「允許」才會套用。請告訴使用者到 AutoLabReport 確認。'
 export const SUGGESTION_REJECTED = '使用者拒絕了這個修改。'
-// ChatGPT on the web leaves its suggestions in the report's version history under this note.
+// An AI app on the web leaves its suggestions in the report's version history under this note.
 export const AI_SUGGESTION_NOTE = 'AI app 修改建議（待確認）'
 
 // How long a connected AI app waits for the student's 允許 before being told the
@@ -36,7 +36,7 @@ export const SUGGESTION_WAIT_MS = 25_000
 /** A change an AI app proposed in manual mode, shown for the student to allow or refuse. */
 export type AiSuggestion = {
   id: string
-  /** 'local': from the connector, waiting in this tab. 'remote': ChatGPT on the web, kept in the version history. */
+  /** 'local': from the connector, waiting in this tab. 'remote': an AI app on the web, kept in the version history. */
   source: 'local' | 'remote'
   /** The report it would change; shown only while that report is open. */
   documentId: string | null
@@ -77,7 +77,7 @@ export function saveGuestAiAppMode(mode: AiAppMode, storage: Storage | undefined
   }
 }
 
-// Suggestions from ChatGPT on the web that this browser already allowed or refused. A
+// Suggestions from AI apps on the web that this browser already allowed or refused. A
 // collaborator cannot delete them from the version history, so they are remembered here.
 const HANDLED_KEY = 'autolabreport-handled-ai-suggestions'
 

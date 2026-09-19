@@ -34,9 +34,9 @@ Closed Beta 默认关闭：
 
 - **复制／粘贴**：把 prompt 复制到 ChatGPT、Claude、Gemini、DeepSeek、Kimi 等（网页或桌面版），再把回答贴回来；与内建 AI 走同一套数字完整性检查。
 - **终端机 bridge**（`frontend/public/bridge/autolabreport-bridge.mjs`）：学生在自己电脑上执行，页面把 Agent 任务交给已登录的 Claude Code、Codex 或 Gemini CLI，可选模型。
-- **MCP 连接器**（`frontend/public/mcp/autolabreport-mcp.mjs`）：注册到 Claude Desktop、Claude Code、ChatGPT 桌面版或 Codex 后，学生直接在这些 AI app 里下指令；AI 可以列出、打开、读取、检查、新建和修改报告，并插入本机图片，上网搜索等则由 AI app 自己完成。修改都在页面的编辑器里执行：第一次修改前自动备份版本，可用 Ctrl+Z 复原。
+- **MCP 连接器**（`frontend/public/mcp/autolabreport-mcp.mjs`）：注册到 Claude Desktop、Claude Code、ChatGPT 桌面版、Codex 或 Gemini CLI 后，学生直接在这些 AI app 里下指令；AI 可以列出、打开、读取、检查、新建和修改报告，并插入本机图片，上网搜索等则由 AI app 自己完成。修改都在页面的编辑器里执行：第一次修改前自动备份版本，可用 Ctrl+Z 复原。
 
-- **ChatGPT 网页版**（`backend/mcp_remote.py`，端点 `/mcp`）：网页版只能连云端 MCP。登录走 Supabase OAuth 2.1，学生在 `/oauth/consent` 同意后，AI 以学生本人的身份（RLS）读写云端报告；每次修改前备份版本，并且只写在 AI 读到的那个版本上。页面会发现别处保存的新版本：没有未存修改时直接显示，否则把对方版本存入版本历史、保留学生的修改。需要项目所有者先开启 OAuth server（见 `docs/OWNER_ACTIONS.md`）。AI app 拿到的授权只能用在 `/mcp`：后端其他 API 一律拒绝；执行 `20260918_ai_app_least_privilege.sql` 之后，数据库也只让它读报告、建立私人报告、改报告内容和新增版本备份。
+- **网页版 AI**（ChatGPT、Claude、Gemini；`backend/mcp_remote.py`，端点 `/mcp`）：网页版只能连云端 MCP。ChatGPT 要 Plus 以上并开启 Developer mode；Claude 免费版也能加一个自定义连接器；Gemini 网页版目前只开放给在美国、18 岁以上、用个人 Google 账号、英文界面的用户，台湾暂时不能用。登录走 Supabase OAuth 2.1，学生在 `/oauth/consent` 同意后，AI 以学生本人的身份（RLS）读写云端报告；每次修改前备份版本，并且只写在 AI 读到的那个版本上。页面会发现别处保存的新版本：没有未存修改时直接显示，否则把对方版本存入版本历史、保留学生的修改。需要项目所有者先开启 OAuth server（见 `docs/OWNER_ACTIONS.md`）。AI app 拿到的授权只能用在 `/mcp`：后端其他 API 一律拒绝；执行 `20260918_ai_app_least_privilege.sql` 之后，数据库也只让它读报告、建立私人报告、改报告内容和新增版本备份。
 
 两个本机程序都只监听 127.0.0.1，只接受 `https://autolabreport.lucirel.com` 的 Origin 与 127.0.0.1／localhost 的 Host，而且必须先用配对码配对（输错多次会锁定）。两者都是零依赖的单一文件，需要 Node.js 18 以上。
 

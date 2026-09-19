@@ -1,12 +1,12 @@
-"""A remote MCP server, for AI apps that can only reach one on the internet -- ChatGPT
-on the web.
+"""A remote MCP server, for AI apps that can only reach one on the internet -- ChatGPT,
+Claude and Gemini on the web.
 
 The local connector (frontend/public/mcp/autolabreport-mcp.mjs) serves Claude Desktop,
-Claude Code, ChatGPT desktop and Codex through the student's open browser tab. ChatGPT
-on the web cannot start a program on the student's computer, so this server works on
-the student's cloud reports directly -- and always as that student: every database
-request carries their own access token, so row-level security decides what they may
-read and change, exactly as in their browser.
+Claude Code, ChatGPT desktop, Codex and Gemini CLI through the student's open browser
+tab. An AI app on the web cannot start a program on the student's computer, so this
+server works on the student's cloud reports directly -- and always as that student:
+every database request carries their own access token, so row-level security decides
+what they may read and change, exactly as in their browser.
 
 Sign-in is Supabase Auth's OAuth 2.1 server. An AI app finds it through the protected
 resource metadata served here, the student approves on AutoLabReport's /oauth/consent
@@ -81,6 +81,8 @@ ALLOWED_ORIGINS = frozenset(
         "https://chatgpt.com",
         "https://chat.openai.com",
         "https://claude.ai",
+        "https://claude.com",
+        "https://gemini.google.com",
         "https://autolabreport.lucirel.com",
     }
 )
@@ -831,7 +833,7 @@ def protected_resource_metadata_for_mcp(request: Request) -> JSONResponse:
 
 @router.get("/api/mcp/status")
 def mcp_status(request: Request) -> dict[str, Any]:
-    """For the connector panel: the address to give ChatGPT, and whether sign-in is on."""
+    """For the connector panel: the address to give an AI app on the web, and whether sign-in is on."""
     try:
         enabled = oauth_server_enabled()
         limited = ai_app_limits_active()

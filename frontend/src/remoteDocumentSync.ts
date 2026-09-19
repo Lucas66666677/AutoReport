@@ -1,5 +1,5 @@
-// Keeping an open cloud report in step with changes made somewhere else -- ChatGPT
-// through the remote MCP server (backend/mcp_remote.py), or another tab.
+// Keeping an open cloud report in step with changes made somewhere else -- an AI app
+// on the web through the remote MCP server (backend/mcp_remote.py), or another tab.
 //
 // The page saves whole documents. Before this the last save simply won: an open tab
 // kept showing the old text, and its next save quietly undid the other change. Now a
@@ -21,7 +21,7 @@ export type RemoteSyncActions = {
   hasUnsavedLocalChanges: (documentId: string) => boolean
   show: (documentId: string, content: string, updatedAt: string | null) => void
   keep: (documentId: string, content: string) => Promise<void>
-  /** Whether a suggestion ChatGPT left in the version history is already shown or decided. */
+  /** Whether a suggestion an AI app left in the version history is already shown or decided. */
   knowsSuggestion: (versionId: string) => boolean
   offerSuggestions: (documentId: string, rows: Array<{ id: string; content: string }>) => void
 }

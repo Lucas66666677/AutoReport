@@ -1,6 +1,7 @@
-// The page Supabase Auth's OAuth 2.1 server sends a student to when an AI app -- ChatGPT
-// on the web -- asks to reach their AutoLabReport account (see backend/mcp_remote.py).
-// The project's OAuth server settings name this path as the authorization path.
+// The page Supabase Auth's OAuth 2.1 server sends a student to when an AI app -- ChatGPT,
+// Claude or Gemini on the web -- asks to reach their AutoLabReport account (see
+// backend/mcp_remote.py). The project's OAuth server settings name this path as the
+// authorization path.
 
 export const OAUTH_CONSENT_PATH = '/oauth/consent'
 
@@ -8,8 +9,10 @@ const PENDING_CONSENT_KEY = 'autolabreport-pending-oauth-consent'
 const PENDING_CONSENT_LIFETIME_MS = 15 * 60 * 1000
 const AUTHORIZATION_ID_RE = /^[A-Za-z0-9_-]{1,200}$/
 
-// Where the AI apps AutoLabReport knows send the student back to after they decide.
-const KNOWN_AI_APP_HOSTS = ['chatgpt.com', 'chat.openai.com', 'claude.ai', 'claude.com']
+// Where the AI apps AutoLabReport knows send the student back to after they decide:
+// ChatGPT, Claude (https://claude.ai/api/mcp/auth_callback) and Gemini
+// (https://gemini.google.com/oauth-redirect).
+const KNOWN_AI_APP_HOSTS = ['chatgpt.com', 'chat.openai.com', 'claude.ai', 'claude.com', 'gemini.google.com']
 
 export function isConsentRoute(pathname: string): boolean {
   return pathname === OAUTH_CONSENT_PATH
